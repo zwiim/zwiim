@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_state::AppState;
 use crate::automation::entities::{playbook, playbook_item, playbook_run};
 use crate::automation::pauses::{PauseCause, SitePause};
+use crate::automation::run_views::RunTotals;
 use crate::automation::playbook_store::{PlaybookStore, SiteKnowledgeKind};
 use crate::automation::{AutomationEngine, RunStatus};
 use crate::protocol::error::ZwiimError;
@@ -87,13 +88,16 @@ pub struct RunSummary {
     pub outcome: Option<String>,
     pub items_total: i32,
     pub items_done: i32,
+    /// Why a failed run failed (a reason code), else null.
+    pub error: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RunSummary {
-    /// `playbook_id` is the run's playbook's public id.
-    fn new(m: playbook_run::Model, playbook_id: String) -> Self {
+    /// `playbook_id` is the run's playbook's public id; the counts come from
+    /// the run's items, since only a run that finishes writes them to its row.
+    fn new(m: playbook_run::Model, playbook_id: String, totals: &RunTotals) -> Self {
         Self {
             run_id: m.public_id,
             playbook_id,
@@ -102,8 +106,9 @@ impl RunSummary {
             status: m.status,
             pause_reason: m.pause_reason,
             outcome: m.outcome,
-            items_total: m.items_total,
-            items_done: m.items_done,
+            items_total: totals.items as i32,
+            items_done: totals.done as i32,
+            error: m.error,
             created_at: m.created_at,
             ended_at: m.ended_at,
         }
@@ -479,7 +484,12 @@ async fn load_run(state: &AppState, run_id: i32) -> ZResult<RunSummary> {
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found("playbook"))?
         .public_id;
-    Ok(Json(RunSummary::new(row, playbook_id)))
+    let totals = crate::automation::run_views::totals_of(&state.db.conn, &[row.id])
+        .await
+        .map_err(engine_err)?
+        .remove(&row.id)
+        .unwrap_or_default();
+    Ok(Json(RunSummary::new(row, playbook_id, &totals)))
 }
 
 // ── run.items (paginated, spec 11.1) ──────────────────────────────────────

@@ -19,6 +19,8 @@ pub struct RunView {
     pub status: String,
     pub pause_reason: Option<String>,
     pub outcome: Option<String>,
+    /// Why a failed run failed (a reason code), else null.
+    pub error: Option<String>,
     pub totals: RunTotals,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -102,6 +104,7 @@ pub async fn read(
             status: r.status,
             pause_reason: r.pause_reason,
             outcome: r.outcome,
+            error: r.error,
             created_at: r.created_at,
             ended_at: r.ended_at,
         })
@@ -119,6 +122,22 @@ pub async fn read(
         })
         .collect();
     Ok((views, items))
+}
+
+/// The totals of each of `runs` (row ids), counted from their items.
+pub async fn totals_of(
+    db: &sea_orm::DatabaseConnection,
+    runs: &[i32],
+) -> Result<std::collections::HashMap<i32, RunTotals>, DbError> {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let items = playbook_item::Entity::find()
+        .filter(playbook_item::Column::RunId.is_in(runs.iter().copied()))
+        .all(db)
+        .await?;
+    Ok(runs
+        .iter()
+        .map(|&run| (run, totals(items.iter().filter(|i| i.run_id == run))))
+        .collect())
 }
 
 fn totals<'a>(items: impl Iterator<Item = &'a playbook_item::Model>) -> RunTotals {

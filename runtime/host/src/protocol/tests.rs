@@ -8163,6 +8163,31 @@ async fn run_row_id(h: &Host, run_id: &str) -> i32 {
         .id
 }
 
+/// Seed one item of run row `run` directly, in `status`.
+async fn seed_item(h: &Host, playbook: i32, run: i32, key: &str, status: &str) -> String {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    let now = chrono::Utc::now();
+    let public_id = uuid::Uuid::new_v4().to_string();
+    playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: Set(public_id.clone()),
+        run_id: Set(run),
+        playbook_id: Set(playbook),
+        site: Set("jobs.localhost".into()),
+        account: Set("main".into()),
+        item_key: Set(key.into()),
+        status: Set(status.into()),
+        epoch: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec(&h.state.db.conn)
+    .await
+    .unwrap();
+    public_id
+}
+
 #[tokio::test]
 async fn playbook_operations_are_off_until_the_labs_switch() {
     let h = host(false).await;
@@ -8226,6 +8251,62 @@ async fn saving_a_playbook_takes_its_new_name() {
     assert_eq!(body["playbook"]["name"], "Renamed jobs");
     let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
     assert_eq!(body["playbook"]["name"], "Renamed jobs");
+}
+
+#[tokio::test]
+async fn a_running_run_counts_its_items_live() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let run = run_row_id(&h, &run_id).await;
+    seed_item(&h, pb.id, run, "job-1", "done").await;
+    seed_item(&h, pb.id, run, "job-2", "queued").await;
+    seed_item(&h, pb.id, run, "job-3", "waiting_approval").await;
+
+    let (status, body) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items_total"], 3);
+    assert_eq!(body["items_done"], 1);
+
+    // A stopped run never reaches `finish`; its counts still hold.
+    let (_, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
+    assert_eq!(body["status"], "stopped");
+    assert_eq!(body["items_total"], 3);
+    assert_eq!(body["items_done"], 1);
+}
+
+#[tokio::test]
+async fn a_failed_run_says_why() {
+    use crate::automation::entities::playbook_run;
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let row = run_row_id(&h, &run_id).await;
+    let mut m: playbook_run::ActiveModel = playbook_run::Entity::find_by_id(row)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    m.status = Set("failed".into());
+    m.error = Set(Some("discovery_failed".into()));
+    m.update(&h.state.db.conn).await.unwrap();
+
+    let (_, body) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert_eq!(body["error"], "discovery_failed");
+    // The feed's view of the run says it too.
+    let (views, _) = crate::automation::run_views::read(&h.state.db.conn, &[row])
+        .await
+        .unwrap();
+    let view = serde_json::to_value(&views[0]).unwrap();
+    assert_eq!(view["error"], "discovery_failed");
 }
 
 #[tokio::test]
