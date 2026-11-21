@@ -222,6 +222,8 @@ async fn an_auto_declaration_allows_dispatch_and_checks_decide_done() {
     let (id, mut item) = working_item(&runner, run).await;
     item.rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    item.show_me_run_kinds.insert(ActionKind::SubmitApplication);
 
     let result = runner
         .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
@@ -288,6 +290,8 @@ async fn a_pre_submit_mismatch_restarts_the_item() {
     let (id, mut item) = working_item(&runner, run).await;
     item.rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    item.show_me_run_kinds.insert(ActionKind::SubmitApplication);
     // A declaration promises a name the page does not show.
     let mut decl = declaration();
     decl.fields.push(DeclaredField {
@@ -312,6 +316,53 @@ async fn a_pre_submit_mismatch_restarts_the_item() {
         .expect("session");
     assert_eq!(result, SessionResult::Restart);
     assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+}
+
+/// The person is asked only about a page that matches the declaration, and
+/// the approval shows what the page pre-filled (spec 8.6.3).
+#[tokio::test]
+async fn the_check_runs_before_the_person_is_asked() {
+    use crate::automation::declaration::ScopeControl;
+    let (runner, run) = setup().await;
+    let control = |name: &str, value: &str, prefilled| ScopeControl {
+        target: Target::new("textbox", name),
+        control: ControlKind::Text,
+        value: value.into(),
+        hidden: false,
+        read_only: false,
+        disabled: false,
+        prefilled,
+    };
+    let (id, mut item) = working_item(&runner, run).await;
+    item.scope = vec![control("Salary", "20 LPA", false)];
+    let result = runner
+        .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert_eq!(result, SessionResult::Restart);
+    assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+    finish_item(&runner, id).await;
+
+    let (id, mut item) = second_working_item(&runner, run).await;
+    item.scope = vec![control("Phone", "+91 98", true)];
+    let result = runner
+        .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert_eq!(result, SessionResult::WaitingApproval);
+    let pending = crate::automation::approvals::pending(runner_engine(&runner))
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].fields[0].target.name, "Phone");
+}
+
+async fn second_working_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
+    let id = item_with(runner, run, "job-2", ItemStatus::Working).await;
+    let mut item = item_ref();
+    item.key = "job-2".into();
+    item.epoch = epoch_of(runner, id).await;
+    (id, item)
 }
 
 #[tokio::test]
@@ -730,6 +781,10 @@ async fn a_stale_attempt_cannot_declare_or_end_the_item() {
     zombie
         .rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    zombie
+        .show_me_run_kinds
+        .insert(ActionKind::SubmitApplication);
     let declared = runner
         .finish_session(id, &zombie, ItemOutcome::ReadyToDispatch(declaration()))
         .await;
@@ -765,6 +820,10 @@ async fn a_stale_attempt_cannot_declare_or_end_the_item() {
     current
         .rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    current
+        .show_me_run_kinds
+        .insert(ActionKind::SubmitApplication);
     let ok = runner
         .finish_session(id, &current, ItemOutcome::ReadyToDispatch(declaration()))
         .await

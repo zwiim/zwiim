@@ -35,6 +35,7 @@ pub mod playbook_store;
 pub mod reasons;
 pub mod run_loop;
 pub mod run_views;
+pub mod scope;
 pub mod sessions;
 pub mod states;
 #[cfg(test)]

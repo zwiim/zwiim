@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Local fixture site for the automation engine (spec 18.7). One port, two
-// sites told apart by the Host header: `jobs.localhost` (a job board) and
-// `apply.localhost` (a partner application site). Chrome resolves every
+// Local fixture site for the automation engine (spec 18.7). One port, three
+// sites told apart by the Host header: `jobs.localhost` (a job board),
+// `apply.localhost` (a partner application site) and `forum.localhost` (a
+// forum: a comment form, and a Follow button outside any form), so the
+// engine is proven on more than job forms. Chrome resolves every
 // `*.localhost` name to loopback, so no hosts file is needed.
 //
 //   node server.mjs [port]          serve; prints `listening <port>`
 //   GET /__log                      every request so far, as JSON
 //
-// Any POST is recorded and answered "Application sent": until the engine
-// sends outward on the person's approval, a POST here is a bug.
+// Every POST is recorded: the engine sends one per item, on the person's
+// approval or an auto rule, and only through the Host's own click.
 import { createServer } from "node:http";
 
 const port = Number(process.argv[2] ?? 0);
@@ -19,10 +21,11 @@ const page = (title, body) => `<!doctype html>
 <body><main>${body}</main></body></html>`;
 
 const form = (action, extra = "") => `
-<form method="post" action="${action}">
+<form method="post" action="${action}" enctype="multipart/form-data">
   <label>Full name <input name="name" required></label>
   <label>Email <input name="email" type="email" required></label>
   ${extra}
+  <label>Resume <input name="resume" type="file" required></label>
   <label>Cover letter <textarea name="cover"></textarea></label>
   <button type="submit">Submit application</button>
 </form>`;
@@ -77,6 +80,45 @@ const partner = {
   ),
 };
 
+const thread = (n, title, text) =>
+  page(
+    title,
+    `<h1>${title}</h1>
+<p>${text}</p>
+<p><button type="button" id="follow">Follow</button> <span id="followed"></span></p>
+<script>
+document.getElementById("follow").addEventListener("click", async (e) => {
+  await fetch("/threads/${n}/follow", { method: "POST" });
+  e.target.textContent = "Following";
+  document.getElementById("followed").textContent = "You follow this thread";
+});
+</script>
+<form method="post" action="/threads/${n}/comments">
+  <label>Your reply <textarea name="body" required></textarea></label>
+  <button type="submit">Post reply</button>
+</form>`,
+  );
+
+const forum = {
+  "/threads": page(
+    "Forum",
+    `<h1>Threads</h1>
+<ul>
+  <li><a href="/threads/1">Our first Rust release</a></li>
+  <li><a href="/threads/2">Moving the docs to a new site</a></li>
+</ul>`,
+  ),
+  "/threads/1": thread(1, "Our first Rust release", "We shipped 1.0 of our parser today."),
+  "/threads/2": thread(2, "Moving the docs to a new site", "The docs move to a new site next week."),
+};
+
+/// What a POST answers: the page after the send.
+function sent(path) {
+  if (path.endsWith("/comments")) return page("Posted", "<h1>Reply posted</h1>");
+  if (path.endsWith("/follow")) return "{}";
+  return page("Sent", "<h1>Application sent</h1>");
+}
+
 function route(host, path, actualPort) {
   const name = (host ?? "").split(":")[0].toLowerCase();
   const fill = (html) => html.replaceAll("PORT", String(actualPort));
@@ -85,6 +127,7 @@ function route(host, path, actualPort) {
     if (jobs[path]) return fill(jobs[path]);
   }
   if (name === "apply.localhost" && partner[path]) return fill(partner[path]);
+  if (name === "forum.localhost" && forum[path]) return forum[path];
   return null;
 }
 
@@ -99,7 +142,7 @@ function handle(req, res) {
   if (req.method === "POST") {
     req.resume();
     res.writeHead(200, { "content-type": "text/html" });
-    res.end(page("Sent", "<h1>Application sent</h1>"));
+    res.end(sent(url.pathname));
     return;
   }
   const html = route(req.headers.host, url.pathname, bound);

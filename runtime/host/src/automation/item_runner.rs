@@ -487,8 +487,27 @@ impl ItemRunner {
             item.show_me,
             show_me_run,
         );
+        // Never: refused, whatever the page; the agent ends the item skipped.
+        if decision == DeclarationDecision::Refused {
+            return Ok(SessionResult::Refused(ReasonCode::ActionKindNever));
+        }
+        // The person is asked, and the Host sends, only for a page that
+        // matches the declaration (spec 8.6); a mismatch sends the item to a
+        // new session (8.6.5).
+        let check = PreSubmitCheck::evaluate(&declaration, &item.scope);
+        if !check.passed() {
+            self.engine
+                .transition_attempt(
+                    item_id,
+                    item.epoch,
+                    ItemStatus::Working,
+                    ItemStatus::Queued,
+                    Some(ReasonCode::UndeclaredOutwardAction.as_str()),
+                )
+                .await?;
+            return Ok(SessionResult::Restart);
+        }
         match decision {
-            // Never: refused; the agent ends the item skipped.
             DeclarationDecision::Refused => Ok(SessionResult::Refused(ReasonCode::ActionKindNever)),
             // Ask: park the item and its tab.
             DeclarationDecision::Pending => {
@@ -502,7 +521,11 @@ impl ItemRunner {
                     )
                     .await?;
                 // Record a single-use approval bound to the declaration hash
-                // (spec 8.5.1, 8.5.3). The run id comes from the item.
+                // (spec 8.5.1, 8.5.3), with what the page pre-filled added so
+                // the person sees all that goes out. The run id comes from
+                // the item.
+                let mut declaration = declaration;
+                declaration.fields.extend(check.prefilled);
                 if let Some(run_id) = self.item_run_id(item_id).await? {
                     crate::automation::approvals::create(
                         self.engine.db(),
@@ -516,24 +539,8 @@ impl ItemRunner {
                 }
                 Ok(SessionResult::WaitingApproval)
             }
-            // Auto: the pre-submit check, then the dispatch transaction.
-            DeclarationDecision::Allowed => {
-                let check = PreSubmitCheck::evaluate(&declaration, &item.scope);
-                if !check.passed() {
-                    // A mismatch sends the item to a new session (8.6.5).
-                    self.engine
-                        .transition_attempt(
-                            item_id,
-                            item.epoch,
-                            ItemStatus::Working,
-                            ItemStatus::Queued,
-                            Some(ReasonCode::UndeclaredOutwardAction.as_str()),
-                        )
-                        .await?;
-                    return Ok(SessionResult::Restart);
-                }
-                Ok(SessionResult::AllowDispatch(declaration))
-            }
+            // Auto: the caller clicks and runs the dispatch transaction.
+            DeclarationDecision::Allowed => Ok(SessionResult::AllowDispatch(declaration)),
         }
     }
 

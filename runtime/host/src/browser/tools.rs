@@ -189,6 +189,35 @@ impl BrowserToolAccess for HostBrowserTools {
             None => BrowserTabOutcome::refused(op.tab_id(), ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
     }
+
+    async fn attach_file(
+        &self,
+        caller: &str,
+        tab_id: &str,
+        generation: &str,
+        element_ref: &str,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let (browser, session) = self
+            .context(caller)
+            .await
+            .ok_or_else(|| NO_SESSION_NOTE.to_string())?;
+        if own_tab(&browser, session.caller(), tab_id).await.is_none() {
+            return Err(no_such_tab(tab_id));
+        }
+        attach_file(&browser, &self.worlds, tab_id, generation, element_ref, path).await?;
+        record(
+            &browser,
+            session.caller(),
+            tab_id,
+            format!(
+                "attached {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        )
+        .await;
+        Ok(())
+    }
 }
 
 fn owner(session: &str) -> TabOwner {
@@ -976,6 +1005,132 @@ async fn read_page(
     Err("the page kept changing while it was read; try again".into())
 }
 
+/// Put `path` in the file control `element_ref` names: the ref itself, or
+/// the file input a label or wrapper the snapshot showed stands for. Sets
+/// the files directly, so no file chooser opens.
+async fn attach_file(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    generation: &str,
+    element_ref: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let stale = || {
+        format!("{element_ref} does not name an element on the page as it is now; take a new snapshot")
+    };
+    let context = worlds.current(tab_id).await.ok_or_else(stale)?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    let expression = format!(
+        "(() => {{ const A = globalThis.{global}; \
+         const e = A && A.elementForRef({generation}, {target}); \
+         if (!e) return null; \
+         const isFile = (x) => x instanceof HTMLInputElement && x.type === 'file'; \
+         if (isFile(e)) return e; \
+         const inner = e.control || (e.querySelector && e.querySelector('input[type=file]')); \
+         return isFile(inner) ? inner : 'not-file'; }})()",
+        global = agent::AGENT_GLOBAL,
+        generation = Value::from(generation),
+        target = Value::from(element_ref),
+    );
+    let reply = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "contextId": context }),
+            Some(&session),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = &reply["result"];
+    if result["value"] == "not-file" {
+        return Err(format!(
+            "{element_ref} is not a file control; give the ref of the file input or its label"
+        ));
+    }
+    let Some(object) = result["objectId"].as_str() else {
+        return Err(stale());
+    };
+    cdp.call(
+        "DOM.setFileInputFiles",
+        json!({ "files": [path.to_string_lossy()], "objectId": object }),
+        Some(&session),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The Host's own click, never an agent's: a whole snapshot in `worlds`,
+/// `find(generation)` names the ref, and a real pointer clicks it. Waits for
+/// the page to settle. `false` when `find` named nothing.
+pub(crate) async fn host_click(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    find: impl Fn(&str) -> String,
+) -> Result<bool, String> {
+    let request = SnapshotRequest { max_chars: Some(0) };
+    let page = read_page(browser, worlds, tab_id, &request).await?;
+    let changed = || "the page changed while it was read; try again".to_string();
+    let context = worlds.current(tab_id).await.ok_or_else(changed)?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    let world = |e: WorldError| match e {
+        WorldError::Gone => changed(),
+        WorldError::Failed(m) => m,
+    };
+    let target = eval_in(&cdp, &session, context, &find(&page.generation))
+        .await
+        .map_err(world)?;
+    if target.is_empty() {
+        return Ok(false);
+    }
+    let request = ActionRequest {
+        generation: page.generation.clone(),
+        target: Some(target.clone()),
+        action: ActionKind::Click {
+            button: None,
+            count: None,
+        },
+        expect_url: None,
+    };
+    match pointer(&cdp, &session, context, &request, &target, |_, _| {})
+        .await
+        .map_err(world)?
+    {
+        Ok(_) => {}
+        Err((_, note)) => return Err(note),
+    }
+    tokio::time::sleep(ACTION_GRACE).await;
+    settle(browser, tab_id, &cdp, &session).await;
+    Ok(true)
+}
+
+/// The Host's own read of a tab, never an agent's: a whole snapshot in
+/// `worlds`, then `call(generation)` evaluated in that same world. Its
+/// value is the expression's string.
+pub(crate) async fn read_after_snapshot(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    call: impl Fn(&str) -> String,
+) -> Result<String, String> {
+    let request = SnapshotRequest { max_chars: Some(0) };
+    let page = read_page(browser, worlds, tab_id, &request).await?;
+    let context = worlds
+        .current(tab_id)
+        .await
+        .ok_or("the page changed while it was read; try again")?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    match eval_in(&cdp, &session, context, &call(&page.generation)).await {
+        Ok(raw) => Ok(raw),
+        Err(WorldError::Gone) => {
+            worlds.forget(tab_id, context).await;
+            Err("the page changed while it was read; try again".into())
+        }
+        Err(WorldError::Failed(m)) => Err(m),
+    }
+}
+
 pub(crate) async fn act(
     browser: &BrowserService,
     worlds: &Worlds,
@@ -1641,6 +1796,7 @@ mod tests {
         let scope = EngineScope {
             lane: lane.clone(),
             tabs: vec![mine.clone()],
+            files: Vec::new(),
         };
         let engine = Caller::Engine(&scope);
 

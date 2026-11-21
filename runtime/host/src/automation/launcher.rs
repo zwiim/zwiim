@@ -323,6 +323,7 @@ pub(crate) mod tests {
                 account: "main".into(),
             },
             tabs: vec!["t1".into()],
+            files: Vec::new(),
         };
         let end = run_session(
             &launcher,

@@ -18,6 +18,8 @@ use sea_orm::{
     Set,
 };
 
+use crate::automation::checks::PageFacts;
+use crate::automation::declaration::Target;
 use crate::automation::entities::{
     never_twice_ledger, playbook_item, playbook_run, playbook_run_source,
 };
@@ -27,6 +29,7 @@ use crate::automation::lockdown::SessionKind;
 use crate::automation::playbook_format::{PlaybookDoc, Source};
 use crate::automation::playbook_store::{PlaybookStore, SiteKnowledgeKind};
 use crate::automation::reasons::ReasonCode;
+use crate::automation::scope::{self, Scope, ScopeMiss};
 use crate::automation::sessions::{Candidate, EngineScope, EngineSessions, SessionReport};
 use crate::automation::states::ItemStatus;
 use crate::browser::store::TabOwner;
@@ -53,11 +56,26 @@ pub trait LaneTabs: Send + Sync {
     /// Where the tab is now.
     async fn url(&self, tab_id: &str) -> Option<String>;
     async fn close(&self, tab_id: &str);
+    /// The scope of the one element `target` names in the tab (spec 8.6.3),
+    /// read by the Host itself.
+    async fn read_scope(
+        &self,
+        tab_id: &str,
+        target: &Target,
+    ) -> Result<Result<Scope, ScopeMiss>, String>;
+    /// The Host's own click on the one element `target` names, once the page
+    /// settles after it; `false` when the page has none or several.
+    async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String>;
+    /// What the page shows now, for the checks (spec 9.1).
+    async fn facts(&self, tab_id: &str) -> Result<PageFacts, String>;
 }
 
 /// The Host's lane tabs, in its browser.
 pub struct BrowserLaneTabs {
     pub state: std::sync::Arc<crate::app_state::AppState>,
+    /// The Host's own isolated worlds, apart from the agents' tools, so its
+    /// reads neither see nor replace an agent's refs.
+    pub(crate) worlds: crate::browser::tools::Worlds,
 }
 
 #[async_trait]
@@ -84,6 +102,39 @@ impl LaneTabs for BrowserLaneTabs {
         if let Ok(browser) = self.state.browser().await {
             let _ = browser.close(tab_id).await;
         }
+    }
+
+    async fn read_scope(
+        &self,
+        tab_id: &str,
+        target: &Target,
+    ) -> Result<Result<Scope, ScopeMiss>, String> {
+        let browser = self.state.browser().await.map_err(|e| e.to_string())?;
+        let raw = crate::browser::tools::read_after_snapshot(&browser, &self.worlds, tab_id, |g| {
+            scope::scope_call(g, target)
+        })
+        .await?;
+        scope::parse(&raw)
+    }
+
+    async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String> {
+        let browser = self.state.browser().await.map_err(|e| e.to_string())?;
+        crate::browser::tools::host_click(&browser, &self.worlds, tab_id, |g| {
+            scope::find_call(g, target)
+        })
+        .await
+    }
+
+    async fn facts(&self, tab_id: &str) -> Result<PageFacts, String> {
+        let browser = self.state.browser().await.map_err(|e| e.to_string())?;
+        let raw = crate::browser::tools::read_after_snapshot(
+            &browser,
+            &self.worlds,
+            tab_id,
+            PageFacts::read_call,
+        )
+        .await?;
+        PageFacts::parse(&raw)
     }
 }
 
@@ -311,6 +362,7 @@ impl Discovery<'_> {
                 scope: Some(EngineScope {
                     lane,
                     tabs: vec![tab.clone()],
+                    files: Vec::new(),
                 }),
                 limits: DISCOVERY_LIMITS,
             },
@@ -568,6 +620,12 @@ pub(crate) mod tests {
         pub opened: Mutex<Vec<(TabOwner, String)>>,
         pub closed: Mutex<Vec<String>>,
         pub redirects: Mutex<std::collections::HashMap<String, String>>,
+        /// What `read_scope` answers; not found when unset.
+        pub scope: Mutex<Option<Scope>>,
+        /// Every Host click, as (tab, target).
+        pub clicks: Mutex<Vec<(String, Target)>>,
+        /// What `facts` answers.
+        pub facts: Mutex<PageFacts>,
     }
 
     #[async_trait]
@@ -585,6 +643,28 @@ pub(crate) mod tests {
         }
         async fn close(&self, tab_id: &str) {
             self.closed.lock().unwrap().push(tab_id.to_string());
+        }
+        async fn read_scope(
+            &self,
+            _tab_id: &str,
+            _target: &Target,
+        ) -> Result<Result<Scope, ScopeMiss>, String> {
+            Ok(self
+                .scope
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(ScopeMiss::NotFound))
+        }
+        async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String> {
+            self.clicks
+                .lock()
+                .unwrap()
+                .push((tab_id.to_string(), target.clone()));
+            Ok(true)
+        }
+        async fn facts(&self, _tab_id: &str) -> Result<PageFacts, String> {
+            Ok(self.facts.lock().unwrap().clone())
         }
     }
 
@@ -692,7 +772,8 @@ pub(crate) mod tests {
             prompted[0].2,
             Some(EngineScope {
                 lane,
-                tabs: vec!["tab-1".into()]
+                tabs: vec!["tab-1".into()],
+                files: Vec::new(),
             })
         );
     }
