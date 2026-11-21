@@ -5,7 +5,7 @@ import { useAutomations, type PlaybookRow } from "./data";
 import { FocusView } from "./FocusView";
 import { PlaybookSection, type SectionAction } from "./PlaybookSection";
 import { StartDialog } from "./StartDialog";
-import { defaultOpen, runCounts } from "./status";
+import { defaultOpen, pausedText, runCounts } from "./status";
 
 /** The person's open/closed choice per playbook; it wins over the default for the session. */
 const toggles = new Map<string, boolean>();
@@ -22,11 +22,12 @@ function isOpen(row: PlaybookRow): boolean {
 /** The Automations canvas: each playbook a section with its latest run's items. */
 export function AutomationsView() {
   const controller = useController();
-  const { state, error, rows, reload, turnOn } = useAutomations();
+  const { state, error, rows, pausedSites, reload, turnOn } = useAutomations();
   const [, rerender] = useState(0);
   const [refusals, setRefusals] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [asking, setAsking] = useState<PlaybookRow | null>(null);
+  const [siteError, setSiteError] = useState<string | null>(null);
   /** The item shown large, if any. */
   const [focus, setFocus] = useState<{ playbook_id: string; item_id: string } | null>(null);
   const closeFocus = useCallback(() => setFocus(null), []);
@@ -57,6 +58,17 @@ export function AutomationsView() {
     if (action === "resume") return void act(row, () => controller.resumeRun(row.run!.run_id));
     if ((row.playbook.sites ?? []).some((s) => !s.risk_accepted)) return setAsking(row);
     void act(row, () => controller.startRun(id));
+  }
+
+  async function resumeSite(site: string) {
+    setSiteError(null);
+    try {
+      await controller.resumeSite(site);
+    } catch (e) {
+      setSiteError(errorMessage(e));
+    } finally {
+      reload();
+    }
   }
 
   async function startAccepting(row: PlaybookRow) {
@@ -139,6 +151,25 @@ export function AutomationsView() {
           </Button>
         )}
       </header>
+      {pausedSites.length > 0 && (
+        <div className="flex flex-col gap-2 pb-2" data-testid="paused-sites">
+          {pausedSites.map((s) => (
+            <div key={`${s.site} ${s.account}`} className="bg-card flex items-center gap-3 rounded-[10px] border px-3 py-2">
+              <p className="text-ui flex-1">
+                <span className="font-medium">{s.site} is paused.</span> {pausedText(s.paused_cause)}
+              </p>
+              <Button variant="secondary" size="sm" onClick={() => void resumeSite(s.site)}>
+                Resume
+              </Button>
+            </div>
+          ))}
+          {siteError && (
+            <p className="text-destructive text-xs" role="alert">
+              {siteError}
+            </p>
+          )}
+        </div>
+      )}
       {rows.length === 0 ? (
         <p className="text-muted-foreground m-auto text-sm">No playbooks yet. Ask an agent in a chat to write one.</p>
       ) : (

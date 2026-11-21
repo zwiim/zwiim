@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isClientError, type PlaybookSummary, type RunItemView, type RunStatus } from "@zwiim/sdk";
+import { isClientError, type PlaybookSummary, type RunItemView, type RunStatus, type SiteSummary } from "@zwiim/sdk";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 
 /** A playbook, its latest run and that run's items. */
@@ -15,6 +15,8 @@ export interface Automations {
   state: "loading" | "off" | "ready" | "error";
   error: string | null;
   rows: PlaybookRow[];
+  /** The playbooks' sites that are paused, each waiting on the person. */
+  pausedSites: SiteSummary[];
   reload(): void;
   turnOn(): Promise<void>;
 }
@@ -73,6 +75,20 @@ export function useAutomations(): Automations {
       live = false;
     };
   }, [controller, generation]);
+
+  // Sites pause from inside a run (a sign-in page) with no feed event of their own:
+  // read them again whenever the items move.
+  const [sites, setSites] = useState<SiteSummary[]>([]);
+  useEffect(() => {
+    let live = true;
+    controller.listSites().then(
+      (list) => live && setSites(list),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [controller, generation, runItems]);
 
   const turnOn = useCallback(async () => {
     await controller.client.request("settings.update", { values: { "playbooks.enabled": true } });
@@ -156,5 +172,10 @@ export function useAutomations(): Automations {
     [listed, latest, runItems],
   );
 
-  return { state, error, rows, reload, turnOn };
+  const pausedSites = useMemo(() => {
+    const ours = new Set((listed?.playbooks ?? []).flatMap((p) => (p.sites ?? []).map((s) => s.site)));
+    return sites.filter((s) => s.paused_cause && ours.has(s.site));
+  }, [listed, sites]);
+
+  return { state, error, rows, pausedSites, reload, turnOn };
 }

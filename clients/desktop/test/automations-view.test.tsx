@@ -158,6 +158,29 @@ describe("Automations canvas", () => {
     controller.dispose();
   });
 
+  it("a site paused for sign-in says so and resumes", async () => {
+    const t = transport();
+    let paused = true;
+    t.handlers["site.list"] = () => [
+      { site: "jobs.example", account: "main", paused_cause: paused ? "login" : null, risk_accepted: true },
+      { site: "elsewhere.example", account: "main", paused_cause: "captcha", risk_accepted: true },
+    ];
+    t.handlers["site.resume"] = () => {
+      paused = false;
+      return { resumed: true };
+    };
+    const { controller } = await mount(t);
+    const banner = screen.getByTestId("paused-sites");
+    expect(banner.textContent).toContain("jobs.example is paused");
+    expect(banner.textContent).toContain("Sign in to it in the Browser panel");
+    expect(banner.textContent).not.toContain("elsewhere.example");
+    fireEvent.click(within(banner).getByRole("button", { name: "Resume" }));
+    await tick();
+    expect(t.calls.filter((x) => x.op === "site.resume").map((x) => x.params)).toEqual([{ site: "jobs.example" }]);
+    expect(screen.queryByTestId("paused-sites")).toBeNull();
+    controller.dispose();
+  });
+
   it("Labs off offers to turn it on", async () => {
     const t = transport();
     t.handlers["playbook.list"] = () => {

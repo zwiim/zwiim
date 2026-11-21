@@ -1,4 +1,4 @@
-import type { RunItemView, RunStatus } from "@zwiim/sdk";
+import type { RunItemView, RunStatus, SitePauseCause } from "@zwiim/sdk";
 
 /** The status dot an item or a playbook shows (design §4). */
 export type Dot = "idle" | "work" | "need" | "done" | "off" | "err";
@@ -105,5 +105,19 @@ export function needsYouText(code: string | null | undefined): string {
       return "The site blocked it.";
     default:
       return "The page needs you.";
+  }
+}
+
+/** What a paused site waits on the person for. */
+export function pausedText(cause: SitePauseCause | null): string {
+  switch (cause) {
+    case "login":
+      return "The site signed it out. Sign in to it in the Browser panel (a tab of your own), then Resume.";
+    case "captcha":
+      return "The site wants to check that a person is there. Clear it on the site, then Resume.";
+    case "blocked":
+      return "The site blocked it. Wait a while, then Resume.";
+    default:
+      return "Resume when it is ready.";
   }
 }
