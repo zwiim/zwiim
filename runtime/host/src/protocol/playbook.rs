@@ -63,6 +63,16 @@ pub struct PlaybookSummary {
     pub version: i32,
     pub show_me: bool,
     pub freeze_learning: bool,
+    /// The sites its text declares, and whether the person accepted each
+    /// one's risk; empty while the text does not parse.
+    #[serde(default)]
+    pub sites: Vec<PlaybookSite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybookSite {
+    pub site: String,
+    pub risk_accepted: bool,
 }
 
 impl From<playbook::Model> for PlaybookSummary {
@@ -73,6 +83,7 @@ impl From<playbook::Model> for PlaybookSummary {
             version: m.version,
             show_me: m.show_me,
             freeze_learning: m.freeze_learning,
+            sites: Vec::new(),
         }
     }
 }
@@ -160,6 +171,29 @@ pub struct ItemPage {
 
 // ── playbook.list ─────────────────────────────────────────────────────────
 
+/// A playbook as clients see it, with its sites read from its text.
+async fn summary(state: &AppState, row: playbook::Model) -> Result<PlaybookSummary, ZwiimError> {
+    let Ok(doc) = crate::automation::validate_playbook(&row.source) else {
+        return Ok(row.into());
+    };
+    let store = PlaybookStore::new(state.db.conn.clone());
+    let mut sites = Vec::with_capacity(doc.sites.len());
+    for site in doc.sites {
+        let risk_accepted = store
+            .risk_accepted(&site, &default_account())
+            .await
+            .map_err(engine_err)?;
+        sites.push(PlaybookSite {
+            site,
+            risk_accepted,
+        });
+    }
+    Ok(PlaybookSummary {
+        sites,
+        ..row.into()
+    })
+}
+
 pub async fn playbook_list(
     Extension(state): Extension<Arc<AppState>>,
 ) -> ZResult<Vec<PlaybookSummary>> {
@@ -171,7 +205,11 @@ pub async fn playbook_list(
         .all(&state.db.conn)
         .await
         .map_err(engine_err)?;
-    Ok(Json(rows.into_iter().map(Into::into).collect()))
+    let mut books = Vec::with_capacity(rows.len());
+    for row in rows {
+        books.push(summary(&state, row).await?);
+    }
+    Ok(Json(books))
 }
 
 // ── playbook.get ──────────────────────────────────────────────────────────
@@ -196,7 +234,7 @@ pub async fn playbook_get(
     let row = playbook_row(&state, &p.playbook_id).await?;
     let source = row.source.clone();
     Ok(Json(PlaybookGetResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
         source,
     }))
 }
@@ -257,7 +295,7 @@ pub async fn playbook_create(
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", created.id)))?;
     Ok(Json(PlaybookSaveResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
     }))
 }
 
@@ -280,7 +318,7 @@ pub async fn playbook_save(
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", saved.id)))?;
     Ok(Json(PlaybookSaveResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
     }))
 }
 

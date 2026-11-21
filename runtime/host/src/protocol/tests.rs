@@ -8235,6 +8235,50 @@ async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
 }
 
 #[tokio::test]
+async fn a_playbook_lists_its_sites_and_their_risk() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK.replace(
+        "sites:\n  - fixture.zwiim.test\n",
+        "sites:\n  - fixture.zwiim.test\n  - apply.zwiim.test\n",
+    );
+    let (status, created) = h.call("playbook.create", json!({ "source": source })).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(
+        created["playbook"]["sites"],
+        json!([
+            { "site": "fixture.zwiim.test", "risk_accepted": false },
+            { "site": "apply.zwiim.test", "risk_accepted": false },
+        ])
+    );
+    h.call("site.risk_accept", json!({ "site": "apply.zwiim.test" }))
+        .await;
+
+    let (status, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        list[1]["sites"],
+        json!([
+            { "site": "fixture.zwiim.test", "risk_accepted": false },
+            { "site": "apply.zwiim.test", "risk_accepted": true },
+        ])
+    );
+    let id = created["playbook"]["playbook_id"].clone();
+    let (_, got) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(got["playbook"]["sites"][1]["risk_accepted"], true);
+}
+
+#[tokio::test]
+async fn a_playbook_that_no_longer_parses_lists_no_sites() {
+    let h = host(false).await;
+    // The seeded text is not a valid playbook.
+    seed_playbook(&h).await;
+    let (status, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["sites"], json!([]));
+}
+
+#[tokio::test]
 async fn saving_a_playbook_takes_its_new_name() {
     let h = host(false).await;
     let pb = seed_playbook(&h).await;
