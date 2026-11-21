@@ -97,6 +97,29 @@ pub async fn start_attempt(conn: &DatabaseConnection, item_id: i32) -> Result<i3
     Ok(epoch)
 }
 
+/// The first statement of an engine transaction that reads before it writes.
+///
+/// SeaORM opens SQLite transactions with a deferred `BEGIN`, so one that
+/// starts with a `SELECT` holds a read snapshot and becomes a writer only at
+/// its first write. If another pooled connection writes meanwhile, SQLite
+/// cannot promote it and fails the whole transaction with `SQLITE_BUSY`
+/// ("database is locked"), which `busy_timeout` does not retry. A live run
+/// does that every time two items send close together. Leading with a write
+/// takes the lock up front, so the transaction waits its turn instead. The
+/// self-assignment changes nothing (`canvas_service::claim_writer` and
+/// `conversation_service::bind_external_id` follow the same rule).
+pub(crate) async fn claim_item<C: sea_orm::ConnectionTrait>(conn: &C, item_id: i32) -> Result<()> {
+    playbook_item::Entity::update_many()
+        .col_expr(
+            playbook_item::Column::UpdatedAt,
+            Expr::col(playbook_item::Column::UpdatedAt).into(),
+        )
+        .filter(playbook_item::Column::Id.eq(item_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 async fn transition<C: sea_orm::ConnectionTrait>(
     conn: &C,
     item_id: i32,
@@ -166,6 +189,7 @@ pub async fn redo_not_sent(
     keys: &[crate::automation::engine::LedgerKey],
 ) -> Result<()> {
     let tx = conn.begin().await?;
+    claim_item(&tx, item_id).await?;
     let slot = playbook_item::Entity::find_by_id(item_id)
         .one(&tx)
         .await?
@@ -316,6 +340,7 @@ async fn dispatch_tx(
 ) -> Result<crate::automation::engine::DispatchOutcome> {
     use crate::automation::engine::{DispatchOutcome, LedgerKey, LedgerKeyOutcome};
     let tx = conn.begin().await?;
+    claim_item(&tx, item_id).await?;
 
     let item = playbook_item::Entity::find_by_id(item_id)
         .one(&tx)

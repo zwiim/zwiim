@@ -116,19 +116,7 @@ impl RunLoop {
             .await?;
         let mut moved = 0;
         for item in working {
-            let item_ref = ItemRef {
-                playbook_id: item.playbook_id,
-                site: item.site.clone(),
-                account: item.account.clone(),
-                key: item.item_key.clone(),
-                outward_site: item.outward_site.clone(),
-                outward_started: item.outward_started_at.is_some(),
-                show_me: false,
-                rules: Default::default(),
-                show_me_run_kinds: Default::default(),
-                scope: Vec::new(),
-                epoch: item.epoch,
-            };
+            let item_ref = bare_ref(&item, item.epoch);
             match self.runner.host_restarted(item.id, &item_ref).await {
                 Ok(()) => moved += 1,
                 Err(e) => tracing::warn!("[automation] item {} not recovered: {e}", item.id),
@@ -299,6 +287,7 @@ impl RunLoop {
             started.push(tokio::spawn(async move {
                 if let Err(e) = this.work_item(run, item.clone(), epoch, slot).await {
                     tracing::warn!("[automation] item {} session failed: {e}", item.id);
+                    this.abandon(&item, epoch).await;
                 }
             }));
         }
@@ -474,6 +463,26 @@ impl RunLoop {
         }
     }
 
+    /// Item work that ended in a Host error leaves `working` as a failed
+    /// session does: to the person if it may have gone out, else failed
+    /// (and retried up to the limit). Left `working`, it would hold its lane,
+    /// and the run, forever.
+    async fn abandon(&self, item: &playbook_item::Model, epoch: i32) {
+        let outcome = ItemOutcome::Failed(ReasonCode::AgentFailed);
+        match self
+            .runner
+            .finish_session(item.id, &bare_ref(item, epoch), outcome)
+            .await
+        {
+            // Ended meanwhile, or no longer working: nothing to undo.
+            Ok(_)
+            | Err(StepError::Transition(
+                TransitionError::StaleAttempt { .. } | TransitionError::ItemStale { .. },
+            )) => {}
+            Err(e) => tracing::warn!("[automation] item {} left working: {e}", item.id),
+        }
+    }
+
     /// The item facts a session or the Host's click works from.
     async fn item_ref(
         &self,
@@ -562,6 +571,7 @@ impl RunLoop {
                 this.tabs.close(&tab).await;
                 if let Err(e) = sent {
                     tracing::warn!("[automation] item {} approved send failed: {e}", item.id);
+                    this.abandon(&item, item.epoch).await;
                 }
             }));
         }
@@ -908,6 +918,24 @@ pub fn spawn(state: Arc<crate::app_state::AppState>) {
     });
 }
 
+/// The item facts recorded on its row, without the playbook's rules: enough
+/// to end an attempt the Host cannot finish (restart, a Host error).
+fn bare_ref(item: &playbook_item::Model, epoch: i32) -> ItemRef {
+    ItemRef {
+        playbook_id: item.playbook_id,
+        site: item.site.clone(),
+        account: item.account.clone(),
+        key: item.item_key.clone(),
+        outward_site: item.outward_site.clone(),
+        outward_started: item.outward_started_at.is_some(),
+        show_me: false,
+        rules: Default::default(),
+        show_me_run_kinds: Default::default(),
+        scope: Vec::new(),
+        epoch,
+    }
+}
+
 /// The site an item works on now: its hand-off site, else where it was found.
 fn lane_site(item: &playbook_item::Model) -> &str {
     item.outward_site.as_deref().unwrap_or(&item.site)
@@ -1248,6 +1276,41 @@ mod tests {
             assert!(!prompt.contains("site_password"));
         }
         assert_eq!(f.tabs.closed.lock().unwrap().len(), 3);
+    }
+
+    /// An item whose work ends in a Host error (in a live run: the database
+    /// refusing a write) does not stay `working`: that held its lane, so the
+    /// site's other items and the run never moved again.
+    #[tokio::test]
+    async fn an_item_whose_work_errs_leaves_working() {
+        let f = fixture(Vec::new()).await;
+        // Discovery queues the three listed items.
+        for task in f.run_loop.tick().await.unwrap() {
+            task.await.unwrap();
+        }
+        // The pinned playbook no longer reads: each item's work errs at
+        // its first step.
+        crate::automation::entities::playbook_version::Entity::update_many()
+            .col_expr(
+                crate::automation::entities::playbook_version::Column::Source,
+                sea_orm::sea_query::Expr::value("not: [a playbook"),
+            )
+            .exec(&f.db)
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        let statuses: Vec<String> = items(&f.db, f.run_id)
+            .await
+            .into_iter()
+            .map(|(status, _)| status)
+            .collect();
+        assert_eq!(statuses.len(), 3);
+        assert!(
+            statuses.iter().all(|s| s != "working"),
+            "no item stays working: {statuses:?}"
+        );
+        assert_ne!(run(&f.db, f.run_id).await.status, "running");
     }
 
     /// Session limits fail the item before anything went out (spec 7.1.6).
