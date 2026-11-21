@@ -2551,6 +2551,11 @@ export interface Operations {
   "playbook.list": [Record<string, never>, PlaybookSummary[]];
   /** One playbook's summary and current text. `not_found` when gone. */
   "playbook.get": [{ playbook_id: string }, PlaybookDetail];
+  /**
+   * A new playbook from valid text, named by its `name:`, at version 1
+   * (revision 41). `playbook_invalid` (line-anchored details) when invalid.
+   */
+  "playbook.create": [{ source: string }, { playbook: PlaybookSummary }];
   /** Replace the text: one new version. A running run keeps the one it pinned. */
   "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
   /**
@@ -2860,6 +2865,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.clone_cancel",
   "github.sign_in",
   "github.cancel_sign_in",
+  "playbook.create",
   "playbook.save",
   "run.start",
   "run.try",

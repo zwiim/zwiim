@@ -205,22 +205,56 @@ pub struct PlaybookSaveResult {
 
 /// Replace the playbook's text: one new version (spec 6.5.8). A later run
 /// reads the new version; a running run keeps the one it pinned.
-pub async fn playbook_save(
-    Extension(state): Extension<Arc<AppState>>,
-    axum::extract::Json(p): axum::extract::Json<PlaybookSaveParams>,
-) -> ZResult<PlaybookSaveResult> {
-    require_enabled(&state.db.conn).await?;
-    // Validation runs on every save, including agent-proposed changes
-    // (spec 16.3). Errors are line-anchored under `playbook_invalid`.
-    if let Err(errors) = crate::automation::validate_playbook(&p.source) {
+/// Validation runs on every create and save, including agent-proposed
+/// changes (spec 16.3). Errors are line-anchored under `playbook_invalid`.
+fn validated(source: &str) -> Result<crate::automation::PlaybookDoc, ZwiimError> {
+    crate::automation::validate_playbook(source).map_err(|errors| {
         let mut err = ZwiimError::new(
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             crate::automation::ErrorCode::PlaybookInvalid.as_str(),
             "The playbook has errors",
         );
         err.details = Some(serde_json::json!(errors));
-        return Err(err);
-    }
+        err
+    })
+}
+
+// ── playbook.create ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookCreateParams {
+    pub source: String,
+}
+
+/// A new playbook from valid text, named by its `name:`, at version 1.
+pub async fn playbook_create(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookCreateParams>,
+) -> ZResult<PlaybookSaveResult> {
+    require_enabled(&state.db.conn).await?;
+    let doc = validated(&p.source)?;
+    let created = PlaybookStore::new(state.db.conn.clone())
+        .create(&doc.name, &p.source)
+        .await
+        .map_err(engine_err)?;
+    use sea_orm::EntityTrait;
+    let row = playbook::Entity::find_by_id(created.id)
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", created.id)))?;
+    Ok(Json(PlaybookSaveResult {
+        playbook: row.into(),
+    }))
+}
+
+pub async fn playbook_save(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookSaveParams>,
+) -> ZResult<PlaybookSaveResult> {
+    require_enabled(&state.db.conn).await?;
+    validated(&p.source)?;
     let book = playbook_row(&state, &p.playbook_id).await?;
     let store = PlaybookStore::new(state.db.conn.clone());
     let saved = store

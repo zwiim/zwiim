@@ -103,8 +103,13 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
+  it("speaks revision 41 and creates playbooks", () => {
+    expect(CLIENT_REVISION).toBe(41);
+    expect(CLIENT_CAPABILITIES).toContain("playbooks");
+  });
+
   it("speaks revision 40 and serves playbooks", () => {
-    expect(CLIENT_REVISION).toBe(40);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(40);
     expect(CLIENT_CAPABILITIES).toContain("playbooks");
   });
 

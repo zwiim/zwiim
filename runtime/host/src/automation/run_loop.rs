@@ -206,7 +206,7 @@ impl RunLoop {
                     .await;
             }
         };
-        Discovery {
+        let summary = Discovery {
             db: &self.db,
             launcher: self.launcher.as_ref(),
             sessions: &self.sessions,
@@ -215,6 +215,11 @@ impl RunLoop {
         }
         .discover(run.id, &doc)
         .await?;
+        if let Some(problem) = summary.agent_unavailable {
+            return self
+                .fail(&run, RunStatus::Discovering, AGENT_UNAVAILABLE, &problem)
+                .await;
+        }
         let queued = self.count(run.id, &[ItemStatus::Queued]).await?;
         if queued > 0 {
             match self
@@ -331,8 +336,9 @@ impl RunLoop {
                             &doc,
                             &item,
                             &tab,
-                            &knowledge::answers(&self.db, run.playbook_id, &item.site).await?,
-                            &knowledge::approved_tips(&self.db, run.playbook_id, &item.site)
+                            &knowledge::answers(&self.db, run.playbook_id, lane_site(&item))
+                                .await?,
+                            &knowledge::approved_tips(&self.db, run.playbook_id, lane_site(&item))
                                 .await?,
                         ),
                         scope: Some(EngineScope {
@@ -353,7 +359,7 @@ impl RunLoop {
                     knowledge::propose_tips(
                         &self.db,
                         run.playbook_id,
-                        &item.site,
+                        lane_site(&item),
                         item.id,
                         &report.tips,
                     )
@@ -380,7 +386,14 @@ impl RunLoop {
             .await;
         // Asked once, kept for the person's answer (spec 7.3).
         if let (Some(question), Ok(SessionResult::WaitingPerson(_))) = (&question, &result) {
-            knowledge::ask(&self.db, run.playbook_id, &item.site, item.id, question).await?;
+            knowledge::ask(
+                &self.db,
+                run.playbook_id,
+                lane_site(&item),
+                item.id,
+                question,
+            )
+            .await?;
         }
         // A parked approval keeps its tab (spec 8.7); every other end closes it.
         if let Some(tab) = tab {
@@ -711,8 +724,9 @@ fn item_prompt(
          and work in tab {tab} only.\n\n\
          First check the rules against the page. If a rule says skip, call \
          playbook_item_result with status \"skipped\" and the rule.\n\
-         Never guess a fact about the person that is not above: when the page \
-         asks one, call playbook_ask_person with the question. Do not submit, \
+         Never guess a fact about the person that is not above: when a \
+         required field asks one, call playbook_ask_person with the question; \
+         leave an optional field empty when nothing above covers it. Do not submit, \
          post or send anything: this build cannot declare an outward action \
          yet. When you cannot go on, call playbook_item_result with status \
          \"failed\" and say why. You may add tips: short notes that would \
@@ -1030,6 +1044,9 @@ mod tests {
         for (_, prompt, _) in item_prompts(&f.launcher) {
             assert!(prompt.contains("Notice period? 30 days"), "{prompt}");
             assert!(prompt.contains("playbook_ask_person"));
+            // Ask only for a required field; an optional one the facts do not
+            // cover stays empty (the person's choice after the smoke run).
+            assert!(prompt.contains("leave an optional field empty"), "{prompt}");
         }
     }
 
@@ -1100,6 +1117,47 @@ mod tests {
         let prompts = item_prompts(&f.launcher);
         assert_eq!(prompts.len(), 2);
         assert!(prompts[1].1.contains("https://apply.test/form/9"));
+    }
+
+    /// After a hand-off the item works on the other site, so that site's
+    /// answers reach its prompt and its question is kept for that site (the
+    /// live smoke run filed it under the found site).
+    #[tokio::test]
+    async fn a_handed_off_item_asks_and_reads_answers_on_its_new_site() {
+        let f = cross_site_fixture(vec![
+            result(json!({ "status": "hand_off", "url": "https://apply.test/form/9" })),
+            result(json!({ "status": "ask_person", "question": "Cover letter?" })),
+        ])
+        .await;
+        let pb = run(&f.db, f.run_id).await.playbook_id;
+        knowledge::ask(&f.db, pb, "apply.test", 0, "Notice period?")
+            .await
+            .unwrap();
+        let saved = knowledge::all(&f.db, pb, "apply.test", "answer")
+            .await
+            .unwrap();
+        knowledge::answer(&f.run_loop.engine, saved[0].id, "30 days")
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        let prompts = item_prompts(&f.launcher);
+        assert_eq!(prompts.len(), 2);
+        assert!(!prompts[0].1.contains("30 days"));
+        assert!(prompts[1].1.contains("Notice period?"));
+        assert!(prompts[1].1.contains("30 days"));
+        let asked: Vec<String> = knowledge::all(&f.db, pb, "apply.test", "answer")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|q| q.state == "open")
+            .map(|q| q.text)
+            .collect();
+        assert_eq!(asked, vec!["Cover letter?".to_string()]);
+        assert!(knowledge::all(&f.db, pb, "jobs.test", "answer")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     /// A handed-off item holds the lane it continues on and frees the one it
@@ -1241,5 +1299,50 @@ mod tests {
             .await
             .iter()
             .all(|(status, _)| status == "queued"));
+    }
+
+    /// A search whose discovery agent cannot start fails the run the same
+    /// way and leaves the source unfinished for a rerun, instead of ending
+    /// the run `complete` with nothing found (live smoke run, adapter still
+    /// being set up).
+    #[tokio::test]
+    async fn a_discovery_agent_that_cannot_start_fails_the_run() {
+        let db = fresh_in_memory_db().await.conn;
+        let store = PlaybookStore::new(db.clone());
+        let source = "format: 1\nname: Apply\ngoal: Backend roles\n\
+            main_kind: submit_application\nsites:\n  - jobs.test\n\
+            checks:\n  - kind: text_present\n    text: Applied\n\
+            sources:\n  - type: search\n    url: https://jobs.test/search?q=rust\n";
+        let pb = store.create("Apply", source).await.unwrap();
+        store
+            .set_site_value("jobs.test", SiteKnowledgeKind::RiskAccept, "main", "yes")
+            .await
+            .unwrap();
+        let run_id = AutomationEngine::new(db.clone())
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let sessions = Arc::new(EngineSessions::default());
+        let mut launcher = FakeLauncher::new(sessions.clone(), vec![]);
+        launcher.fail_spawn = true;
+        let run_loop = RunLoop::new(
+            db.clone(),
+            None,
+            Arc::new(launcher),
+            sessions,
+            Arc::new(FakeTabs::default()),
+        );
+        drive(&run_loop).await;
+        let run = run(&db, run_id).await;
+        assert_eq!(run.status, "failed");
+        let error: RunError = serde_json::from_str(run.error.as_deref().unwrap()).unwrap();
+        assert_eq!(error.code, AGENT_UNAVAILABLE);
+        let sources = crate::automation::entities::playbook_run_source::Entity::find()
+            .filter(crate::automation::entities::playbook_run_source::Column::RunId.eq(run_id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].status, "pending");
     }
 }

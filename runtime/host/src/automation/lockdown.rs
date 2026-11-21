@@ -184,12 +184,13 @@ pub const LOCKDOWN_REFUSAL: &str =
 /// `_meta.claudeCode.options` (spec 10.6, 10.7): no user, project or local
 /// settings (so no user hooks, permissions or memory files), no MCP server
 /// but the ones Zwiim passes, no built-in tools (shell, web, files), no
-/// bypass mode, and the kind's zwiim-mcp tools pre-allowed so they raise no
-/// permission request. claude-agent-acp 0.99.0 spreads these over its own
-/// defaults; checked against its source, not yet against a live run.
+/// bypass mode, and every zwiim-mcp tool of the kind (engine and browser)
+/// pre-allowed: the Host rejects each permission request an engine session
+/// raises, so a tool left to ask could never be called. claude-agent-acp
+/// 0.99.0 spreads these over its own defaults; checked in a live run.
 pub fn claude_code_options(kind: SessionKind) -> serde_json::Value {
     let allowed: Vec<String> = kind
-        .browser_tools()
+        .allowed_tools()
         .iter()
         .map(|tool| format!("mcp__zwiim-mcp__{tool}"))
         .collect();
@@ -541,14 +542,35 @@ mod tests {
         assert_eq!(options["strictMcpConfig"], true);
         assert_eq!(options["tools"], serde_json::json!([]));
         assert_eq!(options["allowDangerouslySkipPermissions"], false);
-        let allowed: Vec<String> = SessionKind::Item
-            .browser_tools()
-            .iter()
-            .map(|t| format!("mcp__zwiim-mcp__{t}"))
-            .collect();
-        assert_eq!(options["allowedTools"], serde_json::json!(allowed));
+        // Every tool of the kind is pre-allowed, the engine tools too: the
+        // Host rejects every permission request an engine session raises,
+        // so a tool left to ask can never be called (live smoke run).
+        for kind in SessionKind::all() {
+            let allowed: Vec<String> = kind
+                .allowed_tools()
+                .iter()
+                .map(|t| format!("mcp__zwiim-mcp__{t}"))
+                .collect();
+            let options = claude_code_options(*kind);
+            assert_eq!(
+                options["allowedTools"],
+                serde_json::json!(allowed),
+                "{kind:?}"
+            );
+        }
+        let item = options["allowedTools"].as_array().unwrap();
+        for tool in [
+            "playbook_item_result",
+            "playbook_ask_person",
+            "browser_snapshot",
+        ] {
+            assert!(item.contains(&serde_json::json!(format!("mcp__zwiim-mcp__{tool}"))));
+        }
         let batch = claude_code_options(SessionKind::JudgmentBatch);
-        assert_eq!(batch["allowedTools"], serde_json::json!([]));
+        assert_eq!(
+            batch["allowedTools"],
+            serde_json::json!(["mcp__zwiim-mcp__playbook_item_result"])
+        );
     }
 
     #[test]
