@@ -156,6 +156,7 @@ const OPS: &[&str] = &[
     "run.try",
     "run.get",
     "run.items",
+    "run.list",
     "run.pause",
     "run.resume",
     "run.stop",
@@ -8251,6 +8252,111 @@ async fn saving_a_playbook_takes_its_new_name() {
     assert_eq!(body["playbook"]["name"], "Renamed jobs");
     let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
     assert_eq!(body["playbook"]["name"], "Renamed jobs");
+}
+
+/// Seed one ended run of `playbook` (row id) created at `at`; its public id.
+async fn seed_run(h: &Host, playbook: i32, at: chrono::DateTime<chrono::Utc>) -> String {
+    use crate::automation::entities::playbook_run;
+    use sea_orm::{EntityTrait, Set};
+    let public_id = uuid::Uuid::new_v4().to_string();
+    playbook_run::Entity::insert(playbook_run::ActiveModel {
+        public_id: Set(public_id.clone()),
+        playbook_id: Set(playbook),
+        playbook_version: Set(1),
+        trigger: Set("mac".into()),
+        status: Set("done".into()),
+        items_total: Set(0),
+        items_done: Set(0),
+        created_at: Set(at),
+        ended_at: Set(Some(at)),
+        ..Default::default()
+    })
+    .exec(&h.state.db.conn)
+    .await
+    .unwrap();
+    public_id
+}
+
+#[tokio::test]
+async fn runs_list_newest_first_per_playbook() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    let b = store.create("Reply", "goal: reply").await.unwrap();
+    let t0 = chrono::Utc::now();
+    let a1 = seed_run(&h, a.id, t0).await;
+    let b1 = seed_run(&h, b.id, t0 + chrono::Duration::seconds(1)).await;
+    let a2 = seed_run(&h, a.id, t0 + chrono::Duration::seconds(2)).await;
+    let a3 = seed_run(&h, a.id, t0 + chrono::Duration::seconds(3)).await;
+
+    let (status, page) = h
+        .call("run.list", json!({ "playbook_id": a.public_id }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = page["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![a3.as_str(), a2.as_str(), a1.as_str()]);
+    assert_eq!(page["runs"][0]["playbook_id"], a.public_id);
+    assert!(page["next_cursor"].is_null());
+
+    let (_, page) = h.call("run.list", json!({})).await;
+    assert_eq!(page["runs"].as_array().unwrap().len(), 4);
+    assert_eq!(page["runs"][2]["run_id"], b1);
+
+    let (status, body) = h
+        .call("run.list", json!({ "playbook_id": "nope" }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn runs_page_without_gaps_when_times_tie() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let at = chrono::Utc::now();
+    let mut seeded = Vec::new();
+    for _ in 0..5 {
+        seeded.push(seed_run(&h, a.id, at).await);
+    }
+    let mut seen = Vec::new();
+    let mut sizes = Vec::new();
+    let mut cursor = serde_json::Value::Null;
+    loop {
+        let mut params = json!({ "playbook_id": a.public_id, "limit": 2 });
+        if !cursor.is_null() {
+            params["cursor"] = cursor.clone();
+        }
+        let (status, page) = h.call("run.list", params).await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = page["runs"].as_array().unwrap();
+        sizes.push(runs.len());
+        seen.extend(runs.iter().map(|r| r["run_id"].as_str().unwrap().to_string()));
+        cursor = page["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(sizes, vec![2, 2, 1]);
+    seeded.reverse();
+    assert_eq!(seen, seeded);
+}
+
+#[tokio::test]
+async fn a_run_list_page_holds_at_most_a_hundred() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let at = chrono::Utc::now();
+    for _ in 0..101 {
+        seed_run(&h, a.id, at).await;
+    }
+    let (_, page) = h.call("run.list", json!({ "limit": 1000 })).await;
+    assert_eq!(page["runs"].as_array().unwrap().len(), 100);
+    assert!(page["next_cursor"].is_string());
 }
 
 #[tokio::test]

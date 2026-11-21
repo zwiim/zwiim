@@ -557,6 +557,82 @@ pub async fn run_items(
     }))
 }
 
+// ── run.list (past runs, newest first) ────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunListParams {
+    /// Only this playbook's runs; every playbook's when absent.
+    pub playbook_id: Option<String>,
+    /// The `next_cursor` of the previous page.
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunPage {
+    pub runs: Vec<RunSummary>,
+    pub next_cursor: Option<String>,
+}
+
+const DEFAULT_RUN_PAGE: i64 = 20;
+const MAX_RUN_PAGE: i64 = 100;
+
+pub async fn run_list(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<RunListParams>,
+) -> ZResult<RunPage> {
+    require_enabled(&state.db.conn).await?;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+    let limit = p.limit.unwrap_or(DEFAULT_RUN_PAGE).clamp(1, MAX_RUN_PAGE);
+    // Row ids order runs as they were created, ties included.
+    let mut query = playbook_run::Entity::find()
+        .order_by_desc(playbook_run::Column::Id)
+        .limit(limit as u64 + 1);
+    if let Some(id) = &p.playbook_id {
+        let book = playbook_row(&state, id).await?;
+        query = query.filter(playbook_run::Column::PlaybookId.eq(book.id));
+    }
+    if let Some(cursor) = p.cursor {
+        // The cursor is the last run of the previous page.
+        let after = playbook_run::Entity::find()
+            .filter(playbook_run::Column::PublicId.eq(cursor))
+            .one(&state.db.conn)
+            .await
+            .map_err(engine_err)?
+            .ok_or_else(|| ZwiimError::invalid_input("Unknown cursor"))?;
+        query = query.filter(playbook_run::Column::Id.lt(after.id));
+    }
+    let mut rows = query.all(&state.db.conn).await.map_err(engine_err)?;
+    let next_cursor = if rows.len() as i64 > limit {
+        rows.truncate(limit as usize);
+        rows.last().map(|m| m.public_id.clone())
+    } else {
+        None
+    };
+    let ids: Vec<i32> = rows.iter().map(|m| m.id).collect();
+    let mut totals = crate::automation::run_views::totals_of(&state.db.conn, &ids)
+        .await
+        .map_err(engine_err)?;
+    let books: std::collections::HashMap<i32, String> = playbook::Entity::find()
+        .filter(playbook::Column::Id.is_in(rows.iter().map(|r| r.playbook_id)))
+        .all(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .into_iter()
+        .map(|b| (b.id, b.public_id))
+        .collect();
+    let runs = rows
+        .into_iter()
+        .map(|m| {
+            let t = totals.remove(&m.id).unwrap_or_default();
+            let book = books.get(&m.playbook_id).cloned().unwrap_or_default();
+            RunSummary::new(m, book, &t)
+        })
+        .collect();
+    Ok(Json(RunPage { runs, next_cursor }))
+}
+
 // ── run.answer (an item's question, spec 7.3) ─────────────────────────────
 
 #[derive(Deserialize)]

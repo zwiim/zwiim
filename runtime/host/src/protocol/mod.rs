@@ -269,6 +269,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/run.try", post(playbook::run_try))
         .route("/run.get", post(playbook::run_get))
         .route("/run.items", post(playbook::run_items))
+        .route("/run.list", post(playbook::run_list))
         .route("/run.pause", post(playbook::run_pause))
         .route("/run.resume", post(playbook::run_resume))
         .route("/run.stop", post(playbook::run_stop))
