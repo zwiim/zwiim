@@ -119,6 +119,7 @@ impl RunLoop {
             .filter(playbook_item::Column::TabId.is_not_null())
             .exec(&self.db)
             .await?;
+        self.engine.notify();
         let working = playbook_item::Entity::find()
             .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
             .all(&self.db)
@@ -157,6 +158,7 @@ impl RunLoop {
 
     /// One pass over the active runs; the tasks it started.
     pub async fn tick(self: &Arc<Self>) -> Result<Vec<JoinHandle<()>>, DbError> {
+        self.close_ended_parked().await?;
         let mut started = Vec::new();
         let runs = playbook_run::Entity::find()
             .filter(
@@ -186,6 +188,34 @@ impl RunLoop {
             self.end_if_settled(&run).await?;
         }
         Ok(started)
+    }
+
+    /// Close the parked tabs of runs that ended (Stop): such a run no longer
+    /// ticks, so `send_approved` never reaches its items.
+    async fn close_ended_parked(&self) -> Result<(), DbError> {
+        let ids: Vec<i32> = self.parked_tabs().keys().copied().collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let items = playbook_item::Entity::find()
+            .filter(playbook_item::Column::Id.is_in(ids))
+            .all(&self.db)
+            .await?;
+        let ended: std::collections::HashSet<i32> = playbook_run::Entity::find()
+            .filter(playbook_run::Column::Id.is_in(items.iter().map(|i| i.run_id)))
+            .all(&self.db)
+            .await?
+            .into_iter()
+            .filter(|r| RunStatus::parse(&r.status).is_some_and(RunStatus::is_terminal))
+            .map(|r| r.id)
+            .collect();
+        for item in items.into_iter().filter(|i| ended.contains(&i.run_id)) {
+            let tab = self.parked_tabs().remove(&item.id);
+            if let Some(tab) = tab {
+                self.close_item_tab(item.id, &tab).await;
+            }
+        }
+        Ok(())
     }
 
     fn is_discovering(&self, run_id: i32) -> bool {
@@ -684,6 +714,8 @@ impl RunLoop {
             .filter(playbook_item::Column::Id.eq(item))
             .exec(&self.db)
             .await?;
+        // The feed only re-reads when told; a tab is news for its tile.
+        self.engine.notify();
         Ok(())
     }
 
@@ -1454,6 +1486,71 @@ mod tests {
             f.tabs.clone(),
         );
         restarted.recover().await.unwrap();
+        assert_eq!(tabs(&f.db, f.run_id).await, vec![None, None, None]);
+    }
+
+    /// The feed hears of every tab change: an item's tab opening, closing,
+    /// and every tab going at a restart.
+    #[tokio::test]
+    async fn an_items_tab_changes_tell_the_feed() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        let item = playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(f.run_id))
+            .one(&f.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let changes = Arc::new(tokio::sync::watch::channel(0u64).0);
+        let watched = RunLoop::new(
+            f.db.clone(),
+            Some(changes.clone()),
+            f.launcher.clone(),
+            Arc::new(EngineSessions::default()),
+            f.tabs.clone(),
+        );
+        watched.close_item_tab(item, "tab-1").await;
+        assert_eq!(*changes.borrow(), 1, "closing tells the feed");
+        watched.set_item_tab(item, Some("tab-9")).await.unwrap();
+        assert_eq!(*changes.borrow(), 2, "opening tells the feed");
+        let before = *changes.borrow();
+        watched.recover().await.unwrap();
+        assert!(*changes.borrow() > before, "a restart tells the feed");
+    }
+
+    /// Stop ends a run with items parked on their tabs: the run no longer
+    /// ticks, so the loop still closes those tabs and the items name none.
+    #[tokio::test]
+    async fn a_stopped_runs_parked_tabs_close() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        assert!(f.tabs.closed.lock().unwrap().is_empty());
+        // What run.stop does: the run stops, its parked items with it.
+        f.run_loop
+            .engine
+            .transition_run(f.run_id, RunStatus::Running, RunStatus::Stopped, None)
+            .await
+            .unwrap();
+        playbook_item::Entity::update_many()
+            .col_expr(
+                playbook_item::Column::Status,
+                sea_orm::sea_query::Expr::value("stopped"),
+            )
+            .filter(playbook_item::Column::RunId.eq(f.run_id))
+            .exec(&f.db)
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+        assert_eq!(f.tabs.closed.lock().unwrap().len(), 3);
         assert_eq!(tabs(&f.db, f.run_id).await, vec![None, None, None]);
     }
 
