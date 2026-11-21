@@ -150,6 +150,7 @@ const OPS: &[&str] = &[
     "browser.downloads.set_location",
     "playbook.list",
     "playbook.get",
+    "playbook.create",
     "playbook.save",
     "run.start",
     "run.try",
@@ -8353,6 +8354,30 @@ async fn a_site_pauses_resumes_and_records_risk() {
         .find(|s| s["site"] == "indeed.com")
         .unwrap();
     assert_eq!(site["risk_accepted"], true);
+}
+
+#[tokio::test]
+async fn a_playbook_is_created_from_valid_text_only() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let (status, body) = h
+        .call("playbook.create", json!({ "source": "format: 1\nname: \n" }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "playbook_invalid");
+
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK;
+    let (status, body) = h
+        .call("playbook.create", json!({ "source": source }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["name"], "Apply to fixture jobs");
+    assert_eq!(body["playbook"]["version"], 1);
+    let id = body["playbook"]["playbook_id"].as_str().unwrap().to_string();
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(body["source"], source);
+    let (_, body) = h.call("playbook.list", json!({})).await;
+    assert_eq!(body.as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

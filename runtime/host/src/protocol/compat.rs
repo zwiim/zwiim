@@ -524,7 +524,13 @@ use serde::{Deserialize, Serialize};
 /// state and item totals), `run.item_changed` and `run.alert` (sent once per
 /// item or run and kind), and its snapshot carries
 /// `approvals` and the active `runs`. Older clients never see or call them.
-pub const PROTOCOL_REVISION: u32 = 40;
+///
+/// 41 (`playbook.create`): `playbook.create {source}` makes a new playbook
+/// from valid text, named by its `name:`, at version 1, and answers
+/// `{playbook}` like `playbook.save`. Invalid text is `playbook_invalid` with
+/// line-anchored details; off under `playbooks_disabled`. Older clients never
+/// call it.
+pub const PROTOCOL_REVISION: u32 = 41;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -790,8 +796,13 @@ mod tests {
 
     #[test]
     fn playbooks_are_revision_40() {
-        assert_eq!(PROTOCOL_REVISION, 40);
+        assert!(PROTOCOL_REVISION >= 40);
         assert!(CAPABILITIES.contains(&"playbooks"));
+    }
+
+    #[test]
+    fn creating_a_playbook_is_revision_41() {
+        assert_eq!(PROTOCOL_REVISION, 41);
     }
 
     #[test]

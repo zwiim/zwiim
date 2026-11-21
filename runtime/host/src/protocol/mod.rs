@@ -263,6 +263,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.set_agent", post(http::session_set_agent))
         .route("/playbook.list", post(playbook::playbook_list))
         .route("/playbook.get", post(playbook::playbook_get))
+        .route("/playbook.create", post(playbook::playbook_create))
         .route("/playbook.save", post(playbook::playbook_save))
         .route("/run.start", post(playbook::run_start))
         .route("/run.try", post(playbook::run_try))
