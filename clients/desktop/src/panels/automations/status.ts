@@ -19,11 +19,10 @@ export function itemStatus(item: RunItemView): { dot: Dot; label: string; overla
     case "waiting_approval":
       return { dot: "need", label: "Needs your OK", overlay: "Needs your OK" };
     case "waiting_person":
-      return {
-        dot: "need",
-        label: "Question",
-        overlay: item.question ? `Question for you · ${item.question}` : "Question for you",
-      };
+      // Without a question the page itself needs the person (a check that failed, a sign-in).
+      return item.question
+        ? { dot: "need", label: "Question", overlay: `Question for you · ${item.question}` }
+        : { dot: "need", label: "Needs you", overlay: "Needs you" };
     case "done":
       return { dot: "done", label: "Sent", overlay: null };
     case "skipped": {
@@ -90,5 +89,21 @@ export function failureText(code: string | null | undefined): string {
       return "The playbook's text has a problem";
     default:
       return "Something went wrong on the host";
+  }
+}
+
+/** Why an item without a question waits on the person, from its reason code. */
+export function needsYouText(code: string | null | undefined): string {
+  switch (code) {
+    case "check_failed":
+      return "It could not confirm the send went through. Check the page on the site.";
+    case "login_expired":
+      return "The site signed it out. Sign in to the site again.";
+    case "captcha":
+      return "The site wants to check that a person is there.";
+    case "blocked_by_site":
+      return "The site blocked it.";
+    default:
+      return "The page needs you.";
   }
 }

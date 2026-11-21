@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ItemStatus, RunItemView } from "@zwiim/sdk";
-import { defaultOpen, failureText, itemStatus, runCounts, sectionLine } from "@/panels/automations/status";
+import { defaultOpen, failureText, itemStatus, needsYouText, runCounts, sectionLine } from "@/panels/automations/status";
 
 function item(status: ItemStatus, extra: Partial<RunItemView> = {}): RunItemView {
   return { run_id: "r1", item_id: `i-${status}`, title: null, status, reason_code: null, ...extra };
@@ -29,7 +29,14 @@ describe("itemStatus", () => {
       label: "Question",
       overlay: "Question for you · Expected salary?",
     });
-    expect(itemStatus(item("waiting_person")).overlay).toBe("Question for you");
+  });
+
+  it("waiting on the person without a question says it needs them", () => {
+    expect(itemStatus(item("waiting_person", { reason_code: "check_failed" }))).toEqual({
+      dot: "need",
+      label: "Needs you",
+      overlay: "Needs you",
+    });
   });
 
   it("a skip says who skipped it", () => {
@@ -82,5 +89,13 @@ describe("failureText", () => {
     expect(failureText("playbook_invalid")).toBe("The playbook's text has a problem");
     expect(failureText("something_new")).toBe("Something went wrong on the host");
     expect(failureText(null)).toBe("Something went wrong on the host");
+  });
+});
+
+describe("needsYouText", () => {
+  it("says why an item needs the person", () => {
+    expect(needsYouText("check_failed")).toBe("It could not confirm the send went through. Check the page on the site.");
+    expect(needsYouText("login_expired")).toBe("The site signed it out. Sign in to the site again.");
+    expect(needsYouText(null)).toBe("The page needs you.");
   });
 });

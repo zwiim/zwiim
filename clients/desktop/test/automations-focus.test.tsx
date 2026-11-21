@@ -137,6 +137,13 @@ describe("focus panel", () => {
     c.dispose();
   });
 
+  it("waiting without a question explains, with nothing to answer", async () => {
+    const c = await mount(transport([]), item({ status: "waiting_person", reason_code: "check_failed", tab_id: null }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByTestId("focus-panel").textContent).toContain("It could not confirm the send went through.");
+    c.dispose();
+  });
+
   it("a working item says it is working", async () => {
     const c = await mount(transport([]), item({ status: "working" }));
     expect(screen.getByTestId("focus-panel").textContent).toContain("Working on it. The page is live.");

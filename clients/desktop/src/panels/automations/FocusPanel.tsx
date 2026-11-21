@@ -4,7 +4,7 @@ import type { DeclaredField, RunItemView } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { hostOf, titleOf } from "./ItemTile";
-import { itemStatus } from "./status";
+import { itemStatus, needsYouText } from "./status";
 import { StatusDot } from "./StatusDot";
 
 /** What a declared field will send, as the person reads it; a secret never shows. */
@@ -101,6 +101,8 @@ export function FocusPanel({ playbookName, item }: { playbookName: string; item:
             </Button>
           </div>
         </div>
+      ) : item.status === "waiting_person" && !item.question ? (
+        <p className="text-ui">{needsYouText(item.reason_code)}</p>
       ) : item.status === "waiting_person" ? (
         <form
           className="flex flex-col gap-3"
@@ -110,7 +112,7 @@ export function FocusPanel({ playbookName, item }: { playbookName: string; item:
             if (text) void act(() => controller.answer(item.item_id, text));
           }}
         >
-          <p className="text-ui">{item.question ?? "The page needs an answer only you have."}</p>
+          <p className="text-ui">{item.question}</p>
           <input
             className="border-border bg-input/30 text-ui focus-visible:ring-ring rounded-[10px] border px-2.5 py-1.5 outline-none focus-visible:ring-2"
             aria-label="Your answer"
