@@ -530,7 +530,14 @@ use serde::{Deserialize, Serialize};
 /// `{playbook}` like `playbook.save`. Invalid text is `playbook_invalid` with
 /// line-anchored details; off under `playbooks_disabled`. Older clients never
 /// call it.
-pub const PROTOCOL_REVISION: u32 = 41;
+///
+/// 42 (`run.answer`): `run.answer {item_id, answer}` answers the question an
+/// item waits on the person for: the answer is kept for every later item on
+/// that site and the item goes back to the queue (`{item_id, requeued}`). An
+/// item waiting on none is `no_open_question`; a blank answer is
+/// `invalid_input`. `run.items` entries carry `question` while one is open.
+/// Older clients never see or call them.
+pub const PROTOCOL_REVISION: u32 = 42;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -802,7 +809,12 @@ mod tests {
 
     #[test]
     fn creating_a_playbook_is_revision_41() {
-        assert_eq!(PROTOCOL_REVISION, 41);
+        assert!(PROTOCOL_REVISION >= 41);
+    }
+
+    #[test]
+    fn answering_an_items_question_is_revision_42() {
+        assert_eq!(PROTOCOL_REVISION, 42);
     }
 
     #[test]

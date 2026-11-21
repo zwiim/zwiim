@@ -28,6 +28,21 @@ pub enum Check {
     AgentJudged { note: String },
 }
 
+impl From<&crate::automation::playbook_format::CheckSpec> for Check {
+    fn from(spec: &crate::automation::playbook_format::CheckSpec) -> Self {
+        use crate::automation::playbook_format::CheckSpec;
+        match spec.clone() {
+            CheckSpec::TextPresent { text } => Check::TextPresent { text },
+            CheckSpec::TextGone { text } => Check::TextGone { text },
+            CheckSpec::UrlMatches { pattern } => Check::UrlMatches { pattern },
+            CheckSpec::ElementPresent { role, name } => Check::ElementPresent { role, name },
+            CheckSpec::Download => Check::Download,
+            CheckSpec::EmailConfirmation => Check::EmailConfirmation,
+            CheckSpec::AgentJudged { note } => Check::AgentJudged { note },
+        }
+    }
+}
+
 impl Check {
     pub fn learned_by_host(&self) -> bool {
         !matches!(self, Check::AgentJudged { .. })
@@ -45,6 +60,42 @@ pub struct PageFacts {
 }
 
 impl PageFacts {
+    /// The expression that reads a page's facts in the world whose last
+    /// snapshot was `generation`; its value is JSON (see [`Self::parse`]).
+    pub fn read_call(generation: &str) -> String {
+        format!(
+            "(() => {{ const A = globalThis.{global}; const gen = {generation}; \
+             const elements = []; \
+             const walk = (root) => {{ for (const el of root.querySelectorAll('*')) {{ \
+               const r = el._ariaRef; \
+               if (r && A && A.elementForRef(gen, r.ref) === el) elements.push(r.role + ':' + r.name); \
+               if (el.shadowRoot) walk(el.shadowRoot); }} }}; \
+             walk(document); \
+             return JSON.stringify({{ text: document.body ? document.body.innerText : '', \
+               url: String(location.href), elements }}); }})()",
+            global = crate::browser::agent::AGENT_GLOBAL,
+            generation = serde_json::Value::from(generation),
+        )
+    }
+
+    /// The facts from the world's answer to [`Self::read_call`].
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct Answer {
+            text: String,
+            url: String,
+            elements: Vec<String>,
+        }
+        let answer: Answer = serde_json::from_str(raw)
+            .map_err(|e| format!("the page answered with unreadable facts: {e}"))?;
+        Ok(Self {
+            text: answer.text,
+            url: answer.url,
+            elements: answer.elements.into_iter().collect(),
+            downloaded: false,
+        })
+    }
+
     fn has_element(&self, role: &str, name: &str) -> bool {
         self.elements.contains(&format!("{role}:{name}"))
     }
@@ -309,5 +360,25 @@ mod tests {
             check.count_matches("today: a short post here"),
             AfterTheFactResult::Found
         );
+    }
+
+    #[test]
+    fn page_facts_parse_from_the_worlds_answer() {
+        let facts = PageFacts::parse(
+            r#"{"text":"Applied","url":"https://jobs.test/done","elements":["heading:Thanks"]}"#,
+        )
+        .unwrap();
+        let checks = [
+            Check::TextPresent {
+                text: "Applied".into(),
+            },
+            Check::ElementPresent {
+                role: "heading".into(),
+                name: "Thanks".into(),
+            },
+        ];
+        assert!(all_pass(&evaluate(&checks, &facts, false)));
+        assert!(PageFacts::parse("absent").is_err());
+        assert!(PageFacts::read_call("1.2").contains("\"1.2\""));
     }
 }

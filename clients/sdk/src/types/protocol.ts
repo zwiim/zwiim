@@ -127,6 +127,7 @@ export type HostErrorCode =
   | "run_start_requires_mac"
   /** `run.start` / `run.try`: a playbook site has no risk step yet. Details `{ sites }`. */
   | "site_risk_not_accepted"
+  | "no_open_question"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2258,6 +2259,8 @@ export interface ItemSummary {
   status: ItemStatus;
   reason_code: ItemReasonCode | null;
   updated_at: string;
+  /** The question the item waits on the person for; answer with `run.answer` (revision 42). */
+  question?: string;
 }
 
 /** `run.items`: one page of the run record, items by page (spec 11.1). */
@@ -2590,6 +2593,8 @@ export interface Operations {
   ];
   /** Skip a pending item; it ends `skipped` (`approval_rejected`). */
   "run.reject": [{ approval_id: string }, { approval_id: string; state: string }];
+  /** Answer the question an item waits on; saved for the site, and the item is requeued. `no_open_question` when it waits on none (revision 42). */
+  "run.answer": [{ item_id: string; answer: string }, { item_id: string; requeued: boolean }];
   /** Every site the Host knows for `account` (default `main`). */
   "site.list": [{ account?: string }, SiteSummary[]];
   /** Pause a (site, account) for every playbook, with a cause. */
@@ -2874,6 +2879,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "run.stop",
   "run.approve",
   "run.reject",
+  "run.answer",
   "site.pause",
   "site.resume",
   "site.risk_accept",

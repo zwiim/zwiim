@@ -53,6 +53,7 @@ runtime/host/src/automation/playbook_store.rs
 runtime/host/src/automation/reasons.rs
 runtime/host/src/automation/run_loop.rs
 runtime/host/src/automation/run_views.rs
+runtime/host/src/automation/scope.rs
 runtime/host/src/automation/sessions.rs
 runtime/host/src/automation/states.rs
 runtime/host/src/automation/tests.rs

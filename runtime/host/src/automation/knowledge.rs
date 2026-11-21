@@ -106,6 +106,24 @@ pub async fn answer(engine: &AutomationEngine, id: i32, value: &str) -> Result<b
     }
 }
 
+/// The open question each of `item_ids` waits on, by item: the question's
+/// id and text.
+pub async fn open_questions(
+    db: &DatabaseConnection,
+    item_ids: &[i32],
+) -> Result<std::collections::HashMap<i32, (i32, String)>, DbError> {
+    Ok(playbook_knowledge::Entity::find()
+        .filter(playbook_knowledge::Column::Kind.eq(ANSWER))
+        .filter(playbook_knowledge::Column::State.eq("open"))
+        .filter(playbook_knowledge::Column::ItemId.is_in(item_ids.iter().copied()))
+        .order_by_asc(playbook_knowledge::Column::Id)
+        .all(db)
+        .await?
+        .into_iter()
+        .filter_map(|r| Some((r.item_id?, (r.id, r.text))))
+        .collect())
+}
+
 /// The saved answers for a site, as (question, answer), oldest first.
 pub async fn answers(
     db: &DatabaseConnection,

@@ -21,6 +21,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
+- Protocol revision 42: `run.answer {item_id, answer}` answers the question a playbook item waits on (saved for the site, item requeued; `no_open_question` otherwise), and `run.items` entries carry `question` while one is open. Older clients never see or call them.
 - Protocol revision 40: `playbook.*`, `run.*` and `site.*` operations (capability `playbooks`, behind the `playbooks.enabled` Labs setting), and the Host feed's `run.approval_requested` / `run.approval_cleared` events with `approvals` in its snapshot. Older clients never see or call them.
 
 ### Provider changes

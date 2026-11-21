@@ -30,7 +30,7 @@ use crate::acp::delegation::transport::{
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerGitRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerPlaybookResultRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerPlaybookAttachRequest, BrokerPlaybookResultRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
     BrokerUpdateProgressRequest,
 };
 use crate::acp::delegation::types::{
@@ -685,6 +685,12 @@ impl DelegationListener {
                     Err(note) => serde_json::json!({ "error": "refused", "note": note }),
                 },
             },
+            BrokerMessage::PlaybookAttach(req) => BrokerResponse {
+                outcome: match self.process_playbook_attach(req).await {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(note) => serde_json::json!({ "error": "refused", "note": note }),
+                },
+            },
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -761,6 +767,31 @@ impl DelegationListener {
             return Err("Refused: no_session; this session has ended, so stop.".to_string());
         };
         sessions.report(&entry.parent_connection_id, &req.arguments)
+    }
+
+    /// Attach a playbook file for an item session: only one its playbook
+    /// lists, and only in its own lane tab (spec 10.8).
+    async fn process_playbook_attach(&self, req: BrokerPlaybookAttachRequest) -> Result<(), String> {
+        let entry = self.tokens.lookup(&req.token).await;
+        let Some(entry) = entry.filter(|e| e.engine.is_some()) else {
+            return Err(
+                "Refused: not_engine_session; only an automation session attaches files."
+                    .to_string(),
+            );
+        };
+        let Some(sessions) = self.engine_sessions.get() else {
+            return Err("Refused: no_session; this session has ended, so stop.".to_string());
+        };
+        let path = sessions.attachable(&entry.parent_connection_id, &req.name)?;
+        self.browser
+            .attach_file(
+                &entry.parent_connection_id,
+                &req.tab_id,
+                &req.generation,
+                &req.element_ref,
+                &path,
+            )
+            .await
     }
 
     /// Validate the token, resolve the caller's parent connection/conversation,
@@ -1300,6 +1331,7 @@ fn broker_token(msg: &BrokerMessage) -> Option<&str> {
         BrokerMessage::BrowserTabOp(r) => &r.token,
         BrokerMessage::Git(r) => &r.token,
         BrokerMessage::PlaybookResult(r) => &r.token,
+        BrokerMessage::PlaybookAttach(r) => &r.token,
     })
 }
 
@@ -1310,6 +1342,7 @@ fn engine_tool(msg: &BrokerMessage) -> Option<&'static str> {
     use crate::browser::agent::ActionKind;
     Some(match msg {
         BrokerMessage::PlaybookResult(_) => "playbook_item_result",
+        BrokerMessage::PlaybookAttach(_) => "playbook_attach_file",
         BrokerMessage::BrowserTabs(_) => "browser_list_tabs",
         BrokerMessage::BrowserSnapshot(_) => "browser_snapshot",
         BrokerMessage::BrowserConsole(_) => "browser_console_messages",

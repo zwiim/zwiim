@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     SubmitApplication,
+    /// Any form send that is none of the named kinds (a booking, a support
+    /// ticket, a sign-up).
+    SubmitForm,
     PublishPost,
     SendMessage,
     Comment,
@@ -24,6 +27,7 @@ impl ActionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             ActionKind::SubmitApplication => "submit_application",
+            ActionKind::SubmitForm => "submit_form",
             ActionKind::PublishPost => "publish_post",
             ActionKind::SendMessage => "send_message",
             ActionKind::Comment => "comment",
@@ -37,6 +41,7 @@ impl ActionKind {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "submit_application" => ActionKind::SubmitApplication,
+            "submit_form" => ActionKind::SubmitForm,
             "publish_post" => ActionKind::PublishPost,
             "send_message" => ActionKind::SendMessage,
             "comment" => ActionKind::Comment,
@@ -51,6 +56,7 @@ impl ActionKind {
     pub fn all() -> &'static [ActionKind] {
         &[
             ActionKind::SubmitApplication,
+            ActionKind::SubmitForm,
             ActionKind::PublishPost,
             ActionKind::SendMessage,
             ActionKind::Comment,
@@ -70,22 +76,14 @@ impl ActionKind {
         )
     }
 
-    /// Kinds that may be set to auto only after a completed show-me run with
-    /// that kind on that site (spec 8.1.3).
-    pub fn auto_needs_show_me_run(self) -> bool {
-        matches!(
-            self,
-            ActionKind::Comment | ActionKind::SendMessage | ActionKind::PublishPost
-        )
-    }
-
     /// The per-kind daily cap in spec 10.1.1 [est]; `submit_application`
-    /// uses the site cap, so it has no per-kind cap of its own.
+    /// and `submit_form` use the site cap, so they have no per-kind cap.
     pub fn daily_cap(self) -> Option<i32> {
         match self {
             ActionKind::PublishPost => Some(3),
             ActionKind::Comment | ActionKind::Follow | ActionKind::SendMessage => Some(10),
             ActionKind::SubmitApplication
+            | ActionKind::SubmitForm
             | ActionKind::Delete
             | ActionKind::Pay
             | ActionKind::ChangeAccount => None,
@@ -470,6 +468,7 @@ fn error_meaning(code: ErrorCode) -> &'static str {
         ErrorCode::SiteRiskNotAccepted => {
             "A site of the playbook has no risk step yet; `details.sites` lists them."
         }
+        ErrorCode::NoOpenQuestion => "The item is not waiting on a question.",
     }
 }
 
@@ -500,6 +499,8 @@ pub enum ErrorCode {
     /// `run.start` / `run.try` on a playbook with a site whose risk the
     /// person has not accepted (spec 14.5).
     SiteRiskNotAccepted,
+    /// `run.answer` for an item that waits on no question.
+    NoOpenQuestion,
 }
 
 impl ErrorCode {
@@ -517,6 +518,7 @@ impl ErrorCode {
             ErrorCode::PlaybooksDisabled => "playbooks_disabled",
             ErrorCode::RunNotRunning => "run_not_running",
             ErrorCode::SiteRiskNotAccepted => "site_risk_not_accepted",
+            ErrorCode::NoOpenQuestion => "no_open_question",
         }
     }
 
@@ -534,6 +536,7 @@ impl ErrorCode {
             ErrorCode::PlaybooksDisabled,
             ErrorCode::RunNotRunning,
             ErrorCode::SiteRiskNotAccepted,
+            ErrorCode::NoOpenQuestion,
         ]
     }
 }
@@ -620,6 +623,17 @@ mod tests {
         for &rule in &[ApprovalRule::Auto, ApprovalRule::Ask, ApprovalRule::Never] {
             assert_eq!(ApprovalRule::parse(rule.as_str()), Some(rule));
         }
+    }
+
+    #[test]
+    fn a_general_form_send_is_its_own_kind_under_the_site_cap() {
+        assert_eq!(
+            ActionKind::parse("submit_form"),
+            Some(ActionKind::SubmitForm)
+        );
+        assert!(ActionKind::all().contains(&ActionKind::SubmitForm));
+        assert!(!ActionKind::SubmitForm.always_ask());
+        assert_eq!(ActionKind::SubmitForm.daily_cap(), None);
     }
 
     /// The docs table is generated from the enums; this pins that every code

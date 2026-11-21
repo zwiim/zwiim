@@ -4,9 +4,15 @@
 // it needs the person's Claude Code login (CI runs the fixture tests, task 18).
 //
 //   node scripts/automation/smoke.mjs [--minutes 20] [--no-build] [--search]
+//                                    [--approve] [--answer]
 //
-// `--search` finds the jobs with a discovery session on the board's list
-// page instead of a typed list.
+// Three playbooks run at once, so the engine is proven on more than job
+// forms: applying to the fixture jobs (with a resume upload), replying on
+// forum threads (a comment form), and following them (a button outside any
+// form). `--search` finds the jobs with a discovery session on the board's
+// list page instead of a typed list. `--approve` approves every send the
+// Host asks about, from the Host feed, as the person would; `--answer`
+// answers the salary question an item waits on with `run.answer`.
 //
 // State lives in `~/Library/Caches/zwiim-smoke/`, outside any repository as a real
 // install's data folder is (inside one, the agent would read the repo's
@@ -56,9 +62,18 @@ function fresh() {
   for (const name of readdirSync(data)) {
     if (!KEEP.has(name)) rmSync(join(data, name), { recursive: true, force: true });
   }
-  for (const name of ["host.log", "fixture.log", "report.json"]) {
-    rmSync(join(smoke, name), { force: true });
+  for (const name of ["host.log", "fixture.log", "report.json", "files"]) {
+    rmSync(join(smoke, name), { recursive: true, force: true });
   }
+}
+
+// The file the jobs playbook lists as its `resume` input.
+function resumeFile() {
+  const dir = join(smoke, "files");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "Ada Lovelace resume.pdf");
+  writeFileSync(path, "%PDF-1.4\n% smoke resume\n%%EOF\n");
+  return path;
 }
 
 function startFixture() {
@@ -121,7 +136,7 @@ const sources = (fx) =>
       - http://jobs.localhost:${fx}/jobs/c
       - http://jobs.localhost:${fx}/jobs/d`;
 
-const playbook = (fx) => `format: 1
+const jobs = (fx, resume) => `format: 1
 name: Smoke apply to fixture jobs
 goal: Apply to remote engineering roles on the local fixture job board
 main_kind: submit_application
@@ -141,17 +156,89 @@ inputs:
   - type: fact
     name: notice_period
     value: 30 days
+  - type: file
+    name: resume
+    path: ${resume}
 rules:
   - Skip roles that need relocation
 approval:
   - kind: submit_application
-    rule: ask
+    rule: auto
 checks:
   - kind: text_present
     text: Application sent
 caps:
   run_items: 10
 `;
+
+const threads = (fx) => `  - type: list
+    items:
+      - http://forum.localhost:${fx}/threads/1
+      - http://forum.localhost:${fx}/threads/2`;
+
+const replies = (fx) => `format: 1
+name: Smoke reply on fixture threads
+goal: Reply to each forum thread with one short, friendly sentence that thanks the author
+main_kind: comment
+agent: claude_code
+sites:
+  - forum.localhost
+sources:
+${threads(fx)}
+rules:
+  - Never follow a thread; only reply
+approval:
+  - kind: comment
+    rule: auto
+checks:
+  - kind: text_present
+    text: Reply posted
+`;
+
+const follows = (fx) => `format: 1
+name: Smoke follow fixture threads
+goal: Follow each forum thread, without replying to it
+main_kind: follow
+agent: claude_code
+sites:
+  - forum.localhost
+sources:
+${threads(fx)}
+rules:
+  - Never reply to a thread; only follow it
+approval:
+  - kind: follow
+    rule: ask
+checks:
+  - kind: text_present
+    text: You follow this thread
+`;
+
+// The answers `--answer` gives, by what the question asks.
+const ANSWERS = [[/salary/i, "20 LPA"]];
+
+// Approve every send the Host asks about, as the person would, from the
+// Host feed; each ask is recorded for the report.
+function approveFromFeed(port, token, call, asked) {
+  const proto = `zwiim-token.${Buffer.from(token).toString("base64url")}`;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/zwiim/v1/ws`, ["zwiim-events", proto]);
+  ws.addEventListener("open", () => ws.send(JSON.stringify({ op: "host.subscribe" })));
+  ws.addEventListener("message", async (msg) => {
+    const frame = JSON.parse(String(msg.data));
+    if (frame.type !== "host.event" || frame.event?.type !== "run.approval_requested") return;
+    const a = frame.event.payload;
+    const fields = a.fields.map((f) => `${f.target.name}=${f.value.text ?? f.value.name ?? "?"}`);
+    asked.push({ kind: a.kind, summary: a.summary, fields });
+    say(`asked: ${a.kind} "${a.summary}" [${fields.join(", ")}]`);
+    if (!args.includes("--approve")) return;
+    await call("run.approve", { approval_id: a.approval_id }).then(
+      () => say(`approved ${a.kind}`),
+      (e) => say(`approve failed: ${e.message}`),
+    );
+  });
+  ws.addEventListener("error", (e) => say(`feed error: ${e.message ?? e}`));
+  return ws;
+}
 
 const ENDED = new Set(["done", "failed", "stopped"]);
 
@@ -164,6 +251,7 @@ async function main() {
     });
   }
   fresh();
+  const resume = resumeFile();
   const fx = await startFixture();
   say(`fixture on ${fx}`);
   const port = await freePort();
@@ -194,49 +282,93 @@ async function main() {
   }
 
   await call("settings.update", { values: { "playbooks.enabled": true } });
-  const { playbook: pb } = await call("playbook.create", { source: playbook(fx) });
-  for (const site of ["jobs.localhost", "apply.localhost"]) {
+  for (const site of ["jobs.localhost", "apply.localhost", "forum.localhost"]) {
     await call("site.risk_accept", { site });
   }
-  const started = await call("run.start", { playbook_id: pb.playbook_id });
-  const runId = started.run_id ?? started.run?.run_id;
-  say(`run ${runId} started`);
+  const asked = [];
+  const feed = approveFromFeed(port, token, call, asked);
+  const runs = [];
+  for (const source of [jobs(fx, resume), replies(fx), follows(fx)]) {
+    const { playbook: pb } = await call("playbook.create", { source });
+    const started = await call("run.start", { playbook_id: pb.playbook_id });
+    const runId = started.run_id ?? started.run?.run_id;
+    runs.push({ name: pb.name, runId });
+    say(`run ${runId} started: ${pb.name}`);
+  }
 
   const deadline = Date.now() + minutes * 60_000;
   const seen = new Map();
-  let run;
+  const answered = new Set();
   for (;;) {
-    run = await call("run.get", { run_id: runId });
-    const { items } = await call("run.items", { run_id: runId, limit: 200 });
-    for (const item of items) {
-      const line = `${item.status}${item.reason_code ? ` (${item.reason_code})` : ""}`;
-      if (seen.get(item.key) !== line) {
-        seen.set(item.key, line);
-        say(`item ${item.key}: ${line}`);
+    let active = 0;
+    for (const r of runs) {
+      r.run = await call("run.get", { run_id: r.runId });
+      if (!ENDED.has(r.run.status)) active++;
+      const { items } = await call("run.items", { run_id: r.runId, limit: 200 });
+      for (const item of items) {
+        const line = `${item.status}${item.reason_code ? ` (${item.reason_code})` : ""}`;
+        const id = `${r.name}: ${item.key}`;
+        if (seen.get(id) !== line) {
+          seen.set(id, line);
+          say(`item ${id}: ${line}${item.question ? ` asks "${item.question}"` : ""}`);
+        }
+        const answer = item.question && ANSWERS.find(([q]) => q.test(item.question))?.[1];
+        if (args.includes("--answer") && answer && !answered.has(item.item_id)) {
+          answered.add(item.item_id);
+          await call("run.answer", { item_id: item.item_id, answer }).then(
+            () => say(`answered "${item.question}": ${answer}`),
+            (e) => say(`answer failed: ${e.message}`),
+          );
+        }
       }
     }
-    if (ENDED.has(run.status)) break;
+    if (!active) break;
     if (Date.now() > deadline) {
-      say(`still ${run.status} after ${minutes} min; stopping the run`);
-      await call("run.stop", { run_id: runId }).catch((e) => say(e.message));
+      say(`still running after ${minutes} min; stopping the runs`);
+      for (const r of runs) await call("run.stop", { run_id: r.runId }).catch((e) => say(e.message));
       break;
     }
     await sleep(3000);
   }
+  feed.close();
 
-  const { items } = await call("run.items", { run_id: runId, limit: 200 });
+  for (const r of runs) {
+    r.run = await call("run.get", { run_id: r.runId });
+    r.items = (await call("run.items", { run_id: r.runId, limit: 200 })).items;
+  }
   const requests = await (await fetch(`http://127.0.0.1:${fx}/__log`)).json();
-  const posts = requests.filter((r) => r.method === "POST");
-  const report = { run, items, posts, requests };
+  const posts = requests.filter((q) => q.method === "POST");
+  const report = { runs, asked, posts, requests };
   writeFileSync(join(smoke, "report.json"), JSON.stringify(report, null, 2));
 
-  say(`run ${run.status} outcome=${run.outcome} ${run.items_done}/${run.items_total}`);
-  for (const item of items) say(`  ${item.key}: ${item.status} ${item.reason_code ?? ""}`);
-  say(`fixture saw ${requests.length} requests, ${posts.length} POST`);
+  // Each sent item went out exactly once, by the Host's click; nothing
+  // else was sent.
+  const perPath = new Map();
+  for (const q of posts) perPath.set(`${q.host}${q.path}`, (perPath.get(`${q.host}${q.path}`) ?? 0) + 1);
+  const twice = [...perPath].filter(([, n]) => n > 1);
+  const done = runs.flatMap((r) => r.items).filter((i) => i.status === "done").length;
+  for (const r of runs) {
+    say(`${r.name}: ${r.run.status} outcome=${r.run.outcome} ${r.run.items_done}/${r.run.items_total}`);
+    for (const item of r.items) say(`  ${item.key}: ${item.status} ${item.reason_code ?? ""}`);
+  }
+  say(`asked the person ${asked.length} times: ${asked.map((a) => a.kind).join(", ")}`);
+  say(`fixture saw ${requests.length} requests, ${posts.length} POST, ${done} items done`);
+  for (const [path, n] of perPath) say(`  POST ${path} x${n}`);
   say(`logs and report.json in ${smoke}`);
-  if (posts.length) say("FAIL: something was sent outward without an approval", posts);
+  // Every item ended done or skipped by a rule (the relocation role).
+  const unsettled = runs
+    .flatMap((r) => r.items)
+    .filter((i) => i.status !== "done" && !(i.status === "skipped" && i.reason_code === "skipped_by_rule"));
+  const ok =
+    twice.length === 0 &&
+    posts.length === done &&
+    unsettled.length === 0 &&
+    runs.every((r) => r.run.status === "done");
+  if (unsettled.length) say(`FAIL: ${unsettled.length} items neither done nor skipped by rule`);
+  if (twice.length) say("FAIL: sent twice", twice);
+  if (posts.length !== done) say(`FAIL: ${posts.length} POST for ${done} done items`);
   stopAll();
-  process.exit(posts.length || run.status !== "done" ? 1 : 0);
+  process.exit(ok ? 0 : 1);
 }
 
 main().catch((e) => {

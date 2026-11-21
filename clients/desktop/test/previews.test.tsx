@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as XLSX from "xlsx";
 import { HostClient, HostController, ZwiimClientError } from "@zwiim/sdk";
@@ -159,7 +159,8 @@ describe("html preview", () => {
     expect(frame.getAttribute("sandbox")!.split(" ")).toContain("allow-scripts");
     fireEvent.click(screen.getByRole("radio", { name: "Source" }));
     await tick();
-    expect(screen.getByText("<h1>hi</h1>")).toBeTruthy();
+    // Highlighting may split the source into token spans, so match the text, not one node.
+    await waitFor(() => expect(screen.getByTestId("file-view").textContent).toContain("<h1>hi</h1>"));
     cleanup();
     expect(host.closePreview).toHaveBeenCalledWith("0123456789abcdef0123456789abcdef");
     controller.dispose();

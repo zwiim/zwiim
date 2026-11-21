@@ -256,10 +256,8 @@ pub fn decide(
     match rule {
         ApprovalRule::Never => DeclarationDecision::Refused,
         ApprovalRule::Ask => DeclarationDecision::Pending,
-        // Auto needs the show-me run for the kinds that require one.
-        ApprovalRule::Auto if kind.auto_needs_show_me_run() && !show_me_run_for_kind => {
-            DeclarationDecision::Pending
-        }
+        // Auto starts only after the kind's first approved send on the site.
+        ApprovalRule::Auto if !show_me_run_for_kind => DeclarationDecision::Pending,
         ApprovalRule::Auto => DeclarationDecision::Allowed,
     }
 }
@@ -429,11 +427,19 @@ mod tests {
             decide(ApprovalRule::Auto, ActionKind::PublishPost, false, true),
             DeclarationDecision::Allowed
         );
-        // A kind without the requirement goes auto directly.
-        assert_eq!(
-            decide(ApprovalRule::Auto, ActionKind::Follow, false, false),
-            DeclarationDecision::Allowed
-        );
+        // Every kind waits for its first approved send on the site.
+        for &kind in ActionKind::all().iter().filter(|k| !k.always_ask()) {
+            assert_eq!(
+                decide(ApprovalRule::Auto, kind, false, false),
+                DeclarationDecision::Pending,
+                "{kind:?}"
+            );
+            assert_eq!(
+                decide(ApprovalRule::Auto, kind, false, true),
+                DeclarationDecision::Allowed,
+                "{kind:?}"
+            );
+        }
         assert_eq!(
             decide(ApprovalRule::Never, ActionKind::Follow, false, true),
             DeclarationDecision::Refused

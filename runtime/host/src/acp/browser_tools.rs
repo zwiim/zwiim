@@ -694,6 +694,20 @@ pub trait BrowserToolAccess: Send + Sync {
     /// is no tab yet to have a grant; the other two need the tab shared at
     /// `control`, unless it has no document in it to protect.
     async fn tab_op(&self, caller: &str, op: BrowserTabOp) -> BrowserTabOutcome;
+
+    /// Put the file at `path` in the file control a snapshot's ref names, for
+    /// `playbook_attach_file`. The caller has already checked the file is one
+    /// its playbook lists. The error is the line the agent is told.
+    async fn attach_file(
+        &self,
+        _caller: &str,
+        tab_id: &str,
+        _generation: &str,
+        _element_ref: &str,
+        _path: &std::path::Path,
+    ) -> Result<(), String> {
+        Err(format!("No browser tab {tab_id} is open."))
+    }
 }
 
 /// The answer where there is no built-in browser: server mode, and the stub in
