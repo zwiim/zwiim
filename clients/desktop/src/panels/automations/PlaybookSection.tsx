@@ -1,26 +1,10 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { WorkingMark } from "@/components/WorkingMark";
 import { cn } from "@/lib/utils";
 import type { PlaybookRow } from "./data";
-import { itemStatus, runCounts, sectionLine, type Dot } from "./status";
-
-const DOT: Record<Exclude<Dot, "work">, string> = {
-  idle: "bg-faint",
-  need: "bg-brand",
-  done: "bg-done",
-  off: "bg-muted-foreground/40",
-  err: "bg-destructive",
-};
-
-export function StatusDot({ dot }: { dot: Dot }) {
-  if (dot === "work") return <WorkingMark />;
-  return (
-    <span className="grid size-3.5 shrink-0 place-items-center" aria-hidden>
-      <span className={cn("size-2 rounded-full", DOT[dot])} />
-    </span>
-  );
-}
+import { ItemTile } from "./ItemTile";
+import { runCounts, sectionLine, type Dot } from "./status";
+import { StatusDot } from "./StatusDot";
 
 /** The dot a playbook shows: needs-you first, then its run's state. */
 function sectionDot(row: PlaybookRow, need: number): Dot {
@@ -142,10 +126,7 @@ export function PlaybookSection({
         (row.run ? (
           <div className="flex gap-3 overflow-x-auto pb-1 pl-5.5" data-testid="tile-strip">
             {row.items.map((item) => (
-              <div key={item.item_id} className="flex w-[156px] shrink-0 flex-col gap-1">
-                <span className="text-ui truncate">{item.title ?? item.item_id}</span>
-                <span className="text-muted-foreground text-xs">{itemStatus(item).label}</span>
-              </div>
+              <ItemTile key={item.item_id} item={item} />
             ))}
           </div>
         ) : (
