@@ -12,9 +12,13 @@ import type {
   HostDownload,
   HostOwner,
   HostSnapshot,
+  ItemSummary,
   KeepAwakeStatus,
+  PendingApproval,
   PrEntry,
   ConflictCheck,
+  RunItemView,
+  RunView,
   SessionSummary,
   TerminalInfo,
   WorkspaceInfo,
@@ -72,6 +76,12 @@ export interface HostState {
   browser: BrowserState;
   /** What the Host is downloading, oldest first. */
   downloads: HostDownload[];
+  /** Playbook runs by `run_id`. An ended run stays after the feed lets it go. */
+  runs: Record<string, RunView>;
+  /** Approvals waiting for the person, by `approval_id`. */
+  approvals: Record<string, PendingApproval>;
+  /** Items of runs a view loaded or the feed reported, by `run_id` then `item_id`. */
+  runItems: Record<string, Record<string, RunItemView>>;
 }
 
 export type HostAction =
@@ -89,7 +99,9 @@ export type HostAction =
   | { type: "terminal_forget"; terminal_id: string }
   | { type: "host_snapshot"; snapshot: HostSnapshot }
   | { type: "host_event"; event: HostFeedEvent }
-  | { type: "browser"; update: BrowserUpdate };
+  | { type: "browser"; update: BrowserUpdate }
+  /** A page of a run's items (`run.items`), merged into `runItems`. */
+  | { type: "run_items_loaded"; run_id: string; items: ItemSummary[] };
 
 export function initialHostState(): HostState {
   return {
@@ -109,6 +121,9 @@ export function initialHostState(): HostState {
     keepAwake: null,
     browser: initialBrowserState(),
     downloads: [],
+    runs: {},
+    approvals: {},
+    runItems: {},
   };
 }
 
@@ -191,7 +206,14 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
         keepAwake: action.snapshot.keep_awake ?? null,
         downloads: action.snapshot.downloads ?? [],
+        // The snapshot lists active runs only; ended ones the client saw stay.
+        runs: { ...state.runs, ...byKey(action.snapshot.runs ?? [], (r) => r.run_id) },
+        approvals: byKey(action.snapshot.approvals ?? [], (a) => a.approval_id),
       };
+    }
+    case "run_items_loaded": {
+      const items = action.items.map((i) => itemView(action.run_id, i));
+      return withRunItems(state, action.run_id, items);
     }
     case "host_event":
       return reduceFeedEvent(state, action.event);
@@ -287,6 +309,16 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { [id]: _, ...rest } = state.terminals;
       return { ...state, terminals: rest };
     }
+    case "run.changed":
+      return { ...state, runs: { ...state.runs, [event.payload.run_id]: event.payload } };
+    case "run.approval_requested":
+      return { ...state, approvals: { ...state.approvals, [event.payload.approval_id]: event.payload } };
+    case "run.approval_cleared": {
+      const { [event.payload.approval_id]: _cleared, ...approvals } = state.approvals;
+      return { ...state, approvals };
+    }
+    case "run.item_changed":
+      return withRunItems(state, event.payload.run_id, [event.payload]);
     case "clone.changed": {
       const clone = event.payload.clone;
       return { ...state, clones: { ...state.clones, [clone.clone_id]: clone } };
@@ -389,4 +421,29 @@ export type HostStore = Store<HostState, HostAction>;
 
 export function createHostStore(): HostStore {
   return createStore(reduceHost, initialHostState());
+}
+
+function byKey<T>(list: T[], key: (t: T) => string): Record<string, T> {
+  return Object.fromEntries(list.map((t) => [key(t), t]));
+}
+
+/** A `run.items` entry in the shape `run.item_changed` carries. */
+function itemView(run_id: string, i: ItemSummary): RunItemView {
+  return {
+    run_id,
+    item_id: i.item_id,
+    title: i.title,
+    status: i.status,
+    reason_code: i.reason_code,
+    site: i.site,
+    url: i.url,
+    question: i.question ?? null,
+    tab_id: i.tab_id ?? null,
+  };
+}
+
+function withRunItems(state: HostState, run_id: string, items: RunItemView[]): HostState {
+  const list = { ...state.runItems[run_id] };
+  for (const item of items) list[item.item_id] = item;
+  return { ...state, runItems: { ...state.runItems, [run_id]: list } };
 }
