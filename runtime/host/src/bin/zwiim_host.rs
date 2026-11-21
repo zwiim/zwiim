@@ -464,6 +464,7 @@ async fn async_main() -> Exit {
            keep_awake: Default::default(),
            downloads: zwiim_host::downloads::global(),
         playbook_changes: Arc::new(tokio::sync::watch::channel(0).0),
+        engine_sessions: Default::default(),
         github_auth: Default::default(),
         browser: Default::default(),
         browser_streams: Default::default(),
@@ -613,6 +614,10 @@ async fn async_main() -> Exit {
         listener.set_item_attempts(Arc::new(
             zwiim_host::automation::lockdown::DbItemAttempts::new(state.db.conn.clone()),
         ));
+        // Their one result and their call count go to the engine.
+        listener.set_engine_sessions(state.engine_sessions.clone());
+        // Runs move along on their own from here (automation spec 6.1).
+        zwiim_host::automation::run_loop::spawn(state.clone());
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so
         // the workspace status indicator can report why the broker socket is

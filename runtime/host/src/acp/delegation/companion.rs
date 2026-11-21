@@ -55,7 +55,8 @@ use crate::acp::delegation::transport::{
     client_feedback_round_trip, client_git_round_trip, client_resume_task_round_trip,
     client_round_trip,
     client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, client_update_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
+    client_playbook_result_round_trip, client_task_progress_round_trip,
+    client_update_progress_round_trip, BrokerPlaybookResultRequest, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
     BrokerBrowserTabsRequest,
     BrokerCancelRequest,
@@ -311,12 +312,16 @@ pub struct CompanionContext {
 
 impl CompanionContext {
     /// Whether this launch lists and serves the named tool.
+    /// The engine's own `playbook_*` tools belong to no group: only an
+    /// engine launch's `--tools` names them.
     pub fn exposes(&self, name: &str) -> bool {
-        self.features.allows_tool(name)
-            && self
-                .only_tools
-                .as_ref()
-                .is_none_or(|only| only.iter().any(|t| t == name))
+        match &self.only_tools {
+            Some(only) => {
+                only.iter().any(|t| t == name)
+                    && (name.starts_with("playbook_") || self.features.allows_tool(name))
+            }
+            None => self.features.allows_tool(name),
+        }
     }
 }
 
@@ -913,6 +918,45 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_browser_tab_op_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_tab_op_result).await
+        }
+        "playbook_ask_person" => {
+            let Some(question) = arguments
+                .get("question")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "playbook_ask_person requires a non-empty `question` string",
+                ));
+            };
+            // The question ends the item session: it is the session's result.
+            let req = BrokerPlaybookResultRequest {
+                token: ctx.token.clone(),
+                arguments: json!({ "status": "ask_person", "question": question }),
+            };
+            let round_trip =
+                Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
+        }
+        "playbook_item_result" => {
+            if !arguments.is_object() {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "playbook_item_result takes an object with a `status`",
+                ));
+            }
+            let req = BrokerPlaybookResultRequest {
+                token: ctx.token.clone(),
+                arguments,
+            };
+            // No external_handle: the result is taken or refused at once.
+            let round_trip =
+                Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
         }
         "update_progress" => {
             let progress = match Progress::from_tool_arguments(&arguments) {
@@ -2702,6 +2746,25 @@ pub fn render_browser_snapshot_result(outcome: &Value) -> Value {
 /// `{ recorded, note? }` ack) into an MCP `tools/call` result. A report that
 /// could not be attributed (no active work task for this session) is readable
 /// text with `isError: false` — the agent just carries on with its work.
+/// Map a `playbook_item_result` round trip into an MCP result. A refusal is
+/// a tool error whose first line names the code and the next step
+/// (automation spec 18.4).
+pub fn render_playbook_result(outcome: &Value) -> Value {
+    let refused = outcome.get("error").is_some();
+    let text = if refused {
+        outcome
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Refused.")
+    } else {
+        "Result received. End your turn now."
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": refused,
+    })
+}
+
 pub fn render_task_ack(outcome: &Value) -> Value {
     let recorded = outcome
         .get("recorded")
@@ -4594,6 +4657,96 @@ mod tests {
             Some(vec!["browser_snapshot".to_string(), "browser_click".to_string()])
         );
         assert_eq!(parse_csv_list(None), None);
+    }
+
+    /// The engine's own tools come only with an engine launch's `--tools`:
+    /// a person's session never lists one, whatever its groups, and the
+    /// result tool sends its arguments as they are (the Host reads them).
+    #[tokio::test]
+    async fn engine_tools_come_only_with_an_engine_tools_list() {
+        use crate::automation::lockdown::SessionKind;
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let everything = CompanionFeatures {
+            delegation: true,
+            feedback: true,
+            ask: true,
+            sessions: true,
+            tasks: true,
+            automations: true,
+            taskboard: true,
+            browser: true,
+            browser_eval: true,
+            git: true,
+            progress: true,
+        };
+        let person = list_tool_names(dispatch_with_features(everything, list).await);
+        assert!(!person.iter().any(|n| n.starts_with("playbook_")), "{person:?}");
+
+        let engine = CompanionContext {
+            only_tools: Some(
+                SessionKind::Discovery
+                    .allowed_tools()
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect(),
+            ),
+            ..ctx_with(BROWSER_ONLY)
+        };
+        let names =
+            list_tool_names(dispatch_line(&engine, Arc::new(InflightCalls::new()), list).await);
+        assert!(names.contains(&"playbook_item_result".to_string()), "{names:?}");
+        assert!(names.contains(&"browser_snapshot".to_string()));
+
+        let call = json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "playbook_item_result", "arguments": { "status": "listed", "candidates": [] } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_line(&engine, Arc::new(InflightCalls::new()), &call).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    /// An item session can ask the person; the question must be there.
+    #[tokio::test]
+    async fn an_item_session_asks_the_person_with_a_question() {
+        use crate::automation::lockdown::SessionKind;
+        let item = CompanionContext {
+            only_tools: Some(
+                SessionKind::Item
+                    .allowed_tools()
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect(),
+            ),
+            ..ctx_with(BROWSER_ONLY)
+        };
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names =
+            list_tool_names(dispatch_line(&item, Arc::new(InflightCalls::new()), list).await);
+        assert!(names.contains(&"playbook_ask_person".to_string()), "{names:?}");
+        let call = |args: Value| {
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "playbook_ask_person", "arguments": args }
+            })
+            .to_string()
+        };
+        let empty = unwrap_respond(
+            dispatch_line(&item, Arc::new(InflightCalls::new()), &call(json!({ "question": " " })))
+                .await,
+        );
+        assert!(empty.error.unwrap().message.contains("question"));
+        assert!(matches!(
+            dispatch_line(
+                &item,
+                Arc::new(InflightCalls::new()),
+                &call(json!({ "question": "Relocate?" }))
+            )
+            .await,
+            LineAction::Spawn(_)
+        ));
     }
 
     /// `browser_eval` needs BOTH tokens. A `--features browser_eval` that lost

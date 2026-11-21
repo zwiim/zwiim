@@ -23,6 +23,7 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `timeout` | A step or session timed out. | yes | unknown | Nothing; the item retries. |
 | `host_restarted` | The Host restarted mid-item. | yes | unknown | Nothing; the item restarts from its first step. |
 | `page_needs_person` | The site's page asked something only a person can answer. | no | unknown | Answer it in the playbook tab on the Mac, then Resume. |
+| `skipped_by_rule` | A playbook rule says this item is not one to work. | no | none | Nothing; edit the rule if it skipped one you want. |
 
 ## Protocol error codes
 

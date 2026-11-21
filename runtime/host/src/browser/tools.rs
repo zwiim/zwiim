@@ -41,6 +41,7 @@ use crate::acp::browser_tools::{
     ERROR_UNAVAILABLE, ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
+use crate::automation::sessions::EngineScope;
 use crate::db::entities::conversation;
 
 /// Said to an agent that is not in a session, or whose Host cannot run the
@@ -86,14 +87,20 @@ impl HostBrowserTools {
         }
     }
 
-    /// The browser and the session `caller` is in, or `None` when there is
-    /// no such session or no browser.
-    async fn context(&self, caller: &str) -> Option<(Arc<BrowserService>, String)> {
+    /// The browser and whose tabs `caller` may reach, or `None` when there
+    /// is no such session or no browser. An engine session reaches only its
+    /// lane tabs, never its conversation's session tabs.
+    async fn context(&self, caller: &str) -> Option<(Arc<BrowserService>, Scope)> {
         let state = self.state.upgrade()?;
         let conversation_id = {
             let session = state.connection_manager.get_state(caller).await?;
-            let id = session.read().await.conversation_id?;
-            id
+            let session = session.read().await;
+            if session.engine.is_some() {
+                let scope = state.engine_sessions.scope(caller)?;
+                let browser = state.browser().await.ok()?;
+                return Some((browser, Scope::Engine(scope)));
+            }
+            session.conversation_id?
         };
         let session_id = conversation::Entity::find_by_id(conversation_id)
             .one(&state.db.conn)
@@ -101,7 +108,7 @@ impl HostBrowserTools {
             .ok()??
             .session_id?;
         let browser = state.browser().await.ok()?;
-        Some((browser, session_id))
+        Some((browser, Scope::Session(session_id)))
     }
 }
 
@@ -109,7 +116,7 @@ impl HostBrowserTools {
 impl BrowserToolAccess for HostBrowserTools {
     async fn list_tabs(&self, caller: &str) -> BrowserTabsOutcome {
         match self.context(caller).await {
-            Some((browser, session)) => list(&browser, &session).await,
+            Some((browser, session)) => list(&browser, session.caller()).await,
             None => BrowserTabsOutcome::unavailable(NO_SESSION_NOTE),
         }
     }
@@ -126,7 +133,7 @@ impl BrowserToolAccess for HostBrowserTools {
                 snapshot(
                     &browser,
                     &self.worlds,
-                    &session,
+                    session.caller(),
                     tab_id,
                     max_chars,
                     changes_only,
@@ -140,7 +147,7 @@ impl BrowserToolAccess for HostBrowserTools {
     async fn act(&self, caller: &str, tab_id: &str, request: ActionRequest) -> BrowserActOutcome {
         match self.context(caller).await {
             Some((browser, session)) => {
-                act(&browser, &self.worlds, &session, tab_id, &request).await
+                act(&browser, &self.worlds, session.caller(), tab_id, &request).await
             }
             None => BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
@@ -153,7 +160,7 @@ impl BrowserToolAccess for HostBrowserTools {
         query: ConsoleQuery,
     ) -> BrowserConsoleOutcome {
         match self.context(caller).await {
-            Some((browser, session)) => console(&browser, &session, tab_id, &query).await,
+            Some((browser, session)) => console(&browser, session.caller(), tab_id, &query).await,
             None => BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
     }
@@ -166,7 +173,7 @@ impl BrowserToolAccess for HostBrowserTools {
     ) -> BrowserCaptureOutcome {
         match self.context(caller).await {
             Some((browser, session)) => {
-                screenshot(&browser, &self.worlds, &session, tab_id, &request).await
+                screenshot(&browser, &self.worlds, session.caller(), tab_id, &request).await
             }
             None => BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
@@ -178,7 +185,7 @@ impl BrowserToolAccess for HostBrowserTools {
 
     async fn tab_op(&self, caller: &str, op: BrowserTabOp) -> BrowserTabOutcome {
         match self.context(caller).await {
-            Some((browser, session)) => tab_op(&browser, &self.worlds, &session, op).await,
+            Some((browser, session)) => tab_op(&browser, &self.worlds, session.caller(), op).await,
             None => BrowserTabOutcome::refused(op.tab_id(), ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
     }
@@ -187,6 +194,54 @@ impl BrowserToolAccess for HostBrowserTools {
 fn owner(session: &str) -> TabOwner {
     TabOwner::Session {
         session_id: session.to_string(),
+    }
+}
+
+/// Whose tabs a tool call may reach.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Caller<'a> {
+    /// A person's session: its session's tabs.
+    Session(&'a str),
+    /// An automation engine session: the lane tabs the Host gave it
+    /// (automation spec 5.6).
+    Engine(&'a EngineScope),
+}
+
+impl Caller<'_> {
+    fn owner(self) -> TabOwner {
+        match self {
+            Caller::Session(session) => owner(session),
+            Caller::Engine(scope) => scope.lane.clone(),
+        }
+    }
+
+    fn owns(self, tab: &TabInfo) -> bool {
+        match self {
+            Caller::Session(session) => tab.owner == owner(session),
+            Caller::Engine(scope) => tab.owner == scope.lane && scope.tabs.contains(&tab.id),
+        }
+    }
+}
+
+/// The scope [`HostBrowserTools`] resolved for a caller.
+enum Scope {
+    Session(String),
+    Engine(EngineScope),
+}
+
+impl Scope {
+    fn caller(&self) -> Caller<'_> {
+        match self {
+            Scope::Session(session) => Caller::Session(session),
+            Scope::Engine(scope) => Caller::Engine(scope),
+        }
+    }
+}
+
+/// Put a step on the session's timeline. Lane tabs keep none yet.
+async fn record(browser: &BrowserService, caller: Caller<'_>, tab_id: &str, note: String) {
+    if let Caller::Session(session) = caller {
+        browser.record_step(session, tab_id, note).await;
     }
 }
 
@@ -210,24 +265,22 @@ fn no_such_tab(tab_id: &str) -> String {
     format!("No browser tab {tab_id} is open.")
 }
 
-pub(crate) async fn list(browser: &BrowserService, session: &str) -> BrowserTabsOutcome {
+pub(crate) async fn list(browser: &BrowserService, caller: Caller<'_>) -> BrowserTabsOutcome {
     BrowserTabsOutcome {
         tabs: browser
-            .list(Some(session))
+            .list(None)
             .await
             .iter()
+            .filter(|t| caller.owns(t))
             .map(summary)
             .collect(),
         note: None,
     }
 }
 
-/// `tab_id`, when it is one of `session`'s tabs.
-async fn own_tab(browser: &BrowserService, session: &str, tab_id: &str) -> Option<TabInfo> {
-    let tab = browser
-        .tab(tab_id)
-        .await
-        .filter(|t| t.owner == owner(session))?;
+/// `tab_id`, when it is one of `caller`'s tabs.
+async fn own_tab(browser: &BrowserService, caller: Caller<'_>, tab_id: &str) -> Option<TabInfo> {
+    let tab = browser.tab(tab_id).await.filter(|t| caller.owns(t))?;
     // The agent is using it: the memory governor leaves it alone.
     browser.agent_used(tab_id);
     Some(tab)
@@ -236,11 +289,19 @@ async fn own_tab(browser: &BrowserService, session: &str, tab_id: &str) -> Optio
 pub(crate) async fn tab_op(
     browser: &BrowserService,
     worlds: &Worlds,
-    session: &str,
+    caller: Caller<'_>,
     op: BrowserTabOp,
 ) -> BrowserTabOutcome {
     let (tab_id, url) = match op {
         BrowserTabOp::Open { url } => {
+            // An engine session works in the tabs the Host gave it.
+            let Caller::Session(session) = caller else {
+                return BrowserTabOutcome::refused(
+                    None,
+                    ERROR_NO_SUCH_TAB,
+                    "Work in the tab you were given; this session opens no tabs.",
+                );
+            };
             if let Err(e) = super::service::check_url(&url) {
                 return BrowserTabOutcome::refused(None, ERROR_BAD_ADDRESS, e.message);
             }
@@ -258,7 +319,7 @@ pub(crate) async fn tab_op(
             }
         }
         BrowserTabOp::Navigate { tab_id, url } => {
-            if own_tab(browser, session, &tab_id).await.is_none() {
+            if own_tab(browser, caller, &tab_id).await.is_none() {
                 return BrowserTabOutcome::refused(
                     Some(&tab_id),
                     ERROR_NO_SUCH_TAB,
@@ -268,7 +329,7 @@ pub(crate) async fn tab_op(
             (tab_id, url)
         }
         BrowserTabOp::Close { tab_id } => {
-            if own_tab(browser, session, &tab_id).await.is_none() {
+            if own_tab(browser, caller, &tab_id).await.is_none() {
                 return BrowserTabOutcome::refused(
                     Some(&tab_id),
                     ERROR_NO_SUCH_TAB,
@@ -287,7 +348,7 @@ pub(crate) async fn tab_op(
             };
         }
         BrowserTabOp::Permissions { tab_id, grant } => {
-            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+            let Some(tab) = own_tab(browser, caller, &tab_id).await else {
                 return BrowserTabOutcome::refused(
                     Some(&tab_id),
                     ERROR_NO_SUCH_TAB,
@@ -321,7 +382,7 @@ pub(crate) async fn tab_op(
             };
         }
         BrowserTabOp::Network { tab_id, query, har } => {
-            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+            let Some(tab) = own_tab(browser, caller, &tab_id).await else {
                 return BrowserTabOutcome::refused(
                     Some(&tab_id),
                     ERROR_NO_SUCH_TAB,
@@ -352,7 +413,7 @@ pub(crate) async fn tab_op(
             gone,
             timeout_ms,
         } => {
-            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+            let Some(tab) = own_tab(browser, caller, &tab_id).await else {
                 return BrowserTabOutcome::refused(
                     Some(&tab_id),
                     ERROR_NO_SUCH_TAB,
@@ -419,9 +480,7 @@ pub(crate) async fn tab_op(
         }
         Err(e) => return BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, e.message),
     };
-    browser
-        .record_step(session, &tab_id, format!("Opened {url}"))
-        .await;
+    record(browser, caller, &tab_id, format!("Opened {url}")).await;
     match browser.tab(&tab_id).await {
         Some(tab) => BrowserTabOutcome::tab(summary(&tab), load_error),
         None => BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, no_such_tab(&tab_id)),
@@ -497,6 +556,22 @@ async fn load(browser: &BrowserService, tab_id: &str, url: &str) -> Result<Load,
     }
     settle(browser, tab_id, &cdp, &session).await;
     Ok(Load::Done(None))
+}
+
+/// Load `url` in `tab_id` and wait for it, as an agent's navigation does:
+/// for the engine's own tabs (automation spec 6.2.1, 6.3.4). An error page or
+/// a site the person is asked about first is an error.
+pub(crate) async fn load_page(
+    browser: &BrowserService,
+    tab_id: &str,
+    url: &str,
+) -> Result<(), String> {
+    match load(browser, tab_id, url).await {
+        Ok(Load::Done(None)) => Ok(()),
+        Ok(Load::Done(Some(kind))) => Err(format!("the page did not load ({kind})")),
+        Ok(Load::Asked(site)) => Err(format!("the person is asked about {site} first")),
+        Err(e) => Err(e.message),
+    }
 }
 
 /// The agent's error for a site policy refusal `code` (design 13.2).
@@ -799,12 +874,12 @@ fn epoch_of(context: i64) -> String {
 pub(crate) async fn snapshot(
     browser: &BrowserService,
     worlds: &Worlds,
-    session: &str,
+    caller: Caller<'_>,
     tab_id: &str,
     max_chars: Option<usize>,
     changes_only: bool,
 ) -> BrowserSnapshotOutcome {
-    if own_tab(browser, session, tab_id).await.is_none() {
+    if own_tab(browser, caller, tab_id).await.is_none() {
         return BrowserSnapshotOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
     }
     let cap = max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS);
@@ -904,11 +979,11 @@ async fn read_page(
 pub(crate) async fn act(
     browser: &BrowserService,
     worlds: &Worlds,
-    session: &str,
+    caller: Caller<'_>,
     tab_id: &str,
     request: &ActionRequest,
 ) -> BrowserActOutcome {
-    let Some(tab) = own_tab(browser, session, tab_id).await else {
+    let Some(tab) = own_tab(browser, caller, tab_id).await else {
         return BrowserActOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
     };
     if let Some(expected) = request.expect_url.as_deref() {
@@ -977,7 +1052,7 @@ pub(crate) async fn act(
         }
     }
     browser.acted(tab_id, Actor::Agent).await;
-    let watch = Watch::start(browser, session, tab_id).await;
+    let watch = Watch::start(browser, caller, tab_id).await;
     let show = |x: f64, y: f64, bounds: Option<CaptureRegion>| {
         browser.agent_action(AgentAction {
             tab_id: tab_id.to_string(),
@@ -1027,10 +1102,8 @@ pub(crate) async fn act(
         Ok(Ok(outcome)) => {
             tokio::time::sleep(ACTION_GRACE).await;
             settle(browser, tab_id, &cdp, &cdp_session).await;
-            let effects = watch.effects(browser, session, tab_id).await;
-            browser
-                .record_step(session, tab_id, step_note(&request.action))
-                .await;
+            let effects = watch.effects(browser, caller, tab_id).await;
+            record(browser, caller, tab_id, step_note(&request.action)).await;
             BrowserActOutcome::done(tab_id, outcome).with_effects(effects)
         }
         Ok(Err((Some(ActionError::Stale) | None, detail))) => stale(&detail),
@@ -1055,20 +1128,21 @@ struct Watch {
 }
 
 impl Watch {
-    async fn start(browser: &BrowserService, session: &str, tab_id: &str) -> Self {
+    async fn start(browser: &BrowserService, caller: Caller<'_>, tab_id: &str) -> Self {
         let events = browser.subscribe();
         let mut tabs = vec![tab_id.to_string()];
         tabs.extend(
             browser
-                .list(Some(session))
+                .list(None)
                 .await
                 .into_iter()
+                .filter(|t| caller.owns(t))
                 .map(|t| t.id)
                 .filter(|id| id != tab_id),
         );
         Self {
             events,
-            url: own_tab(browser, session, tab_id).await.map(|t| t.url),
+            url: own_tab(browser, caller, tab_id).await.map(|t| t.url),
             console: browser.console_mark(tab_id).await,
             tabs,
         }
@@ -1079,11 +1153,11 @@ impl Watch {
     async fn effects(
         mut self,
         browser: &BrowserService,
-        session: &str,
+        caller: Caller<'_>,
         tab_id: &str,
     ) -> ActionEffects {
         let mut effects = ActionEffects::default();
-        let mine = owner(session);
+        let mine = caller.owner();
         // The acting tab and those it opened: what they ask or download is
         // the action's doing.
         let mut caused = vec![tab_id.to_string()];
@@ -1110,7 +1184,7 @@ impl Watch {
             .iter()
             .map(refused_note)
             .collect();
-        let now = own_tab(browser, session, tab_id).await.map(|t| t.url);
+        let now = own_tab(browser, caller, tab_id).await.map(|t| t.url);
         if now.is_some() && now != self.url {
             effects.navigated = now;
         }
@@ -1321,11 +1395,11 @@ async fn pointer(
 
 pub(crate) async fn console(
     browser: &BrowserService,
-    session: &str,
+    caller: Caller<'_>,
     tab_id: &str,
     query: &ConsoleQuery,
 ) -> BrowserConsoleOutcome {
-    if own_tab(browser, session, tab_id).await.is_none() {
+    if own_tab(browser, caller, tab_id).await.is_none() {
         return BrowserConsoleOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
     }
     match browser.console(tab_id, query).await {
@@ -1337,11 +1411,11 @@ pub(crate) async fn console(
 pub(crate) async fn screenshot(
     browser: &BrowserService,
     worlds: &Worlds,
-    session: &str,
+    caller: Caller<'_>,
     tab_id: &str,
     request: &CaptureRequest,
 ) -> BrowserCaptureOutcome {
-    let Some(tab) = own_tab(browser, session, tab_id).await else {
+    let Some(tab) = own_tab(browser, caller, tab_id).await else {
         return BrowserCaptureOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
     };
     let (cdp, cdp_session) = match browser.session(tab_id).await {
@@ -1523,7 +1597,7 @@ mod tests {
         let opened = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open {
                 url: "http://localhost:5173/".into(),
             },
@@ -1548,6 +1622,64 @@ mod tests {
         );
     }
 
+    /// An engine session works in its lane's tabs the Host gave it and no
+    /// other: another run's tab on the same lane, a person's session tab
+    /// and a personal tab answer as if they did not exist (automation spec
+    /// 5.6, 6.2.5).
+    #[tokio::test]
+    async fn an_engine_session_reaches_only_its_own_lane_tabs() {
+        use crate::automation::sessions::EngineScope;
+        let fake = FakeEngine::default();
+        let browser = browser(&fake).await;
+        let lane = TabOwner::Lane {
+            site: "jobs.test".into(),
+            account: "main".into(),
+        };
+        let mine = browser.open(lane.clone(), None).await.unwrap().id;
+        let other_run = browser.open(lane.clone(), None).await.unwrap().id;
+        let person = browser.open(owner("s1"), None).await.unwrap().id;
+        let scope = EngineScope {
+            lane: lane.clone(),
+            tabs: vec![mine.clone()],
+        };
+        let engine = Caller::Engine(&scope);
+
+        let listed: Vec<String> = list(&browser, engine)
+            .await
+            .tabs
+            .into_iter()
+            .map(|t| t.tab_id)
+            .collect();
+        assert_eq!(listed, vec![mine.clone()]);
+        let read = console(&browser, engine, &mine, &ConsoleQuery::default()).await;
+        assert!(read.error.is_none(), "{read:?}");
+        for tab in [&other_run, &person] {
+            let refused = console(&browser, engine, tab, &ConsoleQuery::default()).await;
+            assert_eq!(refused.error.as_deref(), Some(ERROR_NO_SUCH_TAB), "{tab}");
+        }
+        // Nor does the person's session see the lane's tabs.
+        let theirs = console(
+            &browser,
+            Caller::Session("s1"),
+            &mine,
+            &ConsoleQuery::default(),
+        )
+        .await;
+        assert_eq!(theirs.error.as_deref(), Some(ERROR_NO_SUCH_TAB));
+        // An engine session opens no tab of its own.
+        let opened = tab_op(
+            &browser,
+            &Worlds::default(),
+            engine,
+            BrowserTabOp::Open {
+                url: "https://jobs.test/".into(),
+            },
+        )
+        .await;
+        assert_eq!(opened.error.as_deref(), Some(ERROR_NO_SUCH_TAB));
+        assert_eq!(browser.list(None).await.len(), 3);
+    }
+
     /// Clients are told which tab the agent works in for every tool, not
     /// only for the actions that move its pointer.
     #[tokio::test]
@@ -1557,7 +1689,7 @@ mod tests {
         let opened = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open {
                 url: "http://localhost:5173/".into(),
             },
@@ -1565,7 +1697,13 @@ mod tests {
         .await;
         let tab = opened.tab.unwrap().tab_id;
         let mut events = browser.subscribe();
-        let _ = console(&browser, "s1", &tab, &ConsoleQuery::default()).await;
+        let _ = console(
+            &browser,
+            Caller::Session("s1"),
+            &tab,
+            &ConsoleQuery::default(),
+        )
+        .await;
         let working = loop {
             match events.try_recv() {
                 Ok(super::super::service::BrowserEvent::AgentWorking { tab_id }) => break tab_id,
@@ -1575,7 +1713,13 @@ mod tests {
         };
         assert_eq!(working, tab);
         // Another session's agent cannot use the tab, and says nothing.
-        let _ = console(&browser, "s2", &tab, &ConsoleQuery::default()).await;
+        let _ = console(
+            &browser,
+            Caller::Session("s2"),
+            &tab,
+            &ConsoleQuery::default(),
+        )
+        .await;
         while let Ok(event) = events.try_recv() {
             assert!(!matches!(
                 event,
@@ -1593,14 +1737,16 @@ mod tests {
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
         browser.show_dev_server("s1", port).await;
-        let shown = list(&browser, "s1").await.tabs[0].tab_id.clone();
+        let shown = list(&browser, Caller::Session("s1")).await.tabs[0]
+            .tab_id
+            .clone();
 
         let worlds = Worlds::default();
         let open = || {
             tab_op(
                 &browser,
                 &worlds,
-                "s1",
+                Caller::Session("s1"),
                 BrowserTabOp::Open {
                     url: format!("http://127.0.0.1:{port}/"),
                 },
@@ -1609,11 +1755,11 @@ mod tests {
         let opened = open().await;
         assert_eq!(opened.error, None, "{:?}", opened.note);
         assert_eq!(opened.tab.unwrap().tab_id, shown);
-        assert_eq!(list(&browser, "s1").await.tabs.len(), 1);
+        assert_eq!(list(&browser, Caller::Session("s1")).await.tabs.len(), 1);
 
         let again = open().await.tab.unwrap();
         assert_ne!(again.tab_id, shown);
-        assert_eq!(list(&browser, "s1").await.tabs.len(), 2);
+        assert_eq!(list(&browser, Caller::Session("s1")).await.tabs.len(), 2);
     }
 
     #[tokio::test]
@@ -1629,7 +1775,7 @@ mod tests {
         let opened = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open {
                 url: "http://localhost:5173/".into(),
             },
@@ -1640,7 +1786,7 @@ mod tests {
         assert_eq!(tab.origin.as_deref(), Some("http://localhost:5173"));
         assert_eq!(tab.level, GrantLevel::Control);
 
-        let listed = list(&browser, "s1").await;
+        let listed = list(&browser, Caller::Session("s1")).await;
         assert_eq!(listed.tabs.len(), 1);
         assert_eq!(listed.tabs[0].tab_id, tab.tab_id);
 
@@ -1648,7 +1794,7 @@ mod tests {
             let nav = tab_op(
                 &browser,
                 &Worlds::default(),
-                "s1",
+                Caller::Session("s1"),
                 BrowserTabOp::Navigate {
                     tab_id: foreign.clone(),
                     url: "https://example.com/".into(),
@@ -1659,7 +1805,7 @@ mod tests {
             let close = tab_op(
                 &browser,
                 &Worlds::default(),
-                "s1",
+                Caller::Session("s1"),
                 BrowserTabOp::Close {
                     tab_id: foreign.clone(),
                 },
@@ -1673,7 +1819,7 @@ mod tests {
         let moved = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Navigate {
                 tab_id: tab.tab_id.clone(),
                 url: "https://example.com/a".into(),
@@ -1688,14 +1834,14 @@ mod tests {
         let closed = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Close {
                 tab_id: tab.tab_id.clone(),
             },
         )
         .await;
         assert_eq!(closed.error, None);
-        assert!(list(&browser, "s1").await.tabs.is_empty());
+        assert!(list(&browser, Caller::Session("s1")).await.tabs.is_empty());
     }
 
     #[tokio::test]
@@ -1705,20 +1851,23 @@ mod tests {
         let bad = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open {
                 url: "file:///etc/passwd".into(),
             },
         )
         .await;
         assert_eq!(bad.error.as_deref(), Some(ERROR_BAD_ADDRESS));
-        assert!(list(&browser, "s1").await.tabs.is_empty(), "nothing opened");
+        assert!(
+            list(&browser, Caller::Session("s1")).await.tabs.is_empty(),
+            "nothing opened"
+        );
 
         fake.lock().nav_error = Some("net::ERR_NAME_NOT_RESOLVED".into());
         let failed = tab_op(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open {
                 url: "https://nowhere.invalid/".into(),
             },
@@ -1742,9 +1891,21 @@ mod tests {
             .await
             .unwrap();
         let open = |url: &str| BrowserTabOp::Open { url: url.into() };
-        let ok = tab_op(&browser, &worlds, "s1", open("https://example.com/")).await;
+        let ok = tab_op(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            open("https://example.com/"),
+        )
+        .await;
         assert_eq!(ok.error, None, "{:?}", ok.note);
-        let refused = tab_op(&browser, &worlds, "s1", open("https://other.test/")).await;
+        let refused = tab_op(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            open("https://other.test/"),
+        )
+        .await;
         assert_eq!(refused.error.as_deref(), Some(ERROR_SITE_NOT_ALLOWED));
         assert!(refused
             .note
@@ -1759,7 +1920,12 @@ mod tests {
         crate::settings::update(&db.conn, &on).await.unwrap();
         let asked = tokio::time::timeout(
             Duration::from_secs(5),
-            tab_op(&browser, &worlds, "s1", open("https://other.test/")),
+            tab_op(
+                &browser,
+                &worlds,
+                Caller::Session("s1"),
+                open("https://other.test/"),
+            ),
         )
         .await
         .expect("returns at once");
@@ -1785,7 +1951,7 @@ mod tests {
         let refused = act(
             &browser,
             &Worlds::default(),
-            "s1",
+            Caller::Session("s1"),
             &tab.id,
             &ActionRequest {
                 generation: "g.0.0".into(),
@@ -1932,7 +2098,7 @@ mod tests {
         let target = fake.wait_url("http://localhost:5173/").await;
         let theirs = fake.wait_url("http://localhost:5174/").await;
 
-        let watch = Watch::start(&browser, "s1", &tab.id).await;
+        let watch = Watch::start(&browser, Caller::Session("s1"), &tab.id).await;
         fake.open_popup(&target, "http://localhost:5173/pop");
         fake.open_popup(&theirs, "http://localhost:5174/pop");
         for (frame, name) in [(&target, "report.pdf"), (&theirs, "secret.pdf")] {
@@ -1959,7 +2125,9 @@ mod tests {
         .expect("both popups became tabs");
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let effects = watch.effects(&browser, "s1", &tab.id).await;
+        let effects = watch
+            .effects(&browser, Caller::Session("s1"), &tab.id)
+            .await;
         assert_eq!(
             effects.navigated.as_deref(),
             Some("http://localhost:5173/done")
@@ -2011,7 +2179,7 @@ mod tests {
         let opened = tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open { url: home.clone() },
         )
         .await;
@@ -2024,7 +2192,7 @@ mod tests {
         let refused = tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Navigate {
                 tab_id: tab.clone(),
                 url: away.clone(),
@@ -2039,7 +2207,7 @@ mod tests {
         );
         assert_eq!(browser.tab(&tab).await.unwrap().url, home);
 
-        let page = snapshot(&browser, &worlds, "s1", &tab, None, false).await;
+        let page = snapshot(&browser, &worlds, Caller::Session("s1"), &tab, None, false).await;
         let page = page.snapshot.unwrap_or_else(|| panic!("{:?}", page.note));
         let line = page
             .tree
@@ -2051,7 +2219,7 @@ mod tests {
         let clicked = act(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             &tab,
             &ActionRequest {
                 generation: page.generation.clone(),
@@ -2123,13 +2291,13 @@ mod tests {
         let opened = tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Open { url: url.clone() },
         )
         .await;
         let tab = opened.tab.expect("opened").tab_id;
 
-        let page = snapshot(&browser, &worlds, "s1", &tab, None, false).await;
+        let page = snapshot(&browser, &worlds, Caller::Session("s1"), &tab, None, false).await;
         let page = page.snapshot.unwrap_or_else(|| panic!("{:?}", page.note));
         let ref_of = |tree: &str, role: &str| {
             let line = tree.lines().find(|l| l.contains(role)).unwrap().to_string();
@@ -2165,19 +2333,19 @@ mod tests {
                 },
             )
         };
-        let refused = act(&browser, &worlds, "s1", &tab, &elsewhere).await;
+        let refused = act(&browser, &worlds, Caller::Session("s1"), &tab, &elsewhere).await;
         assert_eq!(refused.error.as_deref(), Some(ERROR_URL_CHANGED));
         let here = ActionRequest {
             expect_url: Some(format!("{url}#top")),
             ..elsewhere
         };
-        let typed = act(&browser, &worlds, "s1", &tab, &here).await;
+        let typed = act(&browser, &worlds, Caller::Session("s1"), &tab, &here).await;
         assert_eq!(typed.error, None, "{:?}", typed.note);
 
         let typed = act(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             &tab,
             &request(
                 &field,
@@ -2193,7 +2361,7 @@ mod tests {
         let clicked = act(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             &tab,
             &request(
                 &button,
@@ -2221,7 +2389,7 @@ mod tests {
         assert_eq!((shown.tab_id.as_str(), shown.kind), (tab.as_str(), "click"));
         assert!(shown.x > 0.0 && shown.y > 0.0);
         // Only what changed since the first snapshot comes back.
-        let after = snapshot(&browser, &worlds, "s1", &tab, None, true)
+        let after = snapshot(&browser, &worlds, Caller::Session("s1"), &tab, None, true)
             .await
             .snapshot
             .unwrap();
@@ -2236,7 +2404,7 @@ mod tests {
             after.tree
         );
         assert!(!after.tree.contains("Secret"), "{}", after.tree);
-        let again = snapshot(&browser, &worlds, "s1", &tab, None, true)
+        let again = snapshot(&browser, &worlds, Caller::Session("s1"), &tab, None, true)
             .await
             .snapshot
             .unwrap();
@@ -2245,7 +2413,7 @@ mod tests {
         let hovered = act(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             &tab,
             &ActionRequest {
                 generation: again.generation.clone(),
@@ -2255,7 +2423,13 @@ mod tests {
         .await;
         assert_eq!(hovered.error, None, "{:?}", hovered.note);
 
-        let printed = console(&browser, "s1", &tab, &ConsoleQuery::default()).await;
+        let printed = console(
+            &browser,
+            Caller::Session("s1"),
+            &tab,
+            &ConsoleQuery::default(),
+        )
+        .await;
         let lines = printed.console.unwrap().entries;
         assert!(
             lines.iter().any(|l| l.text == "boom 42" && l.top),
@@ -2266,7 +2440,7 @@ mod tests {
         let log = tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Network {
                 tab_id: tab.clone(),
                 query: Default::default(),
@@ -2283,7 +2457,14 @@ mod tests {
             log.entries
         );
 
-        let whole = screenshot(&browser, &worlds, "s1", &tab, &CaptureRequest::default()).await;
+        let whole = screenshot(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            &tab,
+            &CaptureRequest::default(),
+        )
+        .await;
         let whole = whole.capture.unwrap_or_else(|| panic!("{:?}", whole.note));
         assert!(!whole.clipped && whole.width > 0 && whole.region.width > 0.0);
         let shot = CaptureRequest {
@@ -2291,7 +2472,7 @@ mod tests {
             target: Some(button.clone()),
             ..Default::default()
         };
-        let element = screenshot(&browser, &worlds, "s1", &tab, &shot).await;
+        let element = screenshot(&browser, &worlds, Caller::Session("s1"), &tab, &shot).await;
         let element = element
             .capture
             .unwrap_or_else(|| panic!("{:?}", element.note));
@@ -2309,18 +2490,36 @@ mod tests {
             gone,
             timeout_ms: Some(400),
         };
-        let shown = tab_op(&browser, &worlds, "s1", wait("Thanks, Ada!", false)).await;
+        let shown = tab_op(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            wait("Thanks, Ada!", false),
+        )
+        .await;
         assert_eq!(shown.error, None, "{:?}", shown.note);
-        let late = tab_op(&browser, &worlds, "s1", wait("Never", false)).await;
+        let late = tab_op(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            wait("Never", false),
+        )
+        .await;
         assert_eq!(late.error.as_deref(), Some(ERROR_WAIT_TIMEOUT));
-        let away = tab_op(&browser, &worlds, "s1", wait("Never", true)).await;
+        let away = tab_op(
+            &browser,
+            &worlds,
+            Caller::Session("s1"),
+            wait("Never", true),
+        )
+        .await;
         assert_eq!(away.error, None);
 
         // Permissions: granted for this site, the rest denied.
         let set = tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Permissions {
                 tab_id: tab.clone(),
                 grant: vec!["geolocation".into()],
@@ -2341,14 +2540,14 @@ mod tests {
         assert_eq!(states["result"]["value"], "granted,denied");
 
         // Another session sees none of it.
-        let other = snapshot(&browser, &worlds, "s2", &tab, None, false).await;
+        let other = snapshot(&browser, &worlds, Caller::Session("s2"), &tab, None, false).await;
         assert_eq!(other.error.as_deref(), Some(ERROR_NO_SUCH_TAB));
 
         // A new document: the old generation's refs are stale.
         tab_op(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             BrowserTabOp::Navigate {
                 tab_id: tab.clone(),
                 url,
@@ -2358,7 +2557,7 @@ mod tests {
         let late = act(
             &browser,
             &worlds,
-            "s1",
+            Caller::Session("s1"),
             &tab,
             &request(
                 &button,

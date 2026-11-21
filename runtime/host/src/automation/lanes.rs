@@ -65,18 +65,20 @@ pub async fn on_lane_ask(
     Ok(())
 }
 
-/// The lane's one working item, if any (the one-tab-per-lane index).
+/// The lane's one working item, if any (the one-tab-per-lane index). An
+/// item's lane is its outward site after a hand-off (spec 6.9).
 async fn working_on(
     db: &DatabaseConnection,
     site: &str,
     account: &str,
 ) -> Result<Option<playbook_item::Model>, DbError> {
     Ok(playbook_item::Entity::find()
-        .filter(playbook_item::Column::Site.eq(site))
         .filter(playbook_item::Column::Account.eq(account))
         .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
-        .one(db)
-        .await?)
+        .all(db)
+        .await?
+        .into_iter()
+        .find(|i| i.outward_site.as_deref().unwrap_or(&i.site) == site))
 }
 
 /// The lanes with a working item.
@@ -88,7 +90,7 @@ pub async fn working_lanes(db: &DatabaseConnection) -> Result<HashSet<TabOwner>,
     Ok(items
         .into_iter()
         .map(|i| TabOwner::Lane {
-            site: i.site,
+            site: i.outward_site.unwrap_or(i.site),
             account: i.account,
         })
         .collect())
@@ -238,6 +240,34 @@ mod tests {
         on_lane_ask(&engine, "jobsy.example", "main", LaneNeed::Page)
             .await
             .unwrap();
+    }
+
+    /// A handed-off item works in its outward site's lane (spec 6.9): that
+    /// lane's asks reach it and that lane is the one it holds.
+    #[tokio::test]
+    async fn a_handed_off_item_belongs_to_its_outward_lane() {
+        let db = db().await;
+        let id = working_item(&db, false).await;
+        let mut moved: playbook_item::ActiveModel = item(&db, id).await.into();
+        moved.outward_site = Set(Some("apply.example".into()));
+        sea_orm::ActiveModelTrait::update(moved, &db).await.unwrap();
+        assert_eq!(
+            working_lanes(&db).await.unwrap(),
+            [TabOwner::Lane {
+                site: "apply.example".into(),
+                account: "main".into(),
+            }]
+            .into()
+        );
+        let engine = AutomationEngine::new(db.clone());
+        on_lane_ask(&engine, "jobsy.example", "main", LaneNeed::Page)
+            .await
+            .unwrap();
+        assert_eq!(item(&db, id).await.status, "working");
+        on_lane_ask(&engine, "apply.example", "main", LaneNeed::Page)
+            .await
+            .unwrap();
+        assert_eq!(item(&db, id).await.status, "waiting_person");
     }
 
     /// Spec 10.3: a sign-in pauses the lane with cause `login` and its item

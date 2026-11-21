@@ -227,6 +227,15 @@ pub struct BrokerUpdateProgressRequest {
     pub steps: Vec<ProgressStep>,
 }
 
+/// An automation engine session's one result (`playbook_item_result`,
+/// automation spec 7.1.4). The arguments are passed through as the agent sent
+/// them; the Host reads them against the session's kind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerPlaybookResultRequest {
+    pub token: String,
+    pub arguments: Value,
+}
+
 /// Report the final verdict (+ optional summary) for the work task driving the
 /// parent session. Backs the `task_complete` MCP tool; the verdict decides how
 /// the task settles when the turn ends.
@@ -386,6 +395,7 @@ pub enum BrokerMessage {
     BrowserEval(BrokerBrowserEvalRequest),
     BrowserTabOp(BrokerBrowserTabOpRequest),
     Git(BrokerGitRequest),
+    PlaybookResult(BrokerPlaybookResultRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from Zwiim's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -584,6 +594,14 @@ pub async fn client_update_progress_round_trip(
     req: &BrokerUpdateProgressRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::UpdateProgress(req.clone())).await
+}
+
+/// Dispatch a `playbook_item_result` and read back `{ok}` or a refusal.
+pub async fn client_playbook_result_round_trip(
+    socket_path: &str,
+    req: &BrokerPlaybookResultRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::PlaybookResult(req.clone())).await
 }
 
 /// Dispatch a `create_automation` request and read back the serialized

@@ -114,6 +114,8 @@ pub struct AppState {
     /// Bumped whenever playbook runs, items or approvals may have changed;
     /// the Host feed re-reads them (automation spec 8.5.1, 11.4.1).
     pub playbook_changes: Arc<tokio::sync::watch::Sender<u64>>,
+    /// The automation engine sessions running now (automation spec 5.6).
+    pub engine_sessions: Arc<crate::automation::sessions::EngineSessions>,
     /// The GitHub sign-in through `gh` (one at a time, in memory).
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
     /// The Host browser, made on first use (see [`AppState::browser`]).
@@ -408,6 +410,7 @@ impl AppState {
             keep_awake: Default::default(),
             downloads: crate::downloads::Downloads::new(),
             playbook_changes: Arc::new(tokio::sync::watch::channel(0).0),
+            engine_sessions: Default::default(),
             github_auth: Default::default(),
             browser: Default::default(),
             browser_streams: Default::default(),

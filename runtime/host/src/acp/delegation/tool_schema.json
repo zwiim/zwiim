@@ -1103,5 +1103,112 @@
       },
       "additionalProperties": false
     }
+  },
+  {
+    "name": "playbook_item_result",
+    "description": "End this automation session with its one result. An item session ends with status `skipped` (quote the playbook rule), `failed` (say what stopped you) or `hand_off` (the URL where the item continues on another site), and may add `tips` for later items. A discovery session ends with status `listed` and the `candidates` it read off the list pages. A judgment batch ends with status `judged` and one decision per candidate. Call it once, then end your turn.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "skipped",
+            "failed",
+            "hand_off",
+            "listed",
+            "judged"
+          ]
+        },
+        "rule": {
+          "type": "string",
+          "description": "skipped: the playbook rule the item breaks."
+        },
+        "note": {
+          "type": "string",
+          "description": "failed: what stopped you."
+        },
+        "url": {
+          "type": "string",
+          "description": "hand_off: where the item continues."
+        },
+        "tips": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Item sessions: short notes that would help with later items on this site. The person reviews them first."
+        },
+        "candidates": {
+          "type": "array",
+          "description": "listed: the items found, in list order.",
+          "items": {
+            "type": "object",
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string",
+                "description": "The item's text as the list shows it."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "description": "judged: one per candidate.",
+          "items": {
+            "type": "object",
+            "required": [
+              "url",
+              "keep"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "keep": {
+                "type": "boolean"
+              },
+              "rule": {
+                "type": "string",
+                "description": "The rule a candidate you drop breaks."
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "playbook_ask_person",
+    "description": "Ask the person a question about themselves that the playbook's facts and saved answers do not cover, such as a form field you would otherwise have to guess. Never guess. This ends the item: it waits for the person's answer, which is saved for every later item on this site. Call it once, then end your turn.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "question"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "The question as the form asks it."
+        }
+      },
+      "additionalProperties": false
+    }
   }
 ]

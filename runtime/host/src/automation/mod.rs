@@ -19,18 +19,23 @@ pub mod approvals;
 pub mod caps;
 pub mod checks;
 pub mod declaration;
+pub mod discovery;
 pub mod engine;
 pub mod entities;
 pub mod item_runner;
 #[cfg(test)]
 mod item_runner_tests;
+pub mod knowledge;
 pub mod lanes;
+pub mod launcher;
 pub mod lockdown;
 pub mod pauses;
 pub mod playbook_format;
 pub mod playbook_store;
 pub mod reasons;
+pub mod run_loop;
 pub mod run_views;
+pub mod sessions;
 pub mod states;
 #[cfg(test)]
 mod tests;
