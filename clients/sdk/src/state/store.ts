@@ -206,9 +206,10 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
         keepAwake: action.snapshot.keep_awake ?? null,
         downloads: action.snapshot.downloads ?? [],
-        // The snapshot lists active runs only; ended ones the client saw stay.
-        runs: { ...state.runs, ...byKey(action.snapshot.runs ?? [], (r) => r.run_id) },
+        runs: snapshotRuns(state.runs, action.snapshot.runs ?? []),
         approvals: byKey(action.snapshot.approvals ?? [], (a) => a.approval_id),
+        // Items may have moved on while the feed was away; views load them again.
+        runItems: {},
       };
     }
     case "run_items_loaded": {
@@ -421,6 +422,18 @@ export type HostStore = Store<HostState, HostAction>;
 
 export function createHostStore(): HostStore {
   return createStore(reduceHost, initialHostState());
+}
+
+const ENDED_RUN: ReadonlySet<RunView["status"]> = new Set(["done", "stopped", "failed"]);
+
+/**
+ * The snapshot lists active runs only. Ended runs the client saw end stay;
+ * one it last saw active and the snapshot omits ended unseen, so it goes
+ * (`run.list` has its final state).
+ */
+function snapshotRuns(prev: Record<string, RunView>, active: RunView[]): Record<string, RunView> {
+  const ended = Object.values(prev).filter((r) => ENDED_RUN.has(r.status));
+  return { ...byKey(ended, (r) => r.run_id), ...byKey(active, (r) => r.run_id) };
 }
 
 function byKey<T>(list: T[], key: (t: T) => string): Record<string, T> {

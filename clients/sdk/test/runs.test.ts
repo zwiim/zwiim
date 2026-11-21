@@ -70,6 +70,25 @@ describe("runs", () => {
   });
 });
 
+describe("a new snapshot after a reconnect", () => {
+  it("drops runs that were active and are no longer listed", () => {
+    // The run ended while the client was away: its last run.changed never came.
+    let s = reduceHost(initialHostState(), snapshot([run("r1"), run("r2")]));
+    s = reduceHost(s, snapshot([run("r2")]));
+    expect(Object.keys(s.runs)).toEqual(["r2"]);
+  });
+
+  it("forgets loaded items, which views load again", () => {
+    let s = reduceHost(initialHostState(), {
+      type: "run_items_loaded",
+      run_id: "r1",
+      items: [{ ...summary("i1", "working"), tab_id: "tab-1" }],
+    });
+    s = reduceHost(s, snapshot([run("r1")]));
+    expect(s.runItems).toEqual({});
+  });
+});
+
 describe("approvals", () => {
   it("follow requested and cleared", () => {
     let s = reduceHost(initialHostState(), snapshot([], [approval("a1")]));
