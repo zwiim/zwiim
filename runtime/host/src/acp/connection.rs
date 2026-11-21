@@ -5453,7 +5453,13 @@ where
     // token registration and the server append: there is no companion to launch,
     // and looking for a binary we would never use would also emit the "binary
     // not found" warning below for a connection that asked for nothing.
-    let features_arg = companion_features_arg(flags)?;
+    // An engine session always gets the companion: even with no tool group
+    // (the batch kinds) it reports through `playbook_item_result`.
+    let features_arg = match (companion_features_arg(flags), engine) {
+        (Some(arg), _) => arg,
+        (None, Some(_)) => String::new(),
+        (None, None) => return None,
+    };
     let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] zwiim-mcp companion binary not found (checked ZWIIM_MCP_BIN, \
@@ -18276,9 +18282,9 @@ mod tests {
                     || Some(PathBuf::from("/bin/zwiim-mcp")),
                 )
                 .await;
-                if !kind.has_browser() {
-                    assert!(injected.is_none() && servers.is_empty(), "{kind:?}");
-                } else {
+                // Every kind gets the companion, narrowed to its profile: the
+                // batch kinds list `playbook_item_result` alone.
+                {
                     let McpServer::Stdio(server) = &servers[0] else {
                         panic!("expected stdio");
                     };
@@ -26472,7 +26478,9 @@ mod tests {
     /// An engine launch gets its kind's tools whatever the person's global
     /// switches say (automation spec 10.8.3): the browser group for item and
     /// discovery, narrowed by `--tools` to the profile, a token the Host ties
-    /// to the kind, and no companion at all for the batch kinds.
+    /// to the kind. The batch kinds get no tool group but still get the
+    /// companion for `playbook_item_result`: without it a judgment batch could
+    /// never report (live smoke run).
     #[tokio::test]
     async fn an_engine_launch_injects_exactly_its_kinds_tools() {
         use crate::automation::lockdown::{EngineLaunch, SessionKind};
@@ -26504,9 +26512,9 @@ mod tests {
         let entry = injection.tokens.lookup(&injected.token).await.expect("token");
         assert_eq!(entry.engine.map(|e| e.kind), Some(SessionKind::Item));
 
-        let mut none = Vec::new();
+        let mut batch_servers = Vec::new();
         let batch = inject_zwiim_mcp_with_binary_locator(
-            &mut none,
+            &mut batch_servers,
             &injection,
             "batch-conn",
             std::path::Path::new("/tmp"),
@@ -26515,8 +26523,17 @@ mod tests {
             Some(EngineLaunch { kind: SessionKind::JudgmentBatch, attempt: None }),
             || Some(PathBuf::from("/bin/zwiim-mcp")),
         )
-        .await;
-        assert!(batch.is_none() && none.is_empty());
+        .await
+        .expect("batch sessions get the companion for their result");
+        let McpServer::Stdio(server) = &batch_servers[0] else {
+            panic!("expected stdio");
+        };
+        let at = server.args.iter().position(|a| a == "--features").unwrap();
+        assert_eq!(server.args[at + 1], "");
+        let at = server.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(server.args[at + 1], "playbook_item_result");
+        let entry = injection.tokens.lookup(&batch.token).await.expect("token");
+        assert_eq!(entry.engine.map(|e| e.kind), Some(SessionKind::JudgmentBatch));
 
         // The person's own MCP servers never reach an engine session.
         assert!(user_mcp_servers(AgentType::ClaudeCode, true).is_empty());
