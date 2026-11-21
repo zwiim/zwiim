@@ -537,7 +537,16 @@ use serde::{Deserialize, Serialize};
 /// item waiting on none is `no_open_question`; a blank answer is
 /// `invalid_input`. `run.items` entries carry `question` while one is open.
 /// Older clients never see or call them.
-pub const PROTOCOL_REVISION: u32 = 42;
+///
+/// 43 (automations canvas): `run.list {playbook_id?, cursor?, limit?}` pages
+/// past runs newest first. Runs (`run.get`, `run.list`, `run.changed`) carry
+/// `error` and count their items live. Items carry `tab_id` (`run.items`), and
+/// `run.item_changed` adds `site`, `url`, `question` and `tab_id`. Pending
+/// approvals carry `playbook_name`, `site`, `item_title`, `item_url`, and
+/// fields the page pre-filled are marked `prefilled`. Playbooks carry `sites`
+/// with `risk_accepted`; `playbook.save` takes the name from the text. Older
+/// clients ignore the new fields and never call `run.list`.
+pub const PROTOCOL_REVISION: u32 = 43;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -814,7 +823,12 @@ mod tests {
 
     #[test]
     fn answering_an_items_question_is_revision_42() {
-        assert_eq!(PROTOCOL_REVISION, 42);
+        assert!(PROTOCOL_REVISION >= 42);
+    }
+
+    #[test]
+    fn the_automations_canvas_fields_are_revision_43() {
+        assert_eq!(PROTOCOL_REVISION, 43);
     }
 
     #[test]
