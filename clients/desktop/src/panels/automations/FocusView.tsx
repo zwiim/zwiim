@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { PlaybookRow } from "./data";
@@ -26,7 +26,10 @@ export function FocusView({
   onClose(): void;
 }) {
   const index = row.items.findIndex((i) => i.item_id === itemId);
-  const item = index >= 0 ? row.items[index]! : null;
+  // A new snapshot empties the items until they load again: keep showing the last one meanwhile.
+  const last = useRef(index >= 0 ? row.items[index]! : null);
+  if (index >= 0) last.current = row.items[index]!;
+  const item = index >= 0 ? row.items[index]! : row.itemsLoaded ? null : last.current;
   const prev = index > 0 ? row.items[index - 1]! : null;
   const next = index >= 0 && index < row.items.length - 1 ? row.items[index + 1]! : null;
   const [refused, setRefused] = useState<string | null>(null);
@@ -38,8 +41,10 @@ export function FocusView({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Keys typed into a field stay there.
+      // Keys typed into a field stay there, and a dialog or menu over the view takes its own keys.
+      if (e.defaultPrevented) return;
       if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft" && prev) onMove(prev.item_id);
       else if (e.key === "ArrowRight" && next) onMove(next.item_id);

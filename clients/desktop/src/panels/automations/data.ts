@@ -7,6 +7,8 @@ export interface PlaybookRow {
   playbook: PlaybookSummary;
   run: { run_id: string; status: RunStatus; error?: string | null } | null;
   items: RunItemView[];
+  /** The run's items are in the store; false until they load (again after a new snapshot). */
+  itemsLoaded: boolean;
 }
 
 export interface Automations {
@@ -148,6 +150,7 @@ export function useAutomations(): Automations {
           playbook,
           run: r ? { run_id: r.run_id, status: r.status, error: r.error ?? null } : null,
           items: r ? Object.values(runItems[r.run_id] ?? {}) : [],
+          itemsLoaded: !r || r.run_id in runItems,
         };
       }),
     [listed, latest, runItems],

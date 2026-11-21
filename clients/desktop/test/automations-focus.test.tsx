@@ -270,4 +270,30 @@ describe("focus view", () => {
     expect(screen.queryByTestId("focus-view")).toBeNull();
     c.dispose();
   });
+
+  it("a new snapshot keeps focus on an item still in the run", async () => {
+    const { t } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: /Job b/ }));
+    await act(async () => t.frame({ type: "host.snapshot", ...t.snapshot() } as never));
+    await tick();
+    expect(shown()).toBe("Job b");
+    c.dispose();
+  });
+
+  it("Esc meant for a dialog over focus leaves focus open", async () => {
+    const { t } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: /Job b/ }));
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    key("Escape");
+    key("ArrowRight");
+    expect(shown()).toBe("Job b");
+    dialog.remove();
+    key("Escape");
+    expect(screen.queryByTestId("focus-view")).toBeNull();
+    c.dispose();
+  });
 });
