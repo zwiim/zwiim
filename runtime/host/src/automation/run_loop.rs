@@ -206,7 +206,7 @@ impl RunLoop {
                     .await;
             }
         };
-        Discovery {
+        let summary = Discovery {
             db: &self.db,
             launcher: self.launcher.as_ref(),
             sessions: &self.sessions,
@@ -215,6 +215,11 @@ impl RunLoop {
         }
         .discover(run.id, &doc)
         .await?;
+        if let Some(problem) = summary.agent_unavailable {
+            return self
+                .fail(&run, RunStatus::Discovering, AGENT_UNAVAILABLE, &problem)
+                .await;
+        }
         let queued = self.count(run.id, &[ItemStatus::Queued]).await?;
         if queued > 0 {
             match self
@@ -1290,5 +1295,50 @@ mod tests {
             .await
             .iter()
             .all(|(status, _)| status == "queued"));
+    }
+
+    /// A search whose discovery agent cannot start fails the run the same
+    /// way and leaves the source unfinished for a rerun, instead of ending
+    /// the run `complete` with nothing found (live smoke run, adapter still
+    /// being set up).
+    #[tokio::test]
+    async fn a_discovery_agent_that_cannot_start_fails_the_run() {
+        let db = fresh_in_memory_db().await.conn;
+        let store = PlaybookStore::new(db.clone());
+        let source = "format: 1\nname: Apply\ngoal: Backend roles\n\
+            main_kind: submit_application\nsites:\n  - jobs.test\n\
+            checks:\n  - kind: text_present\n    text: Applied\n\
+            sources:\n  - type: search\n    url: https://jobs.test/search?q=rust\n";
+        let pb = store.create("Apply", source).await.unwrap();
+        store
+            .set_site_value("jobs.test", SiteKnowledgeKind::RiskAccept, "main", "yes")
+            .await
+            .unwrap();
+        let run_id = AutomationEngine::new(db.clone())
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let sessions = Arc::new(EngineSessions::default());
+        let mut launcher = FakeLauncher::new(sessions.clone(), vec![]);
+        launcher.fail_spawn = true;
+        let run_loop = RunLoop::new(
+            db.clone(),
+            None,
+            Arc::new(launcher),
+            sessions,
+            Arc::new(FakeTabs::default()),
+        );
+        drive(&run_loop).await;
+        let run = run(&db, run_id).await;
+        assert_eq!(run.status, "failed");
+        let error: RunError = serde_json::from_str(run.error.as_deref().unwrap()).unwrap();
+        assert_eq!(error.code, AGENT_UNAVAILABLE);
+        let sources = crate::automation::entities::playbook_run_source::Entity::find()
+            .filter(crate::automation::entities::playbook_run_source::Column::RunId.eq(run_id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].status, "pending");
     }
 }

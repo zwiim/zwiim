@@ -165,6 +165,9 @@ pub struct DiscoverySummary {
     pub queued: usize,
     /// One note per source discovered by this call.
     pub notes: Vec<String>,
+    /// Set when a source's discovery agent could not start: discovery
+    /// stopped there and left that source unfinished (spec 6.5.6).
+    pub agent_unavailable: Option<String>,
 }
 
 /// Discovery for one run.
@@ -189,7 +192,13 @@ impl Discovery<'_> {
             if row.status == "done" {
                 continue;
             }
-            let (candidates, mut note) = self.candidates(doc, source).await;
+            let (candidates, mut note) = match self.candidates(doc, source).await {
+                Ok(found) => found,
+                Err(problem) => {
+                    summary.agent_unavailable = Some(problem);
+                    return Ok(summary);
+                }
+            };
             let Counts {
                 queued,
                 dropped,
@@ -241,7 +250,13 @@ impl Discovery<'_> {
     }
 
     /// A source's candidates, at most [`MAX_CANDIDATES`], and its note.
-    async fn candidates(&self, doc: &PlaybookDoc, source: &Source) -> (Vec<Candidate>, String) {
+    /// A source's candidates and its note; `Err` when its discovery agent
+    /// could not start.
+    async fn candidates(
+        &self,
+        doc: &PlaybookDoc,
+        source: &Source,
+    ) -> Result<(Vec<Candidate>, String), String> {
         let (mut found, mut note) = match source {
             Source::List { items } => (
                 entries(items.iter().map(String::as_str)),
@@ -251,22 +266,26 @@ impl Discovery<'_> {
                 Ok(text) => (entries(text.lines()), format!("file {path}")),
                 Err(e) => (Vec::new(), format!("file {path} could not be read: {e}")),
             },
-            Source::Search { url } => self.search(doc, url).await,
+            Source::Search { url } => self.search(doc, url).await?,
         };
         if found.len() > MAX_CANDIDATES {
             found.truncate(MAX_CANDIDATES);
             note.push_str(&format!("; stopped at {MAX_CANDIDATES} candidates"));
         }
-        (found, note)
+        Ok((found, note))
     }
 
     /// One discovery session on the source's lane (spec 6.2.1).
-    async fn search(&self, doc: &PlaybookDoc, url: &str) -> (Vec<Candidate>, String) {
+    async fn search(
+        &self,
+        doc: &PlaybookDoc,
+        url: &str,
+    ) -> Result<(Vec<Candidate>, String), String> {
         let Some(site) = site_for(url, &doc.sites) else {
-            return (
+            return Ok((
                 Vec::new(),
                 format!("search {url} is on none of the playbook's sites"),
-            );
+            ));
         };
         let lane = TabOwner::Lane {
             site,
@@ -275,10 +294,10 @@ impl Discovery<'_> {
         let tab = match self.tabs.open(&lane, url).await {
             Ok(tab) => tab,
             Err(e) => {
-                return (
+                return Ok((
                     Vec::new(),
                     format!("search {url}: the tab did not open: {e}"),
-                )
+                ))
             }
         };
         let end = run_session(
@@ -298,7 +317,7 @@ impl Discovery<'_> {
         )
         .await;
         self.tabs.close(&tab).await;
-        match end {
+        Ok(match end {
             SessionEnd::Reported(SessionReport::Discovery(found)) => {
                 (found, format!("search {url}"))
             }
@@ -307,15 +326,14 @@ impl Discovery<'_> {
                 Vec::new(),
                 format!("search {url}: discovery hit its call limit"),
             ),
-            SessionEnd::LaunchFailed(e) => (
-                Vec::new(),
-                format!("search {url}: the agent did not start: {e}"),
-            ),
+            SessionEnd::LaunchFailed(e) => {
+                return Err(format!("search {url}: the agent did not start: {e}"))
+            }
             _ => (
                 Vec::new(),
                 format!("search {url}: discovery returned no list"),
             ),
-        }
+        })
     }
 
     /// Queue what is new: drop what is known, let a judgment batch apply
