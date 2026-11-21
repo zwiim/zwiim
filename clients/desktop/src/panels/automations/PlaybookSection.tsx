@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { PlaybookRow } from "./data";
 import { ItemTile } from "./ItemTile";
-import { runCounts, sectionLine, type Dot } from "./status";
+import { failureText, runCounts, sectionLine, type Dot } from "./status";
 import { StatusDot } from "./StatusDot";
 
 /** The dot a playbook shows: needs-you first, then its run's state. */
@@ -96,6 +96,9 @@ export function PlaybookSection({
               <span className="text-muted-foreground font-mono text-xs tabular-nums">
                 {counts.sent}/{counts.total} sent
                 {counts.need > 0 && <span className="text-brand"> · {counts.need} need you</span>}
+                {row.run.status === "failed" && (
+                  <span className="text-destructive font-sans"> · Failed · {failureText(row.run.error)}</span>
+                )}
               </span>
             )
           ) : (

@@ -90,6 +90,15 @@ export function useAutomations(): Automations {
     return byPlaybook;
   }, [listed, liveRuns]);
 
+  // Only a new snapshot swaps the items for an empty set. Runs that ended while
+  // the feed was away left it unseen, and only `run.list` has their final state.
+  const lastItems = useRef(runItems);
+  useEffect(() => {
+    if (runItems === lastItems.current) return;
+    lastItems.current = runItems;
+    if (Object.keys(runItems).length === 0) reload();
+  }, [runItems, reload]);
+
   // A run of a playbook the list does not have yet was started elsewhere: list again, once per run.
   const seenUnknown = useRef(new Set<string>());
   useEffect(() => {

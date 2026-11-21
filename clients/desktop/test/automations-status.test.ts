@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ItemStatus, RunItemView } from "@zwiim/sdk";
-import { defaultOpen, itemStatus, runCounts, sectionLine } from "@/panels/automations/status";
+import { defaultOpen, failureText, itemStatus, runCounts, sectionLine } from "@/panels/automations/status";
 
 function item(status: ItemStatus, extra: Partial<RunItemView> = {}): RunItemView {
   return { run_id: "r1", item_id: `i-${status}`, title: null, status, reason_code: null, ...extra };
@@ -73,5 +73,14 @@ describe("defaultOpen", () => {
     expect(defaultOpen({ status: "done" }, { total: 2, sent: 2, need: 0 })).toBe(false);
     expect(defaultOpen({ status: "done" }, { total: 2, sent: 1, need: 1 })).toBe(true);
     expect(defaultOpen(null, zero)).toBe(false);
+  });
+});
+
+describe("failureText", () => {
+  it("says why a run failed in plain words", () => {
+    expect(failureText("agent_unavailable")).toBe("The agent could not start");
+    expect(failureText("playbook_invalid")).toBe("The playbook's text has a problem");
+    expect(failureText("something_new")).toBe("Something went wrong on the host");
+    expect(failureText(null)).toBe("Something went wrong on the host");
   });
 });

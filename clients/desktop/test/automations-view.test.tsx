@@ -144,6 +144,20 @@ describe("Automations canvas", () => {
     controller.dispose();
   });
 
+  it("an open failed run says why", async () => {
+    const t = transport("failed");
+    t.handlers["run.list"] = () => ({
+      runs: [{ ...run("r1", "pb1", "failed"), error: "agent_unavailable" }],
+      next_cursor: null,
+    });
+    t.handlers["run.items"] = () => ({ items: [], next_cursor: null });
+    const { controller } = await mount(t);
+    expect(section("pb1").textContent).toContain("Failed");
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(section("pb1").textContent).toContain("Failed · The agent could not start");
+    controller.dispose();
+  });
+
   it("Labs off offers to turn it on", async () => {
     const t = transport();
     t.handlers["playbook.list"] = () => {

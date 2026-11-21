@@ -80,3 +80,15 @@ export function defaultOpen(run: { status: RunStatus } | null, counts: RunCounts
   if (counts.need > 0) return true;
   return run?.status === "running" || run?.status === "discovering" || run?.status === "paused";
 }
+
+/** Why a run failed, from its reason code, in the person's words. */
+export function failureText(code: string | null | undefined): string {
+  switch (code) {
+    case "agent_unavailable":
+      return "The agent could not start";
+    case "playbook_invalid":
+      return "The playbook's text has a problem";
+    default:
+      return "Something went wrong on the host";
+  }
+}

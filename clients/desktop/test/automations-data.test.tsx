@@ -126,6 +126,23 @@ describe("useAutomations", () => {
     c.dispose();
   });
 
+  it("lists again after a new snapshot, for runs that ended while the feed was away", async () => {
+    const t = transport();
+    const live = { ...run("r2", "pb1", "2026-11-21T10:00:00Z", "running"), totals: { items: 2, done: 0, skipped: 0, failed: 0, deferred: 0, waiting: 0 } };
+    const snapshot = t.snapshot.bind(t);
+    t.snapshot = () => ({ ...snapshot(), runs: [live] });
+    const c = await mount(t);
+    expect(latest!.rows[0]!.run).toMatchObject({ run_id: "r2", status: "running" });
+    // Offline, r2 ended: the next snapshot leaves it out and run.list has its final state.
+    t.snapshot = snapshot;
+    t.handlers["run.list"] = () => ({ runs: [run("r2", "pb1", "2026-11-21T10:00:00Z", "done")], next_cursor: null });
+    await act(async () => t.frame({ type: "host.snapshot", ...t.snapshot() } as never));
+    await tick();
+    expect(t.calls.filter((x) => x.op === "run.list")).toHaveLength(2);
+    expect(latest!.rows[0]!.run).toMatchObject({ run_id: "r2", status: "done" });
+    c.dispose();
+  });
+
   it("Labs off shows off and turnOn enables", async () => {
     const t = transport();
     let enabled = false;
