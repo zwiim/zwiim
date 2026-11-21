@@ -262,6 +262,25 @@ fn apply_edits(declaration: &mut Declaration, edits: &[FieldEdit]) -> Result<(),
     Ok(())
 }
 
+/// A parked item whose tab is gone (Host restart): back to `queued` for a new
+/// session, its unanswered approval stopped. An approved one stays approved,
+/// so the new session's identical declaration goes without asking (8.7).
+pub async fn requeue_parked(conn: &DatabaseConnection, item_id: i32) -> Result<(), DbError> {
+    let tx = conn.begin().await?;
+    playbook_approval::Entity::update_many()
+        .col_expr(
+            playbook_approval::Column::State,
+            sea_orm::sea_query::Expr::value("stopped"),
+        )
+        .filter(playbook_approval::Column::ItemId.eq(item_id))
+        .filter(playbook_approval::Column::State.eq("pending"))
+        .exec(&tx)
+        .await?;
+    move_parked(&tx, item_id, "queued", Some("host_restarted")).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Move a run's approved, parked items to `working` (on resume, spec 8.8.3).
 pub async fn release_approved(conn: &DatabaseConnection, run_id: i32) -> Result<(), DbError> {
     let rows = playbook_approval::Entity::find()
@@ -408,6 +427,41 @@ pub async fn shown_kinds<C: ConnectionTrait>(
         .into_iter()
         .filter_map(|m| ActionKind::parse(&m.kind))
         .collect())
+}
+
+/// Approve, for the person, every pending approval of `kind` on `site` for
+/// `playbook_id`: its first approved send there was the show-me run, and
+/// under an `auto` rule that kind now goes without asking (spec 8.1.3,
+/// decided 2026-11-21). How many were approved.
+pub async fn approve_shown(
+    conn: &DatabaseConnection,
+    playbook_id: i32,
+    site: &str,
+    kind: ActionKind,
+) -> Result<u64, DbError> {
+    use crate::automation::entities::playbook_item;
+    let parked: Vec<i32> = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PlaybookId.eq(playbook_id))
+        .filter(playbook_item::Column::Status.eq("waiting_approval"))
+        .all(conn)
+        .await?
+        .into_iter()
+        .filter(|i| i.outward_site.as_deref().unwrap_or(&i.site) == site)
+        .map(|i| i.id)
+        .collect();
+    let rows = playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::ItemId.is_in(parked))
+        .filter(playbook_approval::Column::State.eq("pending"))
+        .filter(playbook_approval::Column::Kind.eq(kind.as_str()))
+        .all(conn)
+        .await?;
+    let mut approved = 0;
+    for row in rows {
+        if respond(conn, row.id, ApprovalAnswer::Approve, &[]).await? == AnswerOutcome::Applied {
+            approved += 1;
+        }
+    }
+    Ok(approved)
 }
 
 /// The content the person approved for an item and the Host has not yet

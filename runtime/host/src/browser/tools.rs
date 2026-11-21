@@ -1060,6 +1060,51 @@ async fn attach_file(
     Ok(())
 }
 
+/// The Host's own click, never an agent's: a whole snapshot in `worlds`,
+/// `find(generation)` names the ref, and a real pointer clicks it. Waits for
+/// the page to settle. `false` when `find` named nothing.
+pub(crate) async fn host_click(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    find: impl Fn(&str) -> String,
+) -> Result<bool, String> {
+    let request = SnapshotRequest { max_chars: Some(0) };
+    let page = read_page(browser, worlds, tab_id, &request).await?;
+    let changed = || "the page changed while it was read; try again".to_string();
+    let context = worlds.current(tab_id).await.ok_or_else(changed)?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    let world = |e: WorldError| match e {
+        WorldError::Gone => changed(),
+        WorldError::Failed(m) => m,
+    };
+    let target = eval_in(&cdp, &session, context, &find(&page.generation))
+        .await
+        .map_err(world)?;
+    if target.is_empty() {
+        return Ok(false);
+    }
+    let request = ActionRequest {
+        generation: page.generation.clone(),
+        target: Some(target.clone()),
+        action: ActionKind::Click {
+            button: None,
+            count: None,
+        },
+        expect_url: None,
+    };
+    match pointer(&cdp, &session, context, &request, &target, |_, _| {})
+        .await
+        .map_err(world)?
+    {
+        Ok(_) => {}
+        Err((_, note)) => return Err(note),
+    }
+    tokio::time::sleep(ACTION_GRACE).await;
+    settle(browser, tab_id, &cdp, &session).await;
+    Ok(true)
+}
+
 /// The Host's own read of a tab, never an agent's: a whole snapshot in
 /// `worlds`, then `call(generation)` evaluated in that same world. Its
 /// value is the expression's string.

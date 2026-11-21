@@ -18,6 +18,7 @@ use sea_orm::{
     Set,
 };
 
+use crate::automation::checks::PageFacts;
 use crate::automation::declaration::Target;
 use crate::automation::entities::{
     never_twice_ledger, playbook_item, playbook_run, playbook_run_source,
@@ -62,6 +63,11 @@ pub trait LaneTabs: Send + Sync {
         tab_id: &str,
         target: &Target,
     ) -> Result<Result<Scope, ScopeMiss>, String>;
+    /// The Host's own click on the one element `target` names, once the page
+    /// settles after it; `false` when the page has none or several.
+    async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String>;
+    /// What the page shows now, for the checks (spec 9.1).
+    async fn facts(&self, tab_id: &str) -> Result<PageFacts, String>;
 }
 
 /// The Host's lane tabs, in its browser.
@@ -109,6 +115,26 @@ impl LaneTabs for BrowserLaneTabs {
         })
         .await?;
         scope::parse(&raw)
+    }
+
+    async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String> {
+        let browser = self.state.browser().await.map_err(|e| e.to_string())?;
+        crate::browser::tools::host_click(&browser, &self.worlds, tab_id, |g| {
+            scope::find_call(g, target)
+        })
+        .await
+    }
+
+    async fn facts(&self, tab_id: &str) -> Result<PageFacts, String> {
+        let browser = self.state.browser().await.map_err(|e| e.to_string())?;
+        let raw = crate::browser::tools::read_after_snapshot(
+            &browser,
+            &self.worlds,
+            tab_id,
+            PageFacts::read_call,
+        )
+        .await?;
+        PageFacts::parse(&raw)
     }
 }
 
@@ -596,6 +622,10 @@ pub(crate) mod tests {
         pub redirects: Mutex<std::collections::HashMap<String, String>>,
         /// What `read_scope` answers; not found when unset.
         pub scope: Mutex<Option<Scope>>,
+        /// Every Host click, as (tab, target).
+        pub clicks: Mutex<Vec<(String, Target)>>,
+        /// What `facts` answers.
+        pub facts: Mutex<PageFacts>,
     }
 
     #[async_trait]
@@ -625,6 +655,16 @@ pub(crate) mod tests {
                 .unwrap()
                 .clone()
                 .ok_or(ScopeMiss::NotFound))
+        }
+        async fn click(&self, tab_id: &str, target: &Target) -> Result<bool, String> {
+            self.clicks
+                .lock()
+                .unwrap()
+                .push((tab_id.to_string(), target.clone()));
+            Ok(true)
+        }
+        async fn facts(&self, _tab_id: &str) -> Result<PageFacts, String> {
+            Ok(self.facts.lock().unwrap().clone())
         }
     }
 

@@ -43,6 +43,24 @@ pub fn scope_call(generation: &str, target: &Target) -> String {
     )
 }
 
+/// The expression whose value is the ref of the one element the snapshot
+/// `generation` named with `target`'s role and name, or `""` when none or
+/// several are.
+pub fn find_call(generation: &str, target: &Target) -> String {
+    format!(
+        "(() => {{ const A = globalThis.{AGENT_GLOBAL}; const gen = {generation}; \
+         const hits = []; \
+         const walk = (root) => {{ for (const el of root.querySelectorAll('*')) {{ \
+           const r = el._ariaRef; \
+           if (r && A && r.role === {role} && r.name === {name} && A.elementForRef(gen, r.ref) === el) hits.push(r.ref); \
+           if (el.shadowRoot) walk(el.shadowRoot); }} }}; \
+         walk(document); return hits.length === 1 ? hits[0] : ''; }})()",
+        generation = serde_json::Value::from(generation),
+        role = serde_json::Value::from(target.role.as_str()),
+        name = serde_json::Value::from(target.name.as_str()),
+    )
+}
+
 /// Walks the document (open shadow roots too) for elements the current
 /// snapshot named with `role` and `name`, then lists the form's controls.
 /// A password's value never leaves the page: only whether it is filled.

@@ -9,7 +9,7 @@
 //! tasks, so a tick never waits on an agent; every state change is the item
 //! runner's CAS write, so a tick that races another changes nothing twice.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use sea_orm::{
@@ -18,18 +18,22 @@ use sea_orm::{
 use tokio::task::JoinHandle;
 
 use crate::automation::agent_gate::{ItemAgentGate, ItemAgentSlot, DEFAULT_ITEM_AGENTS};
+use crate::automation::checks::{Check, PageFacts};
+use crate::automation::declaration::Declaration;
 use crate::automation::discovery::{item_id_rule, item_key, Discovery, LaneTabs};
 use crate::automation::engine::AutomationEngine;
+use crate::automation::engine::LedgerKey;
 use crate::automation::entities::{playbook_item, playbook_run};
 use crate::automation::item_runner::{
-    ItemOutcome, ItemRef, ItemRunner, RunError as StepError, SessionLimits, SessionResult,
+    DispatchResult, ItemOutcome, ItemRef, ItemRunner, RunError as StepError, SessionLimits,
+    SessionResult,
 };
 use crate::automation::knowledge;
 use crate::automation::launcher::{run_session, EngineLauncher, SessionEnd, SessionRequest};
 use crate::automation::lockdown::{ItemAttempt, SessionKind};
 use crate::automation::playbook_format::PlaybookDoc;
 use crate::automation::playbook_store::PlaybookStore;
-use crate::automation::reasons::ReasonCode;
+use crate::automation::reasons::{ApprovalRule, ReasonCode};
 use crate::automation::scope::ScopeMiss;
 use crate::automation::sessions::{
     EngineScope, EngineSessions, ItemReport, ItemReportStatus, SessionReport,
@@ -63,6 +67,8 @@ pub struct RunLoop {
     limits: SessionLimits,
     /// Runs whose discovery is running now.
     discovering: Mutex<HashSet<i32>>,
+    /// The tab of each item parked for the person's approval (spec 8.7).
+    parked: Mutex<HashMap<i32, String>>,
 }
 
 impl RunLoop {
@@ -91,6 +97,7 @@ impl RunLoop {
             gate: ItemAgentGate::new(DEFAULT_ITEM_AGENTS),
             limits: SessionLimits::default(),
             discovering: Mutex::new(HashSet::new()),
+            parked: Mutex::new(HashMap::new()),
         })
     }
 
@@ -127,6 +134,15 @@ impl RunLoop {
                 Err(e) => tracing::warn!("[automation] item {} not recovered: {e}", item.id),
             }
         }
+        // A parked item's tab went with the Host: a new session asks again.
+        let parked = playbook_item::Entity::find()
+            .filter(playbook_item::Column::Status.eq(ItemStatus::WaitingApproval.as_str()))
+            .all(&self.db)
+            .await?;
+        for item in parked {
+            crate::automation::approvals::requeue_parked(&self.db, item.id).await?;
+            moved += 1;
+        }
         Ok(moved)
     }
 
@@ -156,6 +172,7 @@ impl RunLoop {
                 }));
                 continue;
             }
+            started.extend(self.send_approved(&run).await?);
             started.extend(self.start_items(&run).await?);
             self.end_if_settled(&run).await?;
         }
@@ -302,27 +319,7 @@ impl RunLoop {
                 run.id
             )))
         })?;
-        let mut item_ref = ItemRef {
-            playbook_id: run.playbook_id,
-            site: item.site.clone(),
-            account: item.account.clone(),
-            key: item.item_key.clone(),
-            outward_site: item.outward_site.clone(),
-            outward_started: item.outward_started_at.is_some(),
-            // Show-me is per kind and site (decided 2026-11-21): the first
-            // approved send of a kind on a site is its show-me run, so the
-            // playbook-wide switch does not hold every send.
-            show_me: false,
-            rules: doc.approval.iter().map(|a| (a.kind, a.rule)).collect(),
-            show_me_run_kinds: crate::automation::approvals::shown_kinds(
-                &self.db,
-                run.playbook_id,
-                lane_site(&item),
-            )
-            .await?,
-            scope: Vec::new(),
-            epoch,
-        };
+        let mut item_ref = self.item_ref(&run, &doc, &item, epoch).await?;
         let lane = TabOwner::Lane {
             site: lane_site(&item).to_string(),
             account: item.account.clone(),
@@ -433,18 +430,238 @@ impl RunLoop {
             )
             .await?;
         }
-        // A parked approval keeps its tab (spec 8.7); every other end closes it.
+        // A parked approval keeps its tab for the Host's click (spec 8.7);
+        // an allowed or already approved one is clicked now; every other end
+        // closes it.
         if let Some(tab) = tab {
-            if !matches!(result, Ok(SessionResult::WaitingApproval)) {
-                self.tabs.close(&tab).await;
-            }
+            let sent = match &result {
+                Ok(SessionResult::WaitingApproval) => {
+                    self.parked_tabs().insert(item.id, tab);
+                    return Ok(());
+                }
+                Ok(SessionResult::AllowDispatch(declaration)) => {
+                    self.send(&doc, item.id, &mut item_ref, &tab, declaration, false)
+                        .await
+                }
+                Ok(SessionResult::ApprovedDispatch(declaration)) => {
+                    self.send(&doc, item.id, &mut item_ref, &tab, declaration, true)
+                        .await
+                }
+                _ => Ok(()),
+            };
+            self.tabs.close(&tab).await;
+            sent?;
         }
+        let result = match result {
+            // The agent's session is over, so the Host ends the item itself.
+            Ok(SessionResult::Refused(reason)) => {
+                self.runner
+                    .finish_session(item.id, &item_ref, ItemOutcome::Skip(reason))
+                    .await
+            }
+            Ok(SessionResult::RunNotRunning) => self
+                .runner
+                .pause_item(item.id, &item_ref)
+                .await
+                .map(|()| SessionResult::RunNotRunning),
+            other => other,
+        };
         match result {
             // The attempt was ended meanwhile (Pause, Stop, restart).
             Err(StepError::Transition(TransitionError::StaleAttempt { .. })) => Ok(()),
             Err(e) => Err(e),
             Ok(_) => Ok(()),
         }
+    }
+
+    /// The item facts a session or the Host's click works from.
+    async fn item_ref(
+        &self,
+        run: &playbook_run::Model,
+        doc: &PlaybookDoc,
+        item: &playbook_item::Model,
+        epoch: i32,
+    ) -> Result<ItemRef, DbError> {
+        Ok(ItemRef {
+            playbook_id: run.playbook_id,
+            site: item.site.clone(),
+            account: item.account.clone(),
+            key: item.item_key.clone(),
+            outward_site: item.outward_site.clone(),
+            outward_started: item.outward_started_at.is_some(),
+            // Show-me is per kind and site (decided 2026-11-21): the first
+            // approved send of a kind on a site is its show-me run, so the
+            // playbook-wide switch does not hold every send.
+            show_me: false,
+            rules: doc.approval.iter().map(|a| (a.kind, a.rule)).collect(),
+            show_me_run_kinds: crate::automation::approvals::shown_kinds(
+                &self.db,
+                run.playbook_id,
+                lane_site(item),
+            )
+            .await?,
+            scope: Vec::new(),
+            epoch,
+        })
+    }
+
+    fn parked_tabs(&self) -> std::sync::MutexGuard<'_, HashMap<i32, String>> {
+        self.parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Parked items of `run` the person has answered: an approved one gets
+    /// the Host's click on its tab; a skipped or stopped one loses its tab.
+    async fn send_approved(
+        self: &Arc<Self>,
+        run: &playbook_run::Model,
+    ) -> Result<Vec<JoinHandle<()>>, DbError> {
+        let ids: Vec<i32> = self.parked_tabs().keys().copied().collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One approved while its lane was busy takes the lane once it frees.
+        crate::automation::approvals::release_approved(&self.db, run.id).await?;
+        let answered = playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(run.id))
+            .filter(playbook_item::Column::Id.is_in(ids))
+            .filter(playbook_item::Column::Status.ne(ItemStatus::WaitingApproval.as_str()))
+            .all(&self.db)
+            .await?;
+        let mut started = Vec::new();
+        for item in answered {
+            let Some(tab) = self.parked_tabs().remove(&item.id) else {
+                continue;
+            };
+            let approved = match item.status == ItemStatus::Working.as_str() {
+                true => {
+                    crate::automation::approvals::approved_declaration(&self.db, item.id).await?
+                }
+                false => None,
+            };
+            let Some(declaration) = approved else {
+                self.tabs.close(&tab).await;
+                continue;
+            };
+            let this = self.clone();
+            let run = run.clone();
+            started.push(tokio::spawn(async move {
+                let sent = async {
+                    let doc = this.doc(&run).await.map_err(|e| {
+                        StepError::Db(DbError::Validation(format!(
+                            "playbook of run {}: {e}",
+                            run.id
+                        )))
+                    })?;
+                    let mut item_ref = this.item_ref(&run, &doc, &item, item.epoch).await?;
+                    this.send(&doc, item.id, &mut item_ref, &tab, &declaration, true)
+                        .await
+                }
+                .await;
+                this.tabs.close(&tab).await;
+                if let Err(e) = sent {
+                    tracing::warn!("[automation] item {} approved send failed: {e}", item.id);
+                }
+            }));
+        }
+        Ok(started)
+    }
+
+    /// The Host's one click for a declaration it allowed or the person
+    /// approved (spec 8.5.5, 6.6, 9): the dispatch transaction, the click on
+    /// the declared target, then the playbook's checks decide `done`.
+    async fn send(
+        &self,
+        doc: &PlaybookDoc,
+        item_id: i32,
+        item_ref: &mut ItemRef,
+        tab: &str,
+        declaration: &Declaration,
+        approved: bool,
+    ) -> Result<(), StepError> {
+        let keys = [LedgerKey {
+            site: item_ref.site.clone(),
+            account: item_ref.account.clone(),
+            action_kind: declaration.kind.as_str().to_string(),
+            item_key: item_ref.key.clone(),
+        }];
+        let day = crate::automation::caps::local_day_here(chrono::Utc::now());
+        let dispatched = if approved {
+            // The page as it is now, not as it was when the person was asked.
+            match self.tabs.read_scope(tab, &declaration.submit_target).await {
+                Ok(Ok(scope)) => item_ref.scope = scope.controls,
+                _ => {
+                    self.runner
+                        .finish_session(
+                            item_id,
+                            item_ref,
+                            ItemOutcome::Failed(ReasonCode::PageUnrecognised),
+                        )
+                        .await?;
+                    return Ok(());
+                }
+            }
+            self.runner
+                .dispatch_approved(item_id, item_ref, &keys, &day)
+                .await?
+        } else {
+            self.runner
+                .dispatch(item_id, item_ref, declaration.kind, &keys, &day)
+                .await?
+        };
+        // Not sent (already done, cap, page changed): the runner has
+        // already moved the item.
+        if dispatched != DispatchResult::Done {
+            return Ok(());
+        }
+        if let Err(e) = self
+            .tabs
+            .click(tab, &declaration.submit_target)
+            .await
+            .and_then(|found| found.then_some(()).ok_or("the target is gone".to_string()))
+        {
+            // Past outward_started: the person decides, never a redo.
+            tracing::warn!("[automation] item {item_id} Host click failed: {e}");
+            self.runner
+                .finish_session(
+                    item_id,
+                    item_ref,
+                    ItemOutcome::Failed(ReasonCode::PageNeedsPerson),
+                )
+                .await?;
+            return Ok(());
+        }
+        let facts = self.tabs.facts(tab).await.unwrap_or_else(|e| {
+            tracing::warn!("[automation] item {item_id} page unread after the click: {e}");
+            PageFacts::default()
+        });
+        let checks: Vec<Check> = doc.checks.iter().map(Check::from).collect();
+        let settled = self
+            .runner
+            .settle_after_checks(item_id, item_ref.epoch, &keys, &checks, &facts, false)
+            .await?;
+        // That send was the kind's show-me run on the site: under an `auto`
+        // rule the sends already waiting on it go without asking.
+        if approved
+            && settled == DispatchResult::Done
+            && item_ref.rule_for(declaration.kind) == ApprovalRule::Auto
+            && !declaration.kind.always_ask()
+        {
+            let site = item_ref
+                .outward_site
+                .clone()
+                .unwrap_or_else(|| item_ref.site.clone());
+            crate::automation::approvals::approve_shown(
+                &self.db,
+                item_ref.playbook_id,
+                &site,
+                declaration.kind,
+            )
+            .await?;
+            self.engine.notify();
+        }
+        Ok(())
     }
 
     /// The item's tab, on the item's page (spec 6.3.4): a page that is not
@@ -841,7 +1058,11 @@ mod tests {
 
     /// The run's judgment batch keeps every item; then `scripts` are the
     /// item sessions in order.
-    async fn fixture(mut scripts: Vec<Script>) -> Fixture {
+    async fn fixture(scripts: Vec<Script>) -> Fixture {
+        fixture_with(PLAYBOOK, scripts).await
+    }
+
+    async fn fixture_with(playbook: &str, mut scripts: Vec<Script>) -> Fixture {
         scripts.insert(
             0,
             Script::Act {
@@ -851,7 +1072,7 @@ mod tests {
         );
         let db = fresh_in_memory_db().await.conn;
         let store = PlaybookStore::new(db.clone());
-        let pb = store.create("Apply", PLAYBOOK).await.unwrap();
+        let pb = store.create("Apply", playbook).await.unwrap();
         store
             .set_site_value("jobs.test", SiteKnowledgeKind::RiskAccept, "main", "yes")
             .await
@@ -1133,6 +1354,103 @@ mod tests {
         let (_, prompt, _) = &item_prompts(&f.launcher)[0];
         assert!(prompt.contains("playbook_declare_action"), "{prompt}");
         assert!(prompt.contains("Never click"), "{prompt}");
+    }
+
+    /// The person approves the first send; the Host clicks it once on the
+    /// parked tab and the checks decide `done`. With an `auto` rule that
+    /// first send is the show-me run, so the items already waiting on the
+    /// same kind and site go without asking (decided 2026-11-21).
+    #[tokio::test]
+    async fn the_first_approved_send_lets_the_rest_go_auto() {
+        use crate::automation::approvals::{self, ApprovalAnswer};
+        let auto = PLAYBOOK.replace(
+            "rules:\n",
+            "approval:\n  - kind: submit_application\n    rule: auto\nrules:\n",
+        );
+        let f = fixture_with(&auto, vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        f.tabs.facts.lock().unwrap().text = "Applied. Thanks!".into();
+        drive(&f.run_loop).await;
+        let pending = approvals::pending(&f.db).await.unwrap();
+        assert_eq!(pending.len(), 3);
+        assert!(
+            f.tabs.clicks.lock().unwrap().is_empty(),
+            "nothing sent unasked"
+        );
+
+        approvals::respond(&f.db, pending[0].id, ApprovalAnswer::Approve, &[])
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        for (status, reason) in items(&f.db, f.run_id).await {
+            assert_eq!((status.as_str(), reason), ("done", None));
+        }
+        let clicks = f.tabs.clicks.lock().unwrap().clone();
+        assert_eq!(clicks.len(), 3, "one click per item");
+        assert!(clicks
+            .iter()
+            .all(|(_, t)| *t == crate::automation::Target::new("button", "Submit")));
+        assert_eq!(f.tabs.closed.lock().unwrap().len(), 3);
+        assert_eq!(run(&f.db, f.run_id).await.status, "done");
+    }
+
+    /// After a Host restart a parked item has no tab: it goes back to the
+    /// queue for a new session, and its question to the person is withdrawn.
+    #[tokio::test]
+    async fn a_restart_requeues_parked_items() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        let restarted = RunLoop::new(
+            f.db.clone(),
+            None,
+            f.launcher.clone(),
+            Arc::new(EngineSessions::default()),
+            f.tabs.clone(),
+        );
+        assert_eq!(restarted.recover().await.unwrap(), 3);
+        for (status, reason) in items(&f.db, f.run_id).await {
+            assert_eq!(
+                (status.as_str(), reason.as_deref()),
+                ("queued", Some("host_restarted"))
+            );
+        }
+        assert!(crate::automation::approvals::pending(&f.db)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// With the default `ask` rule every send waits for the person.
+    #[tokio::test]
+    async fn an_ask_rule_waits_for_every_send() {
+        use crate::automation::approvals::{self, ApprovalAnswer};
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        f.tabs.facts.lock().unwrap().text = "Applied".into();
+        drive(&f.run_loop).await;
+        let pending = approvals::pending(&f.db).await.unwrap();
+        approvals::respond(&f.db, pending[0].id, ApprovalAnswer::Approve, &[])
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+        let statuses: Vec<String> = items(&f.db, f.run_id)
+            .await
+            .into_iter()
+            .map(|i| i.0)
+            .collect();
+        assert_eq!(statuses, ["done", "waiting_approval", "waiting_approval"]);
+        assert_eq!(f.tabs.clicks.lock().unwrap().len(), 1);
     }
 
     /// A declared button the Host cannot find on the page fails the item.
