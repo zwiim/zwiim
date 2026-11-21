@@ -121,6 +121,9 @@ pub struct ItemSummary {
     pub status: String,
     pub reason_code: Option<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// The question the item waits on the person for (`run.answer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
 }
 
 impl From<playbook_item::Model> for ItemSummary {
@@ -135,6 +138,7 @@ impl From<playbook_item::Model> for ItemSummary {
             status: m.status,
             reason_code: m.reason_code,
             updated_at: m.updated_at,
+            question: None,
         }
     }
 }
@@ -524,9 +528,76 @@ pub async fn run_items(
     } else {
         None
     };
+    let ids: Vec<i32> = rows.iter().map(|m| m.id).collect();
+    let mut questions = crate::automation::knowledge::open_questions(&state.db.conn, &ids)
+        .await
+        .map_err(engine_err)?;
     Ok(Json(ItemPage {
-        items: rows.into_iter().map(Into::into).collect(),
+        items: rows
+            .into_iter()
+            .map(|m| {
+                let question = questions.remove(&m.id).map(|(_, text)| text);
+                ItemSummary {
+                    question,
+                    ..m.into()
+                }
+            })
+            .collect(),
         next_cursor,
+    }))
+}
+
+// ── run.answer (an item's question, spec 7.3) ─────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunAnswerParams {
+    pub item_id: String,
+    pub answer: String,
+}
+
+#[derive(Serialize)]
+pub struct RunAnswerResult {
+    pub item_id: String,
+    /// The item went back to the queue; false when it had moved on.
+    pub requeued: bool,
+}
+
+/// The person answered the question an item waits on ("Save and retry"):
+/// the answer is kept for every later item on the site, and the item goes
+/// back to the queue.
+pub async fn run_answer(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<RunAnswerParams>,
+) -> ZResult<RunAnswerResult> {
+    require_enabled(&state.db.conn).await?;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    if p.answer.trim().is_empty() {
+        return Err(ZwiimError::invalid_input("The answer is empty"));
+    }
+    let item = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PublicId.eq(&p.item_id))
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("item {}", p.item_id)))?;
+    let open = crate::automation::knowledge::open_questions(&state.db.conn, &[item.id])
+        .await
+        .map_err(engine_err)?;
+    let Some((question, _)) = open.get(&item.id) else {
+        return Err(ZwiimError::new(
+            axum::http::StatusCode::CONFLICT,
+            crate::automation::ErrorCode::NoOpenQuestion.as_str(),
+            "This item is not waiting on a question",
+        ));
+    };
+    let requeued = crate::automation::knowledge::answer(&engine(&state), *question, &p.answer)
+        .await
+        .map_err(engine_err)?;
+    changed(&state);
+    Ok(Json(RunAnswerResult {
+        item_id: p.item_id,
+        requeued,
     }))
 }
 

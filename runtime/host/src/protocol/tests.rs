@@ -161,6 +161,7 @@ const OPS: &[&str] = &[
     "run.stop",
     "run.approve",
     "run.reject",
+    "run.answer",
     "site.list",
     "site.pause",
     "site.resume",
@@ -8538,6 +8539,73 @@ async fn a_second_approval_answer_is_approval_not_pending() {
         .one(&h.state.db.conn)
         .await
         .unwrap();
+}
+
+/// An item waiting on a question shows it in `run.items`; `run.answer`
+/// saves the answer for the site and puts the item back in the queue.
+#[tokio::test]
+async fn an_answer_puts_the_waiting_item_back_in_the_queue() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id.clone() }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    let now = chrono::Utc::now();
+    let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
+        run_id: Set(run_row_id(&h, &run_id).await),
+        playbook_id: Set(pb.id),
+        site: Set("indeed.com".into()),
+        account: Set("main".into()),
+        item_key: Set("job-1".into()),
+        status: Set("waiting_person".into()),
+        reason_code: Set(Some("form_field_unanswerable".into())),
+        epoch: Set(1),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(&h.state.db.conn)
+    .await
+    .unwrap();
+    crate::automation::knowledge::ask(&h.state.db.conn, pb.id, "indeed.com", item.id, "Expected salary?")
+        .await
+        .unwrap();
+
+    let (status, body) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["question"], "Expected salary?");
+
+    let (status, body) = h
+        .call("run.answer", json!({ "item_id": item.public_id, "answer": " " }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h
+        .call("run.answer", json!({ "item_id": item.public_id, "answer": "20 LPA" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["requeued"], true);
+    let answers = crate::automation::knowledge::answers(&h.state.db.conn, pb.id, "indeed.com")
+        .await
+        .unwrap();
+    assert_eq!(answers, [("Expected salary?".to_string(), "20 LPA".to_string())]);
+    let (_, body) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert_eq!(body["items"][0]["status"], "queued");
+    assert!(body["items"][0].get("question").is_none());
+
+    // Nothing left to answer.
+    let (status, body) = h
+        .call("run.answer", json!({ "item_id": item.public_id, "answer": "20 LPA" }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "no_open_question");
+    let (status, _) = h
+        .call("run.answer", json!({ "item_id": "nope", "answer": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// A run with one item parked on a pending approval, as the runner leaves it.

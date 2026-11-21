@@ -41,3 +41,4 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `playbooks_disabled` | Playbooks are off in Settings > Labs. |
 | `run_not_running` | The run is not running. |
 | `site_risk_not_accepted` | A site of the playbook has no risk step yet; `details.sites` lists them. |
+| `no_open_question` | The item is not waiting on a question. |
