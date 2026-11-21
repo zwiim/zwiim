@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, type BrowserInput, type BrowserStreamHandlers, type RunItemView } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
@@ -33,14 +33,14 @@ function item(extra: Partial<RunItemView> = {}): RunItemView {
   };
 }
 
-async function mount(t: StreamingTransport, it: RunItemView) {
+async function mount(t: StreamingTransport, it: RunItemView, onOpen?: () => void) {
   const client = new HostClient({ transport: t, random: () => 0.5 });
   const controller = new HostController(client);
   client.start();
   await tick();
   const view = render(
     <HostProvider value={controller}>
-      <ItemTile item={it} />
+      <ItemTile item={it} onOpen={onOpen} />
     </HostProvider>,
   );
   await tick();
@@ -100,6 +100,15 @@ describe("item tiles", () => {
     const { controller } = await mount(t, item({ status: "waiting_approval" }));
     expect(screen.getAllByText("Needs your OK").length).toBeGreaterThan(0);
     expect(screen.getByTestId("tile-frame").className).toContain("ring-brand");
+    controller.dispose();
+  });
+
+  it("clicking a tile opens it", async () => {
+    const t = transport();
+    const onOpen = vi.fn();
+    const { controller } = await mount(t, item(), onOpen);
+    fireEvent.click(screen.getByRole("button", { name: /Backend Engineer/ }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
 });
