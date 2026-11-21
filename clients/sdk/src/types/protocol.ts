@@ -2100,6 +2100,14 @@ export interface PlaybookSummary {
   /** Every outward action asks (locked on in 1a-i). */
   show_me: boolean;
   freeze_learning: boolean;
+  /** The sites its text declares; empty while the text does not parse (revision 43). */
+  sites?: PlaybookSite[];
+}
+
+/** A site a playbook declares, and whether the person accepted its risk (revision 43). */
+export interface PlaybookSite {
+  site: string;
+  risk_accepted: boolean;
 }
 
 /** `playbook.get`: the playbook's summary and its current text. */
@@ -2153,6 +2161,8 @@ export interface DeclaredField {
   target: PlaybookTarget;
   control: DeclaredControl;
   value: DeclaredValue;
+  /** The page pre-filled it and the agent left it alone (revision 43). */
+  prefilled?: boolean;
 }
 
 /** An outward action waiting for the person's Send, edit, or Skip (spec 8.5). */
@@ -2160,6 +2170,11 @@ export interface PendingApproval {
   approval_id: string;
   run_id: string;
   item_id: string;
+  /** The playbook's name, the site the send goes out on, and the item's title and page there (revision 43). */
+  playbook_name?: string;
+  site?: string;
+  item_title?: string | null;
+  item_url?: string | null;
   kind: string;
   summary: string;
   fields: DeclaredField[];
@@ -2174,6 +2189,8 @@ export interface RunView {
   status: RunStatus;
   pause_reason: RunPauseReason | null;
   outcome: RunOutcome | null;
+  /** Why a failed run failed, a reason code (revision 43). */
+  error?: string | null;
   /** `failed` includes retries exhausted; `waiting` is approval plus person. */
   totals: { items: number; done: number; skipped: number; failed: number; deferred: number; waiting: number };
   created_at: string;
@@ -2198,6 +2215,13 @@ export interface RunItemView {
   title: string | null;
   status: ItemStatus;
   reason_code: string | null;
+  /** As `run.items` shows them: the site it was found on and its page (revision 43). */
+  site?: string;
+  url?: string | null;
+  /** The question it waits on the person for (revision 43). */
+  question?: string | null;
+  /** The browser tab it works in or is parked on (revision 43). */
+  tab_id?: string | null;
 }
 
 export interface RunSummary {
@@ -2210,8 +2234,17 @@ export interface RunSummary {
   outcome: RunOutcome | null;
   items_total: number;
   items_done: number;
+  /** Why a failed run failed, a reason code (revision 43). */
+  error?: string | null;
   created_at: string;
   ended_at: string | null;
+}
+
+/** `run.list`: one page of past runs, newest first (revision 43). */
+export interface RunPage {
+  runs: RunSummary[];
+  /** Pass as `cursor` for the next page; null at the end. */
+  next_cursor: string | null;
 }
 
 /** Item statuses (spec 6.4). */
@@ -2261,6 +2294,8 @@ export interface ItemSummary {
   updated_at: string;
   /** The question the item waits on the person for; answer with `run.answer` (revision 42). */
   question?: string;
+  /** The browser tab it works in or is parked on (revision 43). */
+  tab_id?: string | null;
 }
 
 /** `run.items`: one page of the run record, items by page (spec 11.1). */
@@ -2580,6 +2615,7 @@ export interface Operations {
   "run.get": [{ run_id: string }, RunSummary];
   /** One page of the run's items, oldest first; follow `next_cursor`. */
   "run.items": [{ run_id: string; cursor?: string; limit?: number }, ItemPage];
+  "run.list": [{ playbook_id?: string; cursor?: string; limit?: number }, RunPage];
   /** Idempotent: pausing a paused run returns it unchanged. */
   "run.pause": [{ run_id: string }, RunSummary];
   /** Idempotent like pause: a running run answers as it is. `run_not_paused` for a run neither paused nor running. */
