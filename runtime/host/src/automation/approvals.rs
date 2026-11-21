@@ -494,6 +494,12 @@ pub struct PendingApproval {
     pub approval_id: String,
     pub run_id: String,
     pub item_id: String,
+    /// The playbook's name, the site the send goes out on, and the item's
+    /// title and page there, for the sheet's header.
+    pub playbook_name: String,
+    pub site: String,
+    pub item_title: Option<String>,
+    pub item_url: Option<String>,
     pub kind: String,
     pub summary: String,
     pub fields: Vec<crate::automation::declaration::DeclaredField>,
@@ -503,19 +509,26 @@ pub struct PendingApproval {
 
 /// Every pending approval, oldest first.
 pub async fn pending<C: ConnectionTrait>(conn: &C) -> Result<Vec<PendingApproval>, DbError> {
-    use crate::automation::entities::{playbook_item, playbook_run};
+    use crate::automation::entities::{playbook, playbook_item, playbook_run};
     use sea_orm::QueryOrder;
     let rows = playbook_approval::Entity::find()
         .filter(playbook_approval::Column::State.eq("pending"))
         .order_by_asc(playbook_approval::Column::Id)
         .all(conn)
         .await?;
-    let items: std::collections::HashMap<i32, String> = playbook_item::Entity::find()
+    let items: std::collections::HashMap<i32, playbook_item::Model> = playbook_item::Entity::find()
         .filter(playbook_item::Column::Id.is_in(rows.iter().map(|m| m.item_id)))
         .all(conn)
         .await?
         .into_iter()
-        .map(|i| (i.id, i.public_id))
+        .map(|i| (i.id, i))
+        .collect();
+    let books: std::collections::HashMap<i32, String> = playbook::Entity::find()
+        .filter(playbook::Column::Id.is_in(items.values().map(|i| i.playbook_id)))
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|b| (b.id, b.name))
         .collect();
     let runs: std::collections::HashMap<i32, String> = playbook_run::Entity::find()
         .filter(playbook_run::Column::Id.is_in(rows.iter().map(|m| m.run_id)))
@@ -528,13 +541,22 @@ pub async fn pending<C: ConnectionTrait>(conn: &C) -> Result<Vec<PendingApproval
         .into_iter()
         .filter_map(|m| {
             let declaration: Declaration = serde_json::from_str(&m.payload).ok()?;
+            let item = items.get(&m.item_id)?;
             Some(PendingApproval {
                 id: m.id,
                 run: m.run_id,
                 item: m.item_id,
                 approval_id: m.public_id,
                 run_id: runs.get(&m.run_id)?.clone(),
-                item_id: items.get(&m.item_id)?.clone(),
+                item_id: item.public_id.clone(),
+                playbook_name: books.get(&item.playbook_id).cloned().unwrap_or_default(),
+                // A handed-off item sends on its outward site and page.
+                site: item
+                    .outward_site
+                    .clone()
+                    .unwrap_or_else(|| item.site.clone()),
+                item_title: item.title.clone(),
+                item_url: item.outward_url.clone().or_else(|| item.url.clone()),
                 kind: m.kind,
                 summary: declaration.summary,
                 fields: declaration.fields,
@@ -589,6 +611,7 @@ mod tests {
                 value: DeclaredValue::Text {
                     text: "Asha".into(),
                 },
+                prefilled: false,
             }],
             submit_target: Target::new("button", "Submit"),
         }
@@ -609,6 +632,76 @@ mod tests {
             text: "Someone".into(),
         };
         assert_ne!(binding_hash(&changed), base);
+    }
+
+    #[test]
+    fn binding_hash_ignores_the_prefilled_mark() {
+        let mut marked = decl();
+        marked.fields[0].prefilled = true;
+        assert_eq!(binding_hash(&marked), binding_hash(&decl()));
+    }
+
+    #[tokio::test]
+    async fn a_pending_approval_names_its_playbook_site_and_item() {
+        use crate::automation::entities::playbook_item;
+        use crate::automation::{AutomationEngine, PlaybookStore, RunTrigger};
+        use sea_orm::Set;
+        let db = test_db().await;
+        let store = PlaybookStore::new(db.clone());
+        let engine = AutomationEngine::new(db.clone());
+        let pb = store.create("Job applications", "goal").await.unwrap();
+        let run = engine
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let mut row = |key: &str, outward: Option<(&str, &str)>| playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(run),
+            playbook_id: Set(pb.id),
+            site: Set("jobs.localhost".into()),
+            account: Set("main".into()),
+            item_key: Set(key.into()),
+            title: Set(Some("Backend Engineer".into())),
+            url: Set(Some("http://jobs.localhost/jobs/a".into())),
+            outward_site: Set(outward.map(|o| o.0.to_string())),
+            outward_url: Set(outward.map(|o| o.1.to_string())),
+            status: Set("waiting_approval".into()),
+            epoch: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        let home = playbook_item::Entity::insert(row("a", None))
+            .exec_with_returning(&db)
+            .await
+            .unwrap()
+            .id;
+        let away = playbook_item::Entity::insert(row(
+            "b",
+            Some(("apply.localhost", "http://apply.localhost/apply/b")),
+        ))
+        .exec_with_returning(&db)
+        .await
+        .unwrap()
+        .id;
+        create(&db, run, home, &decl()).await.unwrap();
+        create(&db, run, away, &decl()).await.unwrap();
+
+        let all = pending(&db).await.unwrap();
+        assert_eq!(all[0].playbook_name, "Job applications");
+        assert_eq!(all[0].site, "jobs.localhost");
+        assert_eq!(all[0].item_title.as_deref(), Some("Backend Engineer"));
+        assert_eq!(
+            all[0].item_url.as_deref(),
+            Some("http://jobs.localhost/jobs/a")
+        );
+        // A handed-off item is approved on the site it sends on.
+        assert_eq!(all[1].site, "apply.localhost");
+        assert_eq!(
+            all[1].item_url.as_deref(),
+            Some("http://apply.localhost/apply/b")
+        );
     }
 
     #[tokio::test]

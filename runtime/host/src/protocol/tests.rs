@@ -8719,6 +8719,7 @@ async fn a_second_approval_answer_is_approval_not_pending() {
             value: DeclaredValue::Text {
                 text: "Asha".into(),
             },
+            prefilled: false,
         }],
         submit_target: Target::new("button", "Submit"),
     };
@@ -8852,6 +8853,7 @@ async fn seed_parked_item(h: &Host) -> (String, i32, String) {
             value: DeclaredValue::Text {
                 text: "Asha".into(),
             },
+            prefilled: false,
         }],
         submit_target: Target::new("button", "Submit"),
     };
