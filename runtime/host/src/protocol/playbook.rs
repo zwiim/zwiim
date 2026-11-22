@@ -327,7 +327,7 @@ pub async fn playbook_save(
     }))
 }
 
-// ── playbook.files / playbook.file.* (recording design §4) ────────────────
+// ── playbook.inputs / playbook.file.* / playbook.input.* (recording §4) ───
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -351,9 +351,18 @@ pub struct PlaybookFileView {
     pub used_by_steps: Vec<usize>,
 }
 
+/// One fact input: the person's info a step fills in.
+#[derive(Debug, Serialize)]
+pub struct PlaybookFactView {
+    pub input_name: String,
+    pub value: String,
+    pub used_by_steps: Vec<usize>,
+}
+
 #[derive(Serialize)]
-pub struct PlaybookFilesResult {
+pub struct PlaybookInputsResult {
     pub files: Vec<PlaybookFileView>,
+    pub facts: Vec<PlaybookFactView>,
 }
 
 fn input_store(state: &AppState) -> crate::automation::input_files::InputFileStore {
@@ -370,11 +379,11 @@ fn steps_using(doc: &crate::automation::PlaybookDoc, name: &str) -> Vec<usize> {
         .collect()
 }
 
-/// `playbook.files {playbook_id}`: the playbook's file inputs.
-pub async fn playbook_files(
+/// `playbook.inputs {playbook_id}`: the playbook's file and fact inputs.
+pub async fn playbook_inputs(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Json(p): axum::extract::Json<PlaybookFilesParams>,
-) -> ZResult<PlaybookFilesResult> {
+) -> ZResult<PlaybookInputsResult> {
     use crate::automation::entities::playbook_version;
     use crate::automation::playbook_format::Input;
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -419,7 +428,60 @@ pub async fn playbook_files(
             _ => None,
         })
         .collect();
-    Ok(Json(PlaybookFilesResult { files }))
+    let facts = doc
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::Fact { name, value } => Some(PlaybookFactView {
+                input_name: name.clone(),
+                value: value.clone(),
+                used_by_steps: steps_using(&doc, name),
+            }),
+            _ => None,
+        })
+        .collect();
+    Ok(Json(PlaybookInputsResult { files, facts }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookSetFactParams {
+    pub playbook_id: String,
+    pub input_name: String,
+    pub value: String,
+}
+
+/// `playbook.input.set_fact {playbook_id, input_name, value}`: add or change
+/// a fact input (a new version).
+pub async fn playbook_input_set_fact(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookSetFactParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::playbook_format::Input;
+    require_enabled(&state.db.conn).await?;
+    let name = p.input_name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZwiimError::invalid_input("Name the input"));
+    }
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let fact = Input::Fact {
+        name: name.clone(),
+        value: p.value,
+    };
+    let playbook = save_inputs(&state, &book, |inputs| {
+        match inputs.iter_mut().find(|i| i.name() == name) {
+            Some(existing @ Input::Fact { .. }) => *existing = fact,
+            Some(_) => {
+                return Err(ZwiimError::invalid_input(format!(
+                    "`{name}` is not an info input"
+                )))
+            }
+            None => inputs.push(fact),
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookSaveResult { playbook }))
 }
 
 #[derive(Deserialize)]

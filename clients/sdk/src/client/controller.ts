@@ -816,8 +816,14 @@ export class HostController {
     return this.client.request("playbook.create_from_draft", { draft });
   }
 
-  listPlaybookFiles(playbook_id: string): Promise<OpResult<"playbook.files">> {
-    return this.client.request("playbook.files", { playbook_id });
+  /** The playbook's file and fact inputs. */
+  listPlaybookInputs(playbook_id: string): Promise<OpResult<"playbook.inputs">> {
+    return this.client.request("playbook.inputs", { playbook_id });
+  }
+
+  /** Add or change fact input `input_name`. */
+  setPlaybookFact(playbook_id: string, input_name: string, value: string): Promise<OpResult<"playbook.input.set_fact">> {
+    return this.client.request("playbook.input.set_fact", { playbook_id, input_name, value });
   }
 
   /** Copy the file at `path` in as input `input_name` (added or replaced). */

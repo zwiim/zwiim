@@ -154,7 +154,8 @@ const OPS: &[&str] = &[
     "playbook.get",
     "playbook.create",
     "playbook.save",
-    "playbook.files",
+    "playbook.inputs",
+    "playbook.input.set_fact",
     "playbook.file.set",
     "playbook.file.remove",
     "playbook.create_from_draft",
@@ -9505,7 +9506,7 @@ async fn setting_a_file_stores_it_and_saves_a_version() {
     let store = crate::automation::input_files::InputFileStore::new(&h.state.data_dir);
     assert_eq!(std::fs::read(store.path_of(&sha, "resume.pdf")).unwrap(), b"v1");
 
-    let (status, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    let (status, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["files"][0]["input_name"], "Resume");
     assert_eq!(body["files"][0]["file"], "resume.pdf");
@@ -9550,7 +9551,7 @@ async fn a_path_input_becomes_a_stored_file_on_set() {
         "  - type: file\n    name: Resume\n    path: ~/old/resume.pdf\nsteps:",
     );
     let id = file_playbook(&h, &with_path).await;
-    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
     assert_eq!(body["files"][0]["path"], "~/old/resume.pdf");
     assert!(body["files"][0]["sha256"].is_null());
     let src = tempfile::tempdir().unwrap();
@@ -9586,7 +9587,7 @@ async fn a_file_a_step_uses_cannot_be_removed() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "input_in_use");
-    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
     assert_eq!(body["files"][0]["used_by_steps"], json!([0]));
 }
 
@@ -9608,7 +9609,7 @@ async fn an_unused_file_is_removed() {
     assert_eq!(body["playbook"]["version"], 2);
     let doc = source_of(&h, &id).await;
     assert_eq!(doc.inputs.len(), 1);
-    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
     assert_eq!(body["files"], json!([]));
 }
 
@@ -9749,4 +9750,53 @@ async fn a_draft_without_a_send_or_a_file_is_refused() {
     assert_eq!(body["error"]["message"], "Pick the file for CV.");
     let (_, list) = h.call("playbook.list", json!({})).await;
     assert_eq!(list.as_array().unwrap().len(), 1, "nothing created");
+}
+
+#[tokio::test]
+async fn a_playbooks_facts_are_listed_and_set() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let (status, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["facts"],
+        json!([{ "input_name": "Email", "value": "me@example.com", "used_by_steps": [0] }])
+    );
+    let (status, body) = h
+        .call(
+            "playbook.input.set_fact",
+            json!({ "playbook_id": id, "input_name": "Email", "value": "new@example.com" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(
+        doc.inputs,
+        vec![crate::automation::playbook_format::Input::Fact {
+            name: "Email".into(),
+            value: "new@example.com".into()
+        }]
+    );
+    // A new fact is added; a file input is not a fact.
+    h.ok(
+        "playbook.input.set_fact",
+        json!({ "playbook_id": id, "input_name": "Phone", "value": "123" }),
+    )
+    .await;
+    assert_eq!(source_of(&h, &id).await.inputs.len(), 2);
+    let src = tempfile::tempdir().unwrap();
+    let cv = a_file(src.path(), "cv.pdf", b"cv");
+    h.ok(
+        "playbook.file.set",
+        json!({ "playbook_id": id, "input_name": "CV", "path": cv }),
+    )
+    .await;
+    let (status, body) = h
+        .call(
+            "playbook.input.set_fact",
+            json!({ "playbook_id": id, "input_name": "CV", "value": "x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

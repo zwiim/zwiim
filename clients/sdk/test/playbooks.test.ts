@@ -68,9 +68,17 @@ describe("playbook and run methods", () => {
     expect(await t.controller.resolve("i1", "sent")).toEqual({ item_id: "i1", status: "done" });
     expect(sent()).toMatchObject({ op: "run.resolve", params: { item_id: "i1", choice: "sent" }, options: { mutating: true } });
 
-    t.transport.handlers["playbook.files"] = () => ({ files: [] });
-    expect(await t.controller.listPlaybookFiles("pb1")).toEqual({ files: [] });
-    expect(sent()).toMatchObject({ op: "playbook.files", params: { playbook_id: "pb1" } });
+    t.transport.handlers["playbook.inputs"] = () => ({ files: [], facts: [] });
+    expect(await t.controller.listPlaybookInputs("pb1")).toEqual({ files: [], facts: [] });
+    expect(sent()).toMatchObject({ op: "playbook.inputs", params: { playbook_id: "pb1" } });
+
+    t.transport.handlers["playbook.input.set_fact"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.setPlaybookFact("pb1", "Email", "me@example.com");
+    expect(sent()).toMatchObject({
+      op: "playbook.input.set_fact",
+      params: { playbook_id: "pb1", input_name: "Email", value: "me@example.com" },
+      options: { mutating: true },
+    });
 
     const file = { input_name: "Resume", file: "cv.pdf", size: 2, sha256: "a".repeat(64) };
     t.transport.handlers["playbook.file.set"] = () => ({ playbook: { playbook_id: "pb1" }, file });

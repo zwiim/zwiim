@@ -2179,7 +2179,15 @@ export interface AgentAuthStatus {
  * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
  * ...). Ids are opaque strings. Wall-clock fields are RFC 3339.
  */
-/** One file input of a playbook (`playbook.files`). */
+/** One fact input of a playbook (`playbook.inputs`): the person's info a step fills in. */
+export interface PlaybookFact {
+  input_name: string;
+  value: string;
+  /** The steps, by index, that use it. */
+  used_by_steps: number[];
+}
+
+/** One file input of a playbook (`playbook.inputs`). */
 export interface PlaybookFile {
   input_name: string;
   /** The Host's copy; `null` for an older input that names a `path`. */
@@ -2714,7 +2722,12 @@ export interface Operations {
   /** Replace the text: one new version. A running run keeps the one it pinned. */
   "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
   /** The playbook's file inputs: stored copies and older `path:` ones (revision 45). */
-  "playbook.files": [{ playbook_id: string }, { files: PlaybookFile[] }];
+  "playbook.inputs": [{ playbook_id: string }, { files: PlaybookFile[]; facts: PlaybookFact[] }];
+  /** Add or change a fact input: a new version. `invalid_input` for a file input's name. */
+  "playbook.input.set_fact": [
+    { playbook_id: string; input_name: string; value: string },
+    { playbook: PlaybookSummary },
+  ];
   /**
    * Copy a file on the Host's computer in as input `input_name`, adding or
    * replacing it: a new version. `file_too_large` over 50 MB, `file_not_found`.
@@ -3056,6 +3069,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "playbook.save",
   "playbook.file.set",
   "playbook.file.remove",
+  "playbook.input.set_fact",
   "playbook.create_from_draft",
   "run.start",
   "run.try",
