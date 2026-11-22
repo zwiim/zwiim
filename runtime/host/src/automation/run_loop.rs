@@ -646,12 +646,20 @@ impl RunLoop {
             let run = run.clone();
             started.push(tokio::spawn(async move {
                 let sent = async {
-                    let doc = this.doc(&run).await.map_err(|e| {
+                    let invalid = |e: String| {
                         StepError::Db(DbError::Validation(format!(
                             "playbook of run {}: {e}",
                             run.id
                         )))
-                    })?;
+                    };
+                    // The page may hold a file from the pinned version or
+                    // from a later one (an item worked after a replace):
+                    // both name their input.
+                    let mut doc = this.item_doc(&run).await.map_err(invalid)?;
+                    let pinned = this.doc(&run).await.map_err(invalid)?;
+                    doc.inputs.extend(pinned.inputs.into_iter().filter(|i| {
+                        matches!(i, crate::automation::playbook_format::Input::File { .. })
+                    }));
                     let mut item_ref = this.item_ref(&run, &doc, &item, item.epoch).await?;
                     this.send(&doc, item.id, &mut item_ref, &tab, &declaration, true)
                         .await
@@ -1431,13 +1439,65 @@ mod tests {
 
     /// A stored file input `Resume` with content `bytes`, as playbook text.
     fn resume_input(store: &InputFileStore, bytes: &[u8]) -> String {
+        resume_named(store, "resume.pdf", bytes)
+    }
+
+    /// A stored file input `Resume`: the file `file` with content `bytes`.
+    fn resume_named(store: &InputFileStore, file: &str, bytes: &[u8]) -> String {
         let src = tempfile::tempdir().unwrap();
-        std::fs::write(src.path().join("resume.pdf"), bytes).unwrap();
-        let stored = store.put(&src.path().join("resume.pdf")).unwrap();
+        std::fs::write(src.path().join(file), bytes).unwrap();
+        let stored = store.put(&src.path().join(file)).unwrap();
         format!(
-            "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+            "inputs:\n  - type: file\n    name: Resume\n    file: {file}\n    sha256: {}\n",
             stored.sha256
         )
+    }
+
+    /// A file replaced under a new name before the items are worked: the
+    /// page shows the new name, and an approved send still matches what the
+    /// person approved (review finding, recording design §5).
+    #[tokio::test]
+    async fn a_send_approved_after_a_file_is_renamed_still_goes() {
+        use crate::automation::approvals::{self, ApprovalAnswer};
+        let data = tempfile::tempdir().unwrap();
+        let store = InputFileStore::new(data.path());
+        let first = PLAYBOOK.replace("inputs:\n", &resume_input(&store, b"old"));
+        let with_file = || {
+            result(json!({
+                "status": "declared", "kind": "submit_application", "summary": "Apply",
+                "fields": [{ "role": "button", "name": "Resume", "file": "Resume" }],
+                "target": { "role": "button", "name": "Submit" }
+            }))
+        };
+        let mut f = fixture_with(&first, vec![with_file(), with_file(), with_file()]).await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        save_again(
+            &f.db,
+            &PLAYBOOK.replace("inputs:\n", &resume_named(&store, "cv-2025.pdf", b"new")),
+        )
+        .await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: vec![ScopeControl {
+                target: crate::automation::Target::new("button", "Resume"),
+                control: ControlKind::File,
+                value: "cv-2025.pdf".into(),
+                hidden: false,
+                read_only: false,
+                disabled: false,
+                prefilled: false,
+            }],
+        });
+        f.tabs.facts.lock().unwrap().text = "Applied. Thanks!".into();
+        drive(&f.run_loop).await;
+        let pending = approvals::pending(&f.db).await.unwrap();
+        assert_eq!(pending.len(), 3, "{:?}", items(&f.db, f.run_id).await);
+        approvals::respond(&f.db, pending[0].id, ApprovalAnswer::Approve, &[])
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+        let statuses = items(&f.db, f.run_id).await;
+        assert_eq!(statuses[0], ("done".to_string(), None), "{statuses:?}");
     }
 
     /// The run's playbook saved again as `source`: a later version than the
