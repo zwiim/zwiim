@@ -67,6 +67,7 @@ import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { AutomationsRow } from "@/panels/automations/AutomationsRow";
 import { AutomationsView } from "@/panels/automations/AutomationsView";
+import { RecordingProvider, useRecording } from "@/panels/automations/recording";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
@@ -584,6 +585,7 @@ export function Workbench({
         <main className="flex min-w-0 flex-1 flex-col">
           <OfflineBanner />
           <AutomationsView
+            onChat={() => setPane("workspace")}
             pickFile={() =>
               !remote && bridge.pickFile
                 ? bridge.pickFile()
@@ -722,7 +724,15 @@ export function Workbench({
   );
   return (
     <VoiceContext.Provider value={bridge.voice}>
-      <OpenSettingsContext.Provider value={setSettings}>{view}</OpenSettingsContext.Provider>
+      <OpenSettingsContext.Provider value={setSettings}>
+        <RecordingProvider
+          canShowBrowser={!!workspace && !readOnly}
+          onShowBrowser={() => setPane("workspace")}
+          onReview={() => setPane("automations")}
+        >
+          {view}
+        </RecordingProvider>
+      </OpenSettingsContext.Provider>
     </VoiceContext.Provider>
   );
 }
@@ -1030,6 +1040,14 @@ function WorkspacePanel({
   const workspaceId = workspace.workspace_id;
 
   useEffect(() => rememberPanel(layout), [layout]);
+
+  // A recording brings the browser forward, open.
+  const showBrowser = useRecording()?.showBrowser ?? 0;
+  useEffect(() => {
+    if (!showBrowser) return;
+    setTab("browser");
+    setLayout((l) => (l.collapsed ? { ...l, collapsed: false } : l));
+  }, [showBrowser]);
 
   useEffect(() => {
     setVisited((v) => (v.has(tab) ? v : new Set([...v, tab])));

@@ -1,9 +1,12 @@
 import { useCallback, useState } from "react";
+import type { PlaybookSummary } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { useAutomations, type PlaybookRow } from "./data";
 import { FocusView } from "./FocusView";
 import { PlaybookSection, type SectionAction } from "./PlaybookSection";
+import { useRecording } from "./recording";
+import { ReviewRecording } from "./ReviewRecording";
 import { StartDialog } from "./StartDialog";
 import { defaultOpen, pausedText, runCounts } from "./status";
 
@@ -24,10 +27,17 @@ const NO_PICKER = () => Promise.resolve(null);
 
 export function AutomationsView({
   pickFile = NO_PICKER,
+  onChat,
 }: {
   /** A file on the Host's computer for a playbook input, or null when cancelled. */
   pickFile?(): Promise<string | null>;
+  /** Go to a chat, to write a playbook with an agent. */
+  onChat?(): void;
 } = {}) {
+  const recording = useRecording();
+  /** A saved recording to try on one item once its sites' risk is accepted. */
+  const [trying, setTrying] = useState<PlaybookSummary | null>(null);
+  const [tryError, setTryError] = useState<string | null>(null);
   const controller = useController();
   const { state, error, rows, pausedSites, reload, turnOn } = useAutomations();
   const [, rerender] = useState(0);
@@ -78,6 +88,27 @@ export function AutomationsView({
     }
   }
 
+  async function tryOne(playbook: PlaybookSummary, accept: boolean) {
+    setTryError(null);
+    try {
+      if (accept) for (const s of playbook.sites ?? []) if (!s.risk_accepted) await controller.acceptSiteRisk(s.site);
+      await controller.tryRun(playbook.playbook_id);
+      toggles.set(playbook.playbook_id, true);
+    } catch (e) {
+      setTryError(errorMessage(e));
+    } finally {
+      reload();
+    }
+  }
+
+  function saved(playbook: PlaybookSummary, tryIt: boolean) {
+    recording?.closeReview();
+    reload();
+    if (!tryIt) return;
+    if ((playbook.sites ?? []).some((s) => !s.risk_accepted)) return setTrying(playbook);
+    void tryOne(playbook, false);
+  }
+
   async function startAccepting(row: PlaybookRow) {
     await act(row, async () => {
       for (const s of row.playbook.sites ?? []) if (!s.risk_accepted) await controller.acceptSiteRisk(s.site);
@@ -97,6 +128,16 @@ export function AutomationsView({
     );
   }
   if (state === "error") return <p className="text-destructive m-auto text-sm">{error}</p>;
+  if (recording?.review) {
+    return (
+      <ReviewRecording
+        draft={recording.review.draft}
+        pickFile={pickFile}
+        onSaved={saved}
+        onClose={recording.closeReview}
+      />
+    );
+  }
 
   const running = rows.filter((r) => r.run?.status === "running" || r.run?.status === "discovering").length;
   const need = rows.reduce((n, r) => n + runCounts(r.items).need, 0);
@@ -143,6 +184,11 @@ export function AutomationsView({
           </button>
         )}
         <span className="flex-1" />
+        {recording && rows.length > 0 && (
+          <Button variant="secondary" size="xs" onClick={() => void recording.record()}>
+            Record
+          </Button>
+        )}
         {rows.length > 0 && (
           <Button
             variant="ghost"
@@ -177,8 +223,37 @@ export function AutomationsView({
           )}
         </div>
       )}
+      {rows.length > 0 && recording?.error && (
+        <p className="text-destructive pb-2 text-xs" role="alert">
+          {recording.error}
+        </p>
+      )}
+      {tryError && (
+        <p className="text-destructive pb-2 text-xs" role="alert">
+          {tryError}
+        </p>
+      )}
       {rows.length === 0 ? (
-        <p className="text-muted-foreground m-auto text-sm">No playbooks yet. Ask an agent in a chat to write one.</p>
+        <div className="m-auto flex flex-col items-center gap-3 text-center" data-testid="automations-empty">
+          <p className="text-muted-foreground text-sm">No playbooks yet. Do a task once and Zwiim saves it.</p>
+          <div className="flex gap-2">
+            {onChat && (
+              <Button variant="secondary" size="sm" onClick={onChat}>
+                Write one in chat
+              </Button>
+            )}
+            {recording && (
+              <Button variant="brand" size="sm" onClick={() => void recording.record()}>
+                Record a playbook
+              </Button>
+            )}
+          </div>
+          {recording?.error && (
+            <p className="text-destructive text-xs" role="alert">
+              {recording.error}
+            </p>
+          )}
+        </div>
       ) : (
         rows.map((row) => {
           const id = row.playbook.playbook_id;
@@ -197,6 +272,14 @@ export function AutomationsView({
             />
           );
         })
+      )}
+      {trying && (
+        <StartDialog
+          name={trying.name}
+          sites={(trying.sites ?? []).filter((s) => !s.risk_accepted).map((s) => s.site)}
+          onStart={() => tryOne(trying, true)}
+          onClose={() => setTrying(null)}
+        />
       )}
       {asking && (
         <StartDialog

@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronLeft,
+  CircleDot,
   ExternalLink,
   File,
   Folder,
@@ -69,6 +70,7 @@ import { errorMessage, useController, useHost, useOnline } from "@/lib/host-cont
 import { handToChat } from "@/lib/page-handoff";
 import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
+import { RecordingBar, useRecording } from "@/panels/automations/recording";
 import { BrowserLogin } from "@/panels/BrowserLogin";
 import { BrowserSites } from "@/panels/BrowserSites";
 import { BrowserSteps } from "@/panels/BrowserSteps";
@@ -112,10 +114,17 @@ export function BrowserPanel({
   // The tab an element pick is armed in, and its last ended pick's seq then.
   const [picking, setPicking] = useState<{ tabId: string; since: number } | null>(null);
   const address = useRef<HTMLInputElement>(null);
+  const recording = useRecording();
 
   useEffect(() => {
     if (active) controller.watchBrowser();
   }, [active, controller]);
+
+  // A recording just begun shows its tab.
+  const recordingTab = recording?.tabId ?? null;
+  useEffect(() => {
+    if (recordingTab) setSelected(recordingTab);
+  }, [recordingTab]);
 
   const tabs = useMemo(
     () => [...(sessionId ? sessionTabs(browser, sessionId) : []), ...personalTabs(browser)],
@@ -348,8 +357,14 @@ export function BrowserPanel({
               : null
           }
           onPreview={(preview) => void run(() => controller.setBrowserPreview(tab.tab_id, preview))}
+          onRecord={
+            recording && !recording.tabId && tab.owner.kind === "personal"
+              ? () => void recording.start(tab.tab_id)
+              : null
+          }
         />
       )}
+      {tab && <RecordingBar tabId={tab.tab_id} />}
       {picking && picking.tabId === tab?.tab_id && (
         <p className="text-muted-foreground border-b px-3 py-1.5 text-xs" role="status">
           Click an element on the page to add it to your next message. Esc cancels.
@@ -816,6 +831,7 @@ function AddressBar({
   picking,
   onReloadOnSave,
   onPreview,
+  onRecord,
 }: {
   tab: BrowserTab;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -829,6 +845,8 @@ function AddressBar({
   /** Turn reload on save on or off; null for a tab without a worktree, or an older Host. */
   onReloadOnSave: (() => void) | null;
   onPreview(preview: BrowserPreviewId | null): void;
+  /** Record what the person does here as a playbook; null for a chat's tab or while one records. */
+  onRecord: (() => void) | null;
 }) {
   const controller = useController();
   // What the person is typing; the tab's own URL whenever they are not.
@@ -902,6 +920,18 @@ function AddressBar({
       >
         <SquareDashedMousePointer />
       </Button>
+      {onRecord && (
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          title="Record what you do here as a playbook"
+          disabled={disabled}
+          onClick={onRecord}
+        >
+          <CircleDot />
+        </Button>
+      )}
       {onReloadOnSave && (
         <Button
           type="button"
