@@ -103,8 +103,12 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
+  it("speaks revision 45 and keeps a playbook's files", () => {
+    expect(CLIENT_REVISION).toBe(45);
+  });
+
   it("speaks revision 44 and settles an item waiting on the person", () => {
-    expect(CLIENT_REVISION).toBe(44);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(44);
   });
 
   it("speaks revision 42 and answers an item's question", () => {

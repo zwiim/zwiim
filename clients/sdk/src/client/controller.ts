@@ -810,6 +810,19 @@ export class HostController {
     return this.client.request("playbook.save", { playbook_id, source });
   }
 
+  listPlaybookFiles(playbook_id: string): Promise<OpResult<"playbook.files">> {
+    return this.client.request("playbook.files", { playbook_id });
+  }
+
+  /** Copy the file at `path` in as input `input_name` (added or replaced). */
+  setPlaybookFile(playbook_id: string, input_name: string, path: string): Promise<OpResult<"playbook.file.set">> {
+    return this.client.request("playbook.file.set", { playbook_id, input_name, path });
+  }
+
+  removePlaybookFile(playbook_id: string, input_name: string): Promise<OpResult<"playbook.file.remove">> {
+    return this.client.request("playbook.file.remove", { playbook_id, input_name });
+  }
+
   /** Start a run; its `run_id`. Progress arrives on the feed (`run.changed`). */
   async startRun(playbook_id: string): Promise<string> {
     const { run_id } = await this.client.request("run.start", { playbook_id });

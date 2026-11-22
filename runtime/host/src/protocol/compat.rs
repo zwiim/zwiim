@@ -554,7 +554,16 @@ use serde::{Deserialize, Serialize};
 /// for an item nothing went out for is `invalid_input`; an item not waiting is
 /// `item_not_waiting`. Items (`run.items`, `run.item_changed`) carry
 /// `may_have_sent`. Older clients ignore the field and never call it.
-pub const PROTOCOL_REVISION: u32 = 44;
+///
+/// 45 (playbook recording): a file input may be a copy the Host keeps
+/// (`file` and `sha256`) instead of a `path`. `playbook.files {playbook_id}`
+/// lists a playbook's file inputs; `playbook.file.set {playbook_id,
+/// input_name, path}` copies a file in (at most 50 MB, `file_too_large`;
+/// `file_not_found`) and adds or replaces that input; `playbook.file.remove
+/// {playbook_id, input_name}` drops it unless a step uses it
+/// (`input_in_use`). Each change is a new playbook version. Playbooks may
+/// carry `steps:`. Older clients never call the new operations.
+pub const PROTOCOL_REVISION: u32 = 45;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -841,7 +850,12 @@ mod tests {
 
     #[test]
     fn settling_an_item_waiting_on_the_person_is_revision_44() {
-        assert_eq!(PROTOCOL_REVISION, 44);
+        assert!(PROTOCOL_REVISION >= 44);
+    }
+
+    #[test]
+    fn playbook_files_are_revision_45() {
+        assert_eq!(PROTOCOL_REVISION, 45);
     }
 
     #[test]

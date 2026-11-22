@@ -43,3 +43,6 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `site_risk_not_accepted` | A site of the playbook has no risk step yet; `details.sites` lists them. |
 | `no_open_question` | The item is not waiting on a question. |
 | `item_not_waiting` | The item is not waiting on the person. |
+| `input_in_use` | A step still uses this input. |
+| `file_too_large` | The file is over 50 MB. |
+| `file_not_found` | That file is not on this computer. |

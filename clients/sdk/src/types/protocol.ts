@@ -130,6 +130,12 @@ export type HostErrorCode =
   | "no_open_question"
   /** `run.resolve`: the item is not waiting on the person. */
   | "item_not_waiting"
+  /** `playbook.file.remove`: a step still uses the input (revision 45). */
+  | "input_in_use"
+  /** `playbook.file.set`: the file is over 50 MB. */
+  | "file_too_large"
+  /** `playbook.file.set`: the path is not a file on the Host's computer. */
+  | "file_not_found"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2094,6 +2100,28 @@ export interface AgentAuthStatus {
  * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
  * ...). Ids are opaque strings. Wall-clock fields are RFC 3339.
  */
+/** One file input of a playbook (`playbook.files`). */
+export interface PlaybookFile {
+  input_name: string;
+  /** The Host's copy; `null` for an older input that names a `path`. */
+  file: string | null;
+  path: string | null;
+  size: number | null;
+  sha256: string | null;
+  /** When this copy first went into the playbook (RFC 3339). */
+  added_at: string | null;
+  /** The steps, by index, that use it. */
+  used_by_steps: number[];
+}
+
+/** The copy `playbook.file.set` stored. */
+export interface StoredPlaybookFile {
+  input_name: string;
+  file: string;
+  size: number;
+  sha256: string;
+}
+
 export interface PlaybookSummary {
   playbook_id: string;
   name: string;
@@ -2605,6 +2633,18 @@ export interface Operations {
   "playbook.create": [{ source: string }, { playbook: PlaybookSummary }];
   /** Replace the text: one new version. A running run keeps the one it pinned. */
   "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
+  /** The playbook's file inputs: stored copies and older `path:` ones (revision 45). */
+  "playbook.files": [{ playbook_id: string }, { files: PlaybookFile[] }];
+  /**
+   * Copy a file on the Host's computer in as input `input_name`, adding or
+   * replacing it: a new version. `file_too_large` over 50 MB, `file_not_found`.
+   */
+  "playbook.file.set": [
+    { playbook_id: string; input_name: string; path: string },
+    { playbook: PlaybookSummary; file: StoredPlaybookFile },
+  ];
+  /** Drop a file input: a new version. `input_in_use` while a step names it. */
+  "playbook.file.remove": [{ playbook_id: string; input_name: string }, { playbook: PlaybookSummary }];
   /**
    * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
    * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
@@ -2919,6 +2959,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "github.cancel_sign_in",
   "playbook.create",
   "playbook.save",
+  "playbook.file.set",
+  "playbook.file.remove",
   "run.start",
   "run.try",
   "run.pause",

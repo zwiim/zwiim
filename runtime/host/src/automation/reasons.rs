@@ -470,6 +470,9 @@ fn error_meaning(code: ErrorCode) -> &'static str {
         }
         ErrorCode::NoOpenQuestion => "The item is not waiting on a question.",
         ErrorCode::ItemNotWaiting => "The item is not waiting on the person.",
+        ErrorCode::InputInUse => "A step still uses this input.",
+        ErrorCode::FileTooLarge => "The file is over 50 MB.",
+        ErrorCode::FileNotFound => "That file is not on this computer.",
     }
 }
 
@@ -504,6 +507,12 @@ pub enum ErrorCode {
     NoOpenQuestion,
     /// `run.resolve` for an item that is not waiting on the person.
     ItemNotWaiting,
+    /// `playbook.file.remove` for an input a step still names.
+    InputInUse,
+    /// `playbook.file.set` with a file over 50 MB.
+    FileTooLarge,
+    /// `playbook.file.set` with a path that is not a file.
+    FileNotFound,
 }
 
 impl ErrorCode {
@@ -523,6 +532,9 @@ impl ErrorCode {
             ErrorCode::SiteRiskNotAccepted => "site_risk_not_accepted",
             ErrorCode::NoOpenQuestion => "no_open_question",
             ErrorCode::ItemNotWaiting => "item_not_waiting",
+            ErrorCode::InputInUse => "input_in_use",
+            ErrorCode::FileTooLarge => "file_too_large",
+            ErrorCode::FileNotFound => "file_not_found",
         }
     }
 
@@ -542,6 +554,9 @@ impl ErrorCode {
             ErrorCode::SiteRiskNotAccepted,
             ErrorCode::NoOpenQuestion,
             ErrorCode::ItemNotWaiting,
+            ErrorCode::InputInUse,
+            ErrorCode::FileTooLarge,
+            ErrorCode::FileNotFound,
         ]
     }
 }

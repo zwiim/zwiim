@@ -152,6 +152,9 @@ const OPS: &[&str] = &[
     "playbook.get",
     "playbook.create",
     "playbook.save",
+    "playbook.files",
+    "playbook.file.set",
+    "playbook.file.remove",
     "run.start",
     "run.try",
     "run.get",
@@ -9428,4 +9431,209 @@ async fn playbooks_runs_items_and_approvals_have_public_ids() {
     // A row id is not an id a client can use.
     let (status, _) = h.call("run.get", json!({ "run_id": 1 })).await;
     assert!(status.is_client_error(), "{status}");
+}
+
+// ── playbook.file.* (recording design §4) ────────────────────────────────
+
+const FILE_PLAYBOOK: &str = "format: 1\nname: Apply\ngoal: Apply to jobs\n\
+    main_kind: submit_application\nsites:\n  - jobs.test\n\
+    sources:\n  - type: list\n    items:\n      - https://jobs.test/j/1\n\
+    inputs:\n  - type: fact\n    name: Email\n    value: me@example.com\n\
+    steps:\n  - Fill \"Email\" with input Email\n\
+    checks:\n  - kind: text_present\n    text: Sent\n";
+
+/// A playbook from `source`, with Playbooks on.
+async fn file_playbook(h: &Host, source: &str) -> String {
+    seed_playbook(h).await;
+    let (status, body) = h.call("playbook.create", json!({ "source": source })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["playbook"]["playbook_id"].as_str().unwrap().to_string()
+}
+
+fn a_file(dir: &std::path::Path, name: &str, bytes: &[u8]) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+async fn source_of(h: &Host, id: &str) -> crate::automation::PlaybookDoc {
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    crate::automation::validate_playbook(body["source"].as_str().unwrap()).unwrap()
+}
+
+fn stored(doc: &crate::automation::PlaybookDoc, name: &str) -> (Option<String>, Option<String>, Option<String>) {
+    doc.inputs
+        .iter()
+        .find_map(|i| match i {
+            crate::automation::playbook_format::Input::File { name: n, path, file, sha256 } if n == name => {
+                Some((path.clone(), file.clone(), sha256.clone()))
+            }
+            _ => None,
+        })
+        .expect("file input")
+}
+
+#[tokio::test]
+async fn setting_a_file_stores_it_and_saves_a_version() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let path = a_file(src.path(), "resume.pdf", b"v1");
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    assert_eq!(body["file"]["file"], "resume.pdf");
+    assert_eq!(body["file"]["size"], 2);
+    let sha = body["file"]["sha256"].as_str().unwrap().to_string();
+    let doc = source_of(&h, &id).await;
+    assert_eq!(stored(&doc, "Resume"), (None, Some("resume.pdf".into()), Some(sha.clone())));
+    // Everything else is as it was.
+    let before = crate::automation::validate_playbook(FILE_PLAYBOOK).unwrap();
+    assert_eq!(doc.steps, before.steps);
+    assert_eq!(doc.goal, before.goal);
+    assert_eq!(doc.inputs[0], before.inputs[0]);
+    // The Host keeps the bytes, so the original may go.
+    std::fs::remove_file(&path).unwrap();
+    let store = crate::automation::input_files::InputFileStore::new(&h.state.data_dir);
+    assert_eq!(std::fs::read(store.path_of(&sha, "resume.pdf")).unwrap(), b"v1");
+
+    let (status, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["files"][0]["input_name"], "Resume");
+    assert_eq!(body["files"][0]["file"], "resume.pdf");
+    assert_eq!(body["files"][0]["size"], 2);
+    assert!(body["files"][0]["added_at"].is_string());
+    assert_eq!(body["files"][0]["used_by_steps"], json!([]));
+}
+
+#[tokio::test]
+async fn replacing_a_file_changes_its_sha() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let set = |bytes: &'static [u8]| {
+        let path = a_file(src.path(), "resume.pdf", bytes);
+        let id = id.clone();
+        let h = &h;
+        async move {
+            let (status, body) = h
+                .call(
+                    "playbook.file.set",
+                    json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    };
+    let one = set(b"one").await;
+    let two = set(b"two").await;
+    assert_ne!(one["file"]["sha256"], two["file"]["sha256"]);
+    assert_eq!(two["playbook"]["version"], 3);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.inputs.len(), 2, "replaced, not added again");
+}
+
+#[tokio::test]
+async fn a_path_input_becomes_a_stored_file_on_set() {
+    let h = host(false).await;
+    let with_path = FILE_PLAYBOOK.replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/old/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_path).await;
+    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"][0]["path"], "~/old/resume.pdf");
+    assert!(body["files"][0]["sha256"].is_null());
+    let src = tempfile::tempdir().unwrap();
+    let path = a_file(src.path(), "cv.pdf", b"cv");
+    let (status, _) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (path, file, sha) = stored(&source_of(&h, &id).await, "Resume");
+    assert_eq!((path, file), (None, Some("cv.pdf".into())));
+    assert!(sha.is_some());
+}
+
+#[tokio::test]
+async fn a_file_a_step_uses_cannot_be_removed() {
+    let h = host(false).await;
+    let with_step = FILE_PLAYBOOK.replace(
+        "steps:\n",
+        "steps:\n  - Attach input Resume to \"CV\"\n",
+    ).replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_step).await;
+    let (status, body) = h
+        .call(
+            "playbook.file.remove",
+            json!({ "playbook_id": id, "input_name": "Resume" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "input_in_use");
+    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"][0]["used_by_steps"], json!([0]));
+}
+
+#[tokio::test]
+async fn an_unused_file_is_removed() {
+    let h = host(false).await;
+    let with_file = FILE_PLAYBOOK.replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_file).await;
+    let (status, body) = h
+        .call(
+            "playbook.file.remove",
+            json!({ "playbook_id": id, "input_name": "Resume" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.inputs.len(), 1);
+    let (_, body) = h.call("playbook.files", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"], json!([]));
+}
+
+#[tokio::test]
+async fn a_file_over_the_limit_or_missing_is_refused() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let big = src.path().join("big.zip");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(crate::automation::input_files::MAX_FILE_BYTES + 1)
+        .unwrap();
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Big", "path": big }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["error"]["code"], "file_too_large");
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Gone", "path": src.path().join("gone.pdf") }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "file_not_found");
+    assert_eq!(source_of(&h, &id).await.inputs.len(), 1, "nothing saved");
 }

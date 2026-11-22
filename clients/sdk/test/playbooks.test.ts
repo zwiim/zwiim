@@ -67,6 +67,27 @@ describe("playbook and run methods", () => {
     expect(await t.controller.resolve("i1", "sent")).toEqual({ item_id: "i1", status: "done" });
     expect(sent()).toMatchObject({ op: "run.resolve", params: { item_id: "i1", choice: "sent" }, options: { mutating: true } });
 
+    t.transport.handlers["playbook.files"] = () => ({ files: [] });
+    expect(await t.controller.listPlaybookFiles("pb1")).toEqual({ files: [] });
+    expect(sent()).toMatchObject({ op: "playbook.files", params: { playbook_id: "pb1" } });
+
+    const file = { input_name: "Resume", file: "cv.pdf", size: 2, sha256: "a".repeat(64) };
+    t.transport.handlers["playbook.file.set"] = () => ({ playbook: { playbook_id: "pb1" }, file });
+    expect((await t.controller.setPlaybookFile("pb1", "Resume", "/Users/me/cv.pdf")).file).toEqual(file);
+    expect(sent()).toMatchObject({
+      op: "playbook.file.set",
+      params: { playbook_id: "pb1", input_name: "Resume", path: "/Users/me/cv.pdf" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["playbook.file.remove"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.removePlaybookFile("pb1", "Resume");
+    expect(sent()).toMatchObject({
+      op: "playbook.file.remove",
+      params: { playbook_id: "pb1", input_name: "Resume" },
+      options: { mutating: true },
+    });
+
     t.transport.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
     await t.controller.listRuns({ playbookId: "pb1", limit: 5 });
     expect(sent()).toMatchObject({ op: "run.list", params: { playbook_id: "pb1", limit: 5 } });
