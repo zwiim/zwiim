@@ -92,6 +92,12 @@ impl Recording {
         if url == self.last_url || !web_url(url) {
             return false;
         }
+        // A recording begun on a blank tab starts at the first page opened.
+        if self.steps.is_empty() && !web_url(&self.start_url) {
+            self.start_url = url.chars().take(MAX_URL).collect();
+            self.last_url = self.start_url.clone();
+            return false;
+        }
         self.push(RecordedStep {
             action: StepAction::Navigate,
             role: String::new(),
@@ -229,6 +235,15 @@ mod tests {
         assert!(!r.navigated("https://jobs.example/j/1"), "a reload is not a new page");
         let last = r.steps.last().unwrap();
         assert_eq!((last.action, last.url.as_str()), (StepAction::Navigate, "https://jobs.example/j/1"));
+    }
+
+    #[test]
+    fn a_blank_tab_starts_at_the_first_page_opened() {
+        let mut r = Recording::new("t1", "about:blank");
+        assert!(!r.navigated("https://jobs.example/search"));
+        assert_eq!(r.start_url, "https://jobs.example/search");
+        assert!(r.steps.is_empty());
+        assert!(r.navigated("https://jobs.example/j/1"), "later pages are steps");
     }
 
     #[test]
