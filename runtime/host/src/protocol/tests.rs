@@ -157,6 +157,7 @@ const OPS: &[&str] = &[
     "playbook.files",
     "playbook.file.set",
     "playbook.file.remove",
+    "playbook.create_from_draft",
     "run.start",
     "run.try",
     "run.get",
@@ -9660,6 +9661,8 @@ async fn a_tab_of_ones_own_records_and_stops() {
     let stopped = h.ok("browser.record.stop", json!({ "tab_id": tab_id })).await;
     assert_eq!(stopped["recording"]["tab_id"], tab_id.as_str());
     assert_eq!(stopped["recording"]["steps"], json!([]));
+    assert_eq!(stopped["draft"]["source"], json!({ "type": "list", "urls": ["https://jobs.example/search"] }));
+    assert!(stopped["draft"]["send_step"].is_null());
     let (status, body) = h.call("browser.record.stop", json!({ "tab_id": tab_id })).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "not_recording");
@@ -9682,4 +9685,68 @@ async fn a_session_tab_does_not_record() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "not_personal");
+}
+
+/// A reviewed draft: the job form the person recorded, the file chosen in
+/// review at `cv`.
+fn reviewed_draft(cv: &str) -> serde_json::Value {
+    json!({
+        "name": "Apply on jobs.test",
+        "goal": "Do what I did on jobs.test: Submit.",
+        "source": { "type": "list", "urls": ["https://jobs.test/j/1"] },
+        "sites": ["jobs.test"],
+        "steps": [
+            { "action": "fill", "target": "Email", "role": "textbox", "url": "https://jobs.test/j/1",
+              "value": { "kind": "my_info", "input": "Email", "value": "ada@example.com" } },
+            { "action": "file", "target": "CV", "role": "button", "url": "https://jobs.test/j/1",
+              "value": { "kind": "file", "input": "CV", "path": cv } },
+            { "action": "click", "target": "Submit", "role": "button", "url": "https://jobs.test/j/1",
+              "value": { "kind": "none" } }
+        ],
+        "send_step": 2,
+        "send_kind": "submit_application",
+        "check_text": "Application sent"
+    })
+}
+
+#[tokio::test]
+async fn a_draft_becomes_a_playbook_with_stored_files() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let src = tempfile::tempdir().unwrap();
+    let cv = a_file(src.path(), "cv.pdf", b"my cv");
+    let (status, body) = h
+        .call("playbook.create_from_draft", json!({ "draft": reviewed_draft(&cv) }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["name"], "Apply on jobs.test");
+    assert_eq!(body["playbook"]["version"], 1);
+    let id = body["playbook"]["playbook_id"].as_str().unwrap().to_string();
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.steps[2], "Click \"Submit\" (the send)");
+    let (path, file, sha) = stored(&doc, "CV");
+    assert_eq!((path, file.as_deref()), (None, Some("cv.pdf")));
+    std::fs::remove_file(&cv).unwrap();
+    let store = crate::automation::input_files::InputFileStore::new(&h.state.data_dir);
+    assert_eq!(std::fs::read(store.path_of(&sha.unwrap(), "cv.pdf")).unwrap(), b"my cv");
+}
+
+#[tokio::test]
+async fn a_draft_without_a_send_or_a_file_is_refused() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let src = tempfile::tempdir().unwrap();
+    let mut draft = reviewed_draft(&a_file(src.path(), "cv.pdf", b"cv"));
+    draft["send_step"] = json!(null);
+    let (status, body) = h.call("playbook.create_from_draft", json!({ "draft": draft })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(body["error"]["message"], "Choose which step sends.");
+    let mut draft = reviewed_draft("");
+    draft["steps"][1]["value"]["path"] = json!(null);
+    let (status, body) = h.call("playbook.create_from_draft", json!({ "draft": draft })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["message"], "Pick the file for CV.");
+    let (_, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "nothing created");
 }

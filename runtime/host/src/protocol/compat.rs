@@ -566,7 +566,10 @@ use serde::{Deserialize, Serialize};
 /// does in a tab of their own (`not_personal` otherwise, `already_recording`),
 /// one `browser.tab.recorded {tab_id, owner, count, last: {action, name}}` per
 /// step; `browser.record.stop {tab_id}` returns `{recording: {tab_id,
-/// start_url, steps}}` (`not_recording`). A typed value never reaches an
+/// start_url, steps}, draft}` (`not_recording`), `draft` a playbook drafted from
+/// it; `playbook.create_from_draft {draft}` saves a reviewed draft as a new
+/// playbook, its files copied in (`invalid_input` without a send step or a
+/// file). A typed value never reaches an
 /// event, and one typed into a protected field never reaches a recording.
 /// Older clients never call the new operations.
 pub const PROTOCOL_REVISION: u32 = 45;

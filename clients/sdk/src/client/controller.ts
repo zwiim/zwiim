@@ -36,6 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
+  PlaybookDraft,
   RunResolveChoice,
   SessionEvent,
   SessionOptions,
@@ -808,6 +809,11 @@ export class HostController {
 
   savePlaybook(playbook_id: string, source: string): Promise<OpResult<"playbook.save">> {
     return this.client.request("playbook.save", { playbook_id, source });
+  }
+
+  /** A new playbook from a reviewed recording draft. */
+  createPlaybookFromDraft(draft: PlaybookDraft): Promise<OpResult<"playbook.create_from_draft">> {
+    return this.client.request("playbook.create_from_draft", { draft });
   }
 
   listPlaybookFiles(playbook_id: string): Promise<OpResult<"playbook.files">> {

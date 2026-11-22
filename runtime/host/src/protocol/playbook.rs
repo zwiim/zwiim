@@ -571,6 +571,75 @@ pub async fn playbook_file_remove(
     Ok(Json(PlaybookSaveResult { playbook }))
 }
 
+// ── playbook.create_from_draft (recording design §2) ──────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookFromDraftParams {
+    pub draft: crate::automation::recording_draft::PlaybookDraft,
+}
+
+/// `playbook.create_from_draft {draft}`: a new playbook from a reviewed
+/// recording draft, its files copied into the Host's store.
+pub async fn playbook_create_from_draft(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookFromDraftParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::input_files::StoreError;
+    use crate::automation::recording_draft::{draft_to_doc, DraftValue};
+    require_enabled(&state.db.conn).await?;
+    // Refuse a draft with no send before copying any file in.
+    if !p.draft.send_step.is_some_and(|at| at < p.draft.steps.len()) {
+        return Err(ZwiimError::invalid_input("Choose which step sends."));
+    }
+    let mut stored = std::collections::HashMap::new();
+    for step in &p.draft.steps {
+        let DraftValue::File { input, path } = &step.value else {
+            continue;
+        };
+        let Some(path) = path.as_deref().filter(|p| !p.trim().is_empty()) else {
+            return Err(ZwiimError::invalid_input(format!(
+                "Pick the file for {input}."
+            )));
+        };
+        let store = input_store(&state);
+        let path = std::path::PathBuf::from(path);
+        let file = tokio::task::spawn_blocking(move || store.put(&path))
+            .await
+            .map_err(engine_err)?
+            .map_err(|e| match e {
+                StoreError::TooLarge => ZwiimError::new(
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    crate::automation::ErrorCode::FileTooLarge.as_str(),
+                    format!("{input} is over 50 MB"),
+                ),
+                StoreError::NotAFile => ZwiimError::new(
+                    axum::http::StatusCode::NOT_FOUND,
+                    crate::automation::ErrorCode::FileNotFound.as_str(),
+                    format!("The file for {input} is not on this computer"),
+                ),
+                StoreError::Io(e) => engine_err(e),
+            })?;
+        stored.insert(input.clone(), file);
+    }
+    let doc = draft_to_doc(&p.draft, &stored).map_err(ZwiimError::invalid_input)?;
+    let source = serde_yaml::to_string(&doc).map_err(engine_err)?;
+    let doc = validated(&source)?;
+    let created = PlaybookStore::new(state.db.conn.clone())
+        .create(&doc.name, &source)
+        .await
+        .map_err(engine_err)?;
+    use sea_orm::EntityTrait;
+    let row = playbook::Entity::find_by_id(created.id)
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", created.id)))?;
+    Ok(Json(PlaybookSaveResult {
+        playbook: summary(&state, row).await?,
+    }))
+}
+
 // ── run.start ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

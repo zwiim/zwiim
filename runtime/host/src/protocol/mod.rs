@@ -270,6 +270,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/playbook.files", post(playbook::playbook_files))
         .route("/playbook.file.set", post(playbook::playbook_file_set))
         .route("/playbook.file.remove", post(playbook::playbook_file_remove))
+        .route(
+            "/playbook.create_from_draft",
+            post(playbook::playbook_create_from_draft),
+        )
         .route("/run.start", post(playbook::run_start))
         .route("/run.try", post(playbook::run_try))
         .route("/run.get", post(playbook::run_get))

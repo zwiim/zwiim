@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
+import type { PlaybookDraft } from "../src/types/protocol";
 import { FakeTransport, flush } from "./fakes";
 
 async function live() {
@@ -96,6 +97,20 @@ describe("playbook and run methods", () => {
     t.transport.handlers["browser.record.stop"] = () => ({ recording });
     expect((await t.controller.stopRecording("tab1")).recording).toEqual(recording);
     expect(sent()).toMatchObject({ op: "browser.record.stop", params: { tab_id: "tab1" }, options: { mutating: true } });
+
+    const draft: PlaybookDraft = {
+      name: "Apply on jobs.test",
+      goal: "Do what I did on jobs.test: Submit.",
+      source: { type: "list", urls: ["https://jobs.test/j/1"] },
+      sites: ["jobs.test"],
+      steps: [{ action: "click", target: "Submit", role: "button", url: "https://jobs.test/j/1", value: { kind: "none" } }],
+      send_step: 0,
+      send_kind: "submit_form",
+      check_text: null,
+    };
+    t.transport.handlers["playbook.create_from_draft"] = () => ({ playbook: { playbook_id: "pb2" } });
+    await t.controller.createPlaybookFromDraft(draft);
+    expect(sent()).toMatchObject({ op: "playbook.create_from_draft", params: { draft }, options: { mutating: true } });
 
     t.transport.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
     await t.controller.listRuns({ playbookId: "pb1", limit: 5 });

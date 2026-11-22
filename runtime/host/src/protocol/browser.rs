@@ -418,7 +418,8 @@ pub async fn record_stop(
     let browser = service(&state).await?;
     visible_tab(&browser, caller, &p.tab_id).await?;
     let recording = browser.record_stop(&p.tab_id).await?;
-    Ok(Json(json!({ "recording": recording })))
+    let draft = crate::automation::recording_draft::draft_from_recording(&recording);
+    Ok(Json(json!({ "recording": recording, "draft": draft })))
 }
 
 /// `browser.tab.pick_cancel {tab_id}`: call the tab's pick off; it ends with

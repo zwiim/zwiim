@@ -517,6 +517,56 @@ export interface RecordedStep {
   paths?: string[];
 }
 
+/** The kinds of outward action a playbook sends (spec 8.1.1). */
+export type PlaybookActionKind =
+  | "submit_application"
+  | "submit_form"
+  | "publish_post"
+  | "send_message"
+  | "comment"
+  | "follow"
+  | "delete"
+  | "pay"
+  | "change_account";
+
+/** Where a drafted playbook's items come from. */
+export type PlaybookDraftSource = { type: "search"; url: string } | { type: "list"; urls: string[] };
+
+/** What a drafted step does with a value. */
+export type PlaybookDraftValue =
+  | { kind: "none" }
+  /** The person's info: input `input`. */
+  | { kind: "my_info"; input: string; value: string }
+  /** The same text every time, kept in the step. */
+  | { kind: "fixed"; text: string }
+  /** A file input; `path` is the file to copy in (chosen while recording, or in review). */
+  | { kind: "file"; input: string; path: string | null }
+  /** A protected field: the agent asks the person each time. */
+  | { kind: "needs_you" };
+
+export interface PlaybookDraftStep {
+  action: RecordedStepAction;
+  /** The control's name, as the person sees it. */
+  target: string;
+  role: string;
+  url: string;
+  value: PlaybookDraftValue;
+}
+
+/** A playbook drafted from a recording, for the person to review (revision 45). */
+export interface PlaybookDraft {
+  name: string;
+  goal: string;
+  source: PlaybookDraftSource;
+  sites: string[];
+  steps: PlaybookDraftStep[];
+  /** The step that sends, by index; required to save. */
+  send_step: number | null;
+  send_kind: PlaybookActionKind;
+  /** Text the page shows once the send worked; without it the agent judges. */
+  check_text: string | null;
+}
+
 /** A tab's recording (`browser.record.stop`). */
 export interface Recording {
   tab_id: string;
@@ -2676,6 +2726,12 @@ export interface Operations {
   /** Drop a file input: a new version. `input_in_use` while a step names it. */
   "playbook.file.remove": [{ playbook_id: string; input_name: string }, { playbook: PlaybookSummary }];
   /**
+   * A new playbook from a reviewed recording draft; its files are copied in.
+   * `invalid_input` ("Choose which step sends.", "Pick the file for X."),
+   * `file_too_large`, `file_not_found` (revision 45).
+   */
+  "playbook.create_from_draft": [{ draft: PlaybookDraft }, { playbook: PlaybookSummary }];
+  /**
    * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
    * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
    * item". `run_active` (details `{ run_id }`) while one is active;
@@ -2841,7 +2897,7 @@ export interface Operations {
    */
   "browser.record.start": [{ tab_id: string }, Record<string, never>];
   /** End the tab's recording and return it. `not_recording`. */
-  "browser.record.stop": [{ tab_id: string }, { recording: Recording }];
+  "browser.record.stop": [{ tab_id: string }, { recording: Recording; draft: PlaybookDraft }];
   /**
    * Drop files on the page at `(x, y)` in its CSS pixels, as the person
    * dragging them there: workspace files by relative path, or files uploaded
@@ -3000,6 +3056,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "playbook.save",
   "playbook.file.set",
   "playbook.file.remove",
+  "playbook.create_from_draft",
   "run.start",
   "run.try",
   "run.pause",
