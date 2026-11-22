@@ -134,7 +134,8 @@ pub fn step_from_helper(m: &Value) -> Option<RecordedStep> {
         "protected" => StepAction::Protected,
         _ => return None,
     };
-    if role == "password" {
+    let name = text("name", MAX_NAME).unwrap_or_default();
+    if role == "password" || (action == StepAction::Fill && names_a_secret(&name)) {
         action = StepAction::Protected;
     }
     let url = s["url"].as_str().filter(|u| web_url(u))?;
@@ -148,11 +149,43 @@ pub fn step_from_helper(m: &Value) -> Option<RecordedStep> {
     Some(RecordedStep {
         action,
         role,
-        name: text("name", MAX_NAME).unwrap_or_default(),
+        name,
         value,
         url: url.chars().take(MAX_URL).collect(),
         paths: Vec::new(),
     })
+}
+
+/// Words a field asking for a secret is named with: a password, a card's
+/// number, code or expiry, a one-time code. Matched as whole words.
+const SECRET_WORDS: &[&[&str]] = &[
+    &["password"],
+    &["passcode"],
+    &["passphrase"],
+    &["pin"],
+    &["cvv"],
+    &["cvc"],
+    &["csc"],
+    &["security", "code"],
+    &["card", "number"],
+    &["card", "expiry"],
+    &["expiry", "date"],
+    &["one", "time"],
+    &["otp"],
+    &["verification", "code"],
+    &["iban"],
+];
+
+/// Whether a field's name says it asks for a secret, whatever the page set.
+fn names_a_secret(name: &str) -> bool {
+    let words: Vec<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    SECRET_WORDS
+        .iter()
+        .any(|phrase| words.windows(phrase.len()).any(|w| w.iter().zip(phrase.iter()).all(|(a, b)| a == b)))
 }
 
 /// Only pages a person works on: http and https.
@@ -211,6 +244,24 @@ mod tests {
         }))
         .unwrap();
         assert_eq!((s.action, s.value), (StepAction::Protected, None));
+    }
+
+    #[test]
+    fn a_field_named_for_a_secret_is_protected_whatever_the_page_says() {
+        for name in ["Password", "Card number", "CVV", "Security code", "One-time code", "Verification code", "Card expiry", "PIN"] {
+            let s = step_from_helper(&json!({
+                "kind": "step",
+                "step": { "action": "fill", "role": "textbox", "name": name, "value": "4111 1111", "url": "https://a.test/" }
+            }))
+            .unwrap();
+            assert_eq!((s.action, s.value), (StepAction::Protected, None), "{name}");
+        }
+        let s = step_from_helper(&json!({
+            "kind": "step",
+            "step": { "action": "fill", "role": "textbox", "name": "Spinning class", "value": "Mon", "url": "https://a.test/" }
+        }))
+        .unwrap();
+        assert_eq!(s.action, StepAction::Fill, "a word inside another is no secret");
     }
 
     #[test]

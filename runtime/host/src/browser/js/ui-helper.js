@@ -141,6 +141,21 @@
   // changes an event.
   let recording = false;
   const PROTECTED = new Set(["current-password", "new-password", "one-time-code"]);
+  // A field that was a password once stays one when "show password" makes it text.
+  const wasPassword = new WeakSet();
+  addEventListener(
+    "focusin",
+    (e) => {
+      if (e.target instanceof HTMLInputElement && e.target.type === "password") wasPassword.add(e.target);
+    },
+    true,
+  );
+  // Any autocomplete token naming a password, a one-time code or a card.
+  const secretAutocomplete = (el) =>
+    (el.getAttribute("autocomplete") || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .some((token) => PROTECTED.has(token) || token.startsWith("cc-"));
   const TEXT_LIKE = new Set(["", "text", "email", "tel", "url", "search", "number", "date", "time", "datetime-local", "month", "week"]);
   const squash = (s) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "");
   const nameOf = (el) => {
@@ -210,8 +225,7 @@
         recordStep("choose", t, cut([...t.selectedOptions].map((o) => squash(o.label)).join(", "), 2000));
       } else if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
         const protectedField =
-          (t instanceof HTMLInputElement && t.type === "password") ||
-          PROTECTED.has((t.getAttribute("autocomplete") || "").trim().toLowerCase());
+          (t instanceof HTMLInputElement && (t.type === "password" || wasPassword.has(t))) || secretAutocomplete(t);
         if (protectedField) recordStep("protected", t);
         else recordStep("fill", t, cut(t.value, 2000));
       }
