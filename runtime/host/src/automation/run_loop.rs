@@ -1107,6 +1107,7 @@ fn item_prompt(
         "You are working one item for the playbook \"{name}\".\n\
          Goal: {goal}\n\n\
          Rules:\n{rules}\n\n\
+         {guide}\
          What you know about the person:\n{inputs}\n\n\
          Notes about this site:\n{tips}\n\n\
          The item: {title}\n{url}\n\
@@ -1125,6 +1126,20 @@ fn item_prompt(
          help with later items on this site. Then end your turn.",
         name = doc.name,
         goal = doc.goal,
+        guide = if doc.steps.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "How the person did this once (a guide: the page may differ, so find \
+                 the field or button that means the same thing):\n{}\n\
+                 Never click the send yourself: declare it with playbook_declare_action.\n\n",
+                doc.steps
+                    .iter()
+                    .map(|s| format!("- {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        },
         rules = if rules.is_empty() {
             none()
         } else {
@@ -1309,6 +1324,35 @@ mod tests {
             calls: 2,
             result: Some(status),
         }
+    }
+
+    /// A recorded playbook's steps reach the item agent as a guide it adapts
+    /// to the page, and the send stays declared (recording, spec 16.2).
+    #[tokio::test]
+    async fn the_item_prompt_carries_the_steps_as_a_guide() {
+        let with_steps = PLAYBOOK.replace(
+            "rules:\n",
+            "steps:\n  - Click \"Apply\"\n  - Fill \"Notice\" with input notice_period\nrules:\n",
+        );
+        let f = fixture_with(
+            &with_steps,
+            vec![result(json!({ "status": "failed", "note": "x" }))],
+        )
+        .await;
+        drive(&f.run_loop).await;
+        let (_, prompt, _) = item_prompts(&f.launcher).remove(0);
+        let guide = prompt.find("How the person did this once").expect("guide");
+        let apply = prompt.find("- Click \"Apply\"").expect("step 1");
+        let fill = prompt
+            .find("- Fill \"Notice\" with input notice_period")
+            .expect("step 2");
+        assert!(guide < apply && apply < fill, "{prompt}");
+        assert!(prompt.contains("Never click the send yourself"), "{prompt}");
+
+        let f = fixture(vec![result(json!({ "status": "failed", "note": "x" }))]).await;
+        drive(&f.run_loop).await;
+        let (_, prompt, _) = item_prompts(&f.launcher).remove(0);
+        assert!(!prompt.contains("How the person did this once"), "{prompt}");
     }
 
     /// A run of three listed items: each item gets a session on its lane

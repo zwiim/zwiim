@@ -33,6 +33,10 @@ pub struct PlaybookDoc {
     pub inputs: Vec<Input>,
     #[serde(default)]
     pub rules: Vec<String>,
+    /// How the person did one item, as a guide the item agent adapts to the
+    /// page (recording, spec 16.2). Inputs are named `input <name>`.
+    #[serde(default)]
+    pub steps: Vec<String>,
     /// Approval rules per kind; a kind absent is ask.
     #[serde(default)]
     pub approval: Vec<ApprovalEntry>,
@@ -73,6 +77,17 @@ pub enum Input {
     Fact { name: String, value: String },
     /// A keychain secret, referenced by handle.
     Secret { name: String, handle: String },
+}
+
+impl Input {
+    /// The name steps and declarations use for it.
+    pub fn name(&self) -> &str {
+        match self {
+            Input::File { name, .. } | Input::Fact { name, .. } | Input::Secret { name, .. } => {
+                name
+            }
+        }
+    }
 }
 
 /// One approval rule (spec 8.1.2).
@@ -235,6 +250,41 @@ fn yaml_error(e: &serde_yaml::Error, source: &str) -> ValidationError {
     }
 }
 
+/// The input names a step uses: each `input <name>`, the name quoted or
+/// running to ` to `, ` into `, ` in ` or the end.
+pub fn step_inputs(step: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = step;
+    while let Some(at) = rest.find("input ") {
+        let starts_word = at == 0 || rest[..at].ends_with(' ');
+        let after = &rest[at + "input ".len()..];
+        if !starts_word {
+            rest = after;
+            continue;
+        }
+        let (name, next) = match after.strip_prefix('"') {
+            Some(quoted) => match quoted.find('"') {
+                Some(end) => (&quoted[..end], &quoted[end + 1..]),
+                None => (quoted, ""),
+            },
+            None => {
+                let end = [" to ", " into ", " in "]
+                    .iter()
+                    .filter_map(|w| after.find(w))
+                    .min()
+                    .unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            names.push(name);
+        }
+        rest = next;
+    }
+    names
+}
+
 /// The 1-based line a top-level `key:` sits on, for semantic errors.
 fn find_line(source: &str, key: &str) -> Option<usize> {
     let needle = format!("{key}:");
@@ -305,6 +355,36 @@ fn check_doc(doc: &PlaybookDoc, source: &str, errors: &mut Vec<ValidationError>)
                         .into(),
                 });
             }
+        }
+    }
+    // A step may only use an input the playbook has.
+    let known: Vec<&str> = doc.inputs.iter().map(Input::name).collect();
+    let steps_from = line_of("steps");
+    for step in &doc.steps {
+        for name in step_inputs(step) {
+            if known.contains(&name) {
+                continue;
+            }
+            let line = source
+                .lines()
+                .enumerate()
+                .skip(steps_from)
+                .find(|(_, l)| l.contains(step.as_str()))
+                .map(|(i, _)| i + 1)
+                .unwrap_or(steps_from);
+            errors.push(ValidationError {
+                line,
+                field: "steps".into(),
+                problem: format!("the step uses input `{name}`, which the playbook does not have"),
+                fix: if known.is_empty() {
+                    format!("add `{name}` under `inputs:`")
+                } else {
+                    format!(
+                        "add `{name}` under `inputs:` or use one of: {}",
+                        known.join(", ")
+                    )
+                },
+            });
         }
     }
     // Caps can only lower (spec 10.1.4).
@@ -567,5 +647,81 @@ mod review_checks {
             .unwrap_err()
             .iter()
             .any(|e| e.field == "inputs.password"));
+    }
+}
+
+#[cfg(test)]
+mod steps {
+    use super::*;
+
+    const WITH_STEPS: &str = r#"format: 1
+name: Apply
+goal: Apply to each job
+main_kind: submit_application
+sources:
+  - type: list
+    items: ["https://jobs.example/1"]
+inputs:
+  - type: fact
+    name: Email
+    value: me@example.com
+steps:
+  - Click "Apply"
+  - Fill "Email" with input Email
+checks:
+  - kind: text_present
+    text: Application sent
+"#;
+
+    #[test]
+    fn steps_are_optional_and_kept_in_order() {
+        let doc = validate(WITH_STEPS).expect("valid");
+        assert_eq!(
+            doc.steps,
+            vec![
+                "Click \"Apply\"".to_string(),
+                "Fill \"Email\" with input Email".to_string()
+            ]
+        );
+        let without = WITH_STEPS.replace(
+            "steps:\n  - Click \"Apply\"\n  - Fill \"Email\" with input Email\n",
+            "",
+        );
+        assert!(validate(&without).expect("valid").steps.is_empty());
+    }
+
+    #[test]
+    fn a_step_naming_an_unknown_input_is_line_anchored() {
+        let text = WITH_STEPS.replace(
+            "  - Fill \"Email\" with input Email\n",
+            "  - Fill \"Email\" with input Email\n  - Attach input Resume to \"CV\"\n",
+        );
+        let errs = validate(&text).unwrap_err();
+        let err = errs
+            .iter()
+            .find(|e| e.field == "steps")
+            .expect("steps error");
+        let line = text
+            .lines()
+            .position(|l| l.contains("Attach input Resume"))
+            .unwrap()
+            + 1;
+        assert_eq!(err.line, line);
+        assert!(err.problem.contains("Resume"), "{}", err.problem);
+        assert!(err.fix.contains("Email"), "{}", err.fix);
+    }
+
+    #[test]
+    fn step_inputs_reads_plain_and_quoted_names() {
+        assert_eq!(
+            step_inputs("Fill \"Full name\" with input \"Full name\""),
+            vec!["Full name"]
+        );
+        assert_eq!(step_inputs("Attach input Resume to \"CV\""), vec!["Resume"]);
+        assert_eq!(
+            step_inputs("Fill \"Email\" with input Email"),
+            vec!["Email"]
+        );
+        assert!(step_inputs("Click \"Apply\"").is_empty());
     }
 }
