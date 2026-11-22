@@ -503,6 +503,27 @@ export type BrowserAgentAction = {
  */
 export type BrowserPick = { label: string; text: string; url: string };
 
+/** What a recorded step did (revision 45). */
+export type RecordedStepAction = "click" | "fill" | "choose" | "file" | "protected" | "navigate";
+
+/** One thing the person did while the tab recorded. A protected field's value is never kept. */
+export interface RecordedStep {
+  action: RecordedStepAction;
+  role: string;
+  name: string;
+  value?: string;
+  url: string;
+  /** A file step's files, on the Host's computer. */
+  paths?: string[];
+}
+
+/** A tab's recording (`browser.record.stop`). */
+export interface Recording {
+  tab_id: string;
+  start_url: string;
+  steps: RecordedStep[];
+}
+
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
   | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
@@ -517,6 +538,14 @@ export type BrowserFrame =
   /** The agent's browser tools are using this tab: reading, capturing, loading or acting on it (revision 35). */
   | { type: "browser.agent.working"; tab_id: string }
   | { type: "browser.ui.menu"; menu: BrowserMenu }
+  /** A recording tab kept a step: how many it has, and the latest one's action and name (never a typed value). */
+  | {
+      type: "browser.tab.recorded";
+      tab_id: string;
+      owner: BrowserTabOwner;
+      count: number;
+      last: { action: RecordedStepAction; name: string };
+    }
   /** A pick ended: the element, or `null` when it was called off, the page went, or nobody picked. */
   | { type: "browser.tab.picked"; tab_id: string; owner: BrowserTabOwner; pick: BrowserPick | null }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
@@ -2807,6 +2836,13 @@ export interface Operations {
   /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */
   "browser.tab.pick_cancel": [{ tab_id: string }, Record<string, never>];
   /**
+   * Record what the person does in a tab of their own (revision 45); each
+   * step arrives as `browser.tab.recorded`. `not_personal`, `already_recording`.
+   */
+  "browser.record.start": [{ tab_id: string }, Record<string, never>];
+  /** End the tab's recording and return it. `not_recording`. */
+  "browser.record.stop": [{ tab_id: string }, { recording: Recording }];
+  /**
    * Drop files on the page at `(x, y)` in its CSS pixels, as the person
    * dragging them there: workspace files by relative path, or files uploaded
    * with `attachments.upload` by id. A session's tab takes files from its
@@ -2929,6 +2965,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.tab.find",
   "browser.tab.print",
   "browser.tab.drop",
+  "browser.record.start",
+  "browser.record.stop",
   "browser.engine.reset",
   "browser.view.open",
   "browser.ui.answer",

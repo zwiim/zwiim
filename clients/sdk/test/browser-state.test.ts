@@ -9,6 +9,7 @@ import {
   tabAgentAction,
   tabMenu,
   tabPick,
+  tabRecording,
   tabUiRequests,
 } from "../src/state/browser";
 import type { BrowserTab, BrowserUiRequest } from "../src/types/protocol";
@@ -116,6 +117,26 @@ describe("reduceBrowser", () => {
     expect(tabPick(s, "a")).toEqual({ pick: null, seq: first + 1 });
     s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner });
     expect(tabPick(s, "a")).toBeUndefined();
+  });
+
+  it("keeps a recording tab's step count and its latest step until the tab goes", () => {
+    let s = reduceBrowser(initialBrowserState(), {
+      type: "browser.snapshot",
+      tabs: [tab("a", 0, null)],
+      engine: { state: "running", version: "157" },
+    });
+    const owner = { kind: "personal" } as const;
+    expect(tabRecording(s, "a")).toBeUndefined();
+    s = reduceBrowser(s, {
+      type: "browser.tab.recorded",
+      tab_id: "a",
+      owner,
+      count: 2,
+      last: { action: "click", name: "Apply" },
+    });
+    expect(tabRecording(s, "a")).toEqual({ count: 2, last: { action: "click", name: "Apply" } });
+    s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner });
+    expect(tabRecording(s, "a")).toBeUndefined();
   });
 
   it("follows what tabs wait on until each is done", () => {

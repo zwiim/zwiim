@@ -922,6 +922,16 @@ export class HostController {
     await this.client.request("browser.tab.pick", { tab_id });
   }
 
+  /** Record what the person does in their tab `tab_id`; steps arrive in the browser state's `recordings`. */
+  async startRecording(tab_id: string): Promise<void> {
+    await this.client.request("browser.record.start", { tab_id });
+  }
+
+  /** End the tab's recording and get it back. */
+  stopRecording(tab_id: string): Promise<OpResult<"browser.record.stop">> {
+    return this.client.request("browser.record.stop", { tab_id });
+  }
+
   /** Call the tab's element pick off. */
   async cancelBrowserPick(tab_id: string): Promise<void> {
     await this.client.request("browser.tab.pick_cancel", { tab_id });

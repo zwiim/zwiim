@@ -61,6 +61,7 @@ pub mod input;
 pub mod listener;
 pub mod policy;
 pub mod preview;
+pub mod recording;
 pub mod reload;
 pub mod saving;
 pub mod types;

@@ -132,6 +132,8 @@ const OPS: &[&str] = &[
     "browser.tab.print",
     "browser.tab.drop",
     "browser.tab.pick",
+    "browser.record.start",
+    "browser.record.stop",
     "browser.tab.pick_cancel",
     "browser.tab.reload_on_save",
     "browser.tab.preview",
@@ -9636,4 +9638,48 @@ async fn a_file_over_the_limit_or_missing_is_refused() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "file_not_found");
     assert_eq!(source_of(&h, &id).await.inputs.len(), 1, "nothing saved");
+}
+
+// ── browser.record.* (recording design §1) ───────────────────────────────
+
+#[tokio::test]
+async fn a_tab_of_ones_own_records_and_stops() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let mine = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://jobs.example/search"}),
+        )
+        .await;
+    let tab_id = mine["tab_id"].as_str().unwrap().to_string();
+    h.ok("browser.record.start", json!({ "tab_id": tab_id })).await;
+    let (status, body) = h.call("browser.record.start", json!({ "tab_id": tab_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "already_recording");
+    let stopped = h.ok("browser.record.stop", json!({ "tab_id": tab_id })).await;
+    assert_eq!(stopped["recording"]["tab_id"], tab_id.as_str());
+    assert_eq!(stopped["recording"]["steps"], json!([]));
+    let (status, body) = h.call("browser.record.stop", json!({ "tab_id": tab_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "not_recording");
+}
+
+#[tokio::test]
+async fn a_session_tab_does_not_record() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}}),
+        )
+        .await;
+    let (status, body) = h
+        .call("browser.record.start", json!({ "tab_id": tab["tab_id"] }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "not_personal");
 }

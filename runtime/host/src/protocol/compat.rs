@@ -562,7 +562,13 @@ use serde::{Deserialize, Serialize};
 /// `file_not_found`) and adds or replaces that input; `playbook.file.remove
 /// {playbook_id, input_name}` drops it unless a step uses it
 /// (`input_in_use`). Each change is a new playbook version. Playbooks may
-/// carry `steps:`. Older clients never call the new operations.
+/// carry `steps:`. `browser.record.start {tab_id}` records what the person
+/// does in a tab of their own (`not_personal` otherwise, `already_recording`),
+/// one `browser.tab.recorded {tab_id, owner, count, last: {action, name}}` per
+/// step; `browser.record.stop {tab_id}` returns `{recording: {tab_id,
+/// start_url, steps}}` (`not_recording`). A typed value never reaches an
+/// event, and one typed into a protected field never reaches a recording.
+/// Older clients never call the new operations.
 pub const PROTOCOL_REVISION: u32 = 45;
 
 /// Oldest client revision this Host serves. Raise only after a release that

@@ -105,6 +105,14 @@ pub enum BrowserEvent {
         owner: TabOwner,
         handoff: Option<PageHandoff>,
     },
+    /// A recording tab kept a step (recording design §1): how many it has,
+    /// and the latest.
+    Recorded {
+        tab_id: String,
+        owner: TabOwner,
+        count: usize,
+        last: super::recording::RecordedStep,
+    },
     /// A lane's page needs a person (automation spec 14.3); told to the
     /// run, never to clients.
     LaneAsk {
@@ -173,6 +181,21 @@ impl From<super::engine::cdp::CdpError> for BrowserError {
     }
 }
 
+/// Turn the page helper's recorder on or off in the document of `context`.
+/// A document that went takes its recorder with it, so a failure is fine.
+async fn arm_recorder(cdp: &Cdp, session: &str, context: i64, on: bool) {
+    let _ = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({
+                "expression": format!("globalThis.__zwiimUiHelper.record({on})"),
+                "contextId": context,
+            }),
+            Some(session),
+        )
+        .await;
+}
+
 fn not_found(tab_id: &str) -> BrowserError {
     BrowserError {
         code: "tab_not_found",
@@ -221,6 +244,8 @@ struct Inner {
     picks: HashMap<String, String>,
     /// The worktree watch of each tab that reloads on save (design 10.5).
     reloads: HashMap<String, super::reload::ReloadWatch>,
+    /// What each recording tab's person has done (recording design §1).
+    recordings: HashMap<String, super::recording::Recording>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -606,6 +631,7 @@ impl BrowserService {
                 networks: HashMap::new(),
                 helpers: HashMap::new(),
                 picks: HashMap::new(),
+                recordings: HashMap::new(),
                 reloads: HashMap::new(),
             }),
             sites: std::sync::Mutex::new(Sites {
@@ -880,6 +906,7 @@ impl BrowserService {
         inner.networks.remove(tab_id);
         inner.helpers.remove(tab_id);
         inner.reloads.remove(tab_id);
+        inner.recordings.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -1645,6 +1672,7 @@ impl BrowserService {
                 };
                 self.drop_ui_locked(&mut inner, |r| r.tab_id == id);
                 inner.reloads.remove(&id);
+                inner.recordings.remove(&id);
                 let tab = inner.tabs.remove(&id).expect("found above");
                 let db = self.db.clone();
                 let tab_id = id.clone();
@@ -1760,6 +1788,99 @@ impl BrowserService {
         };
         inner.helpers.insert(id.clone(), context);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == id && r.kind.is_pick());
+        // A recording follows the person to each new page.
+        let url = inner.tabs[&id].info.url.clone();
+        let Some(recording) = inner.recordings.get_mut(&id) else {
+            return;
+        };
+        if recording.navigated(&url) {
+            self.emit_recorded(&inner, &id);
+        }
+        if let Some(cdp) = inner.cdp.clone() {
+            let session = session.to_string();
+            tokio::spawn(async move {
+                arm_recorder(&cdp, &session, context, true).await;
+            });
+        }
+    }
+
+    /// Start recording what the person does in their tab `tab_id`.
+    pub async fn record_start(&self, tab_id: &str) -> Result<(), BrowserError> {
+        let (cdp, session, context) = {
+            let mut inner = self.inner.lock().await;
+            let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+            if tab.info.owner != TabOwner::Personal {
+                return Err(BrowserError {
+                    code: "not_personal",
+                    message: "Only a tab of your own can record".into(),
+                });
+            }
+            if inner.recordings.contains_key(tab_id) {
+                return Err(BrowserError {
+                    code: "already_recording",
+                    message: "This tab is already recording".into(),
+                });
+            }
+            let url = tab.info.url.clone();
+            let session = tab.live.as_ref().map(|l| l.session_id.clone());
+            inner.recordings.insert(
+                tab_id.to_string(),
+                super::recording::Recording::new(tab_id, &url),
+            );
+            (inner.cdp.clone(), session, inner.helpers.get(tab_id).copied())
+        };
+        // A page not loaded yet is armed when its helper is ready.
+        if let (Some(cdp), Some(session), Some(context)) = (cdp, session, context) {
+            arm_recorder(&cdp, &session, context, true).await;
+        }
+        Ok(())
+    }
+
+    /// Stop recording tab `tab_id` and hand back what the person did.
+    pub async fn record_stop(
+        &self,
+        tab_id: &str,
+    ) -> Result<super::recording::Recording, BrowserError> {
+        let (recording, cdp, session, context) = {
+            let mut inner = self.inner.lock().await;
+            let recording = inner
+                .recordings
+                .remove(tab_id)
+                .ok_or_else(|| BrowserError {
+                    code: "not_recording",
+                    message: "This tab is not recording".into(),
+                })?;
+            let session = inner
+                .tabs
+                .get(tab_id)
+                .and_then(|t| t.live.as_ref())
+                .map(|l| l.session_id.clone());
+            (
+                recording,
+                inner.cdp.clone(),
+                session,
+                inner.helpers.get(tab_id).copied(),
+            )
+        };
+        if let (Some(cdp), Some(session), Some(context)) = (cdp, session, context) {
+            arm_recorder(&cdp, &session, context, false).await;
+        }
+        Ok(recording)
+    }
+
+    fn emit_recorded(&self, inner: &Inner, tab_id: &str) {
+        let (Some(recording), Some(tab)) = (inner.recordings.get(tab_id), inner.tabs.get(tab_id))
+        else {
+            return;
+        };
+        if let Some(last) = recording.steps.last() {
+            self.emit(BrowserEvent::Recorded {
+                tab_id: tab_id.to_string(),
+                owner: tab.info.owner.clone(),
+                count: recording.steps.len(),
+                last: last.clone(),
+            });
+        }
     }
 
     /// Highlight `query` in tab `tab_id` and move to its next match (the one
@@ -2103,6 +2224,15 @@ impl BrowserService {
                 HelperMessage::Title => {
                     let generation = inner.generation;
                     self.refresh_info(&inner, &id, generation);
+                }
+                HelperMessage::Step(step) => {
+                    let kept = inner
+                        .recordings
+                        .get_mut(&id)
+                        .is_some_and(|recording| recording.push(step));
+                    if kept {
+                        self.emit_recorded(&inner, &id);
+                    }
                 }
                 HelperMessage::Select {
                     id: element,
@@ -2701,6 +2831,25 @@ impl BrowserService {
                 message: "That request was already answered or has expired".into(),
             })?;
         let call = ui::answer_call(&request.kind, answer)?;
+        // A recording keeps which files the person gave the page.
+        if let (
+            UiKind::FileChooser { .. },
+            UiAnswer::FileChooser {
+                accept: true,
+                files,
+                ..
+            },
+        ) = (&request.kind, answer)
+        {
+            if let Some(recording) = inner.recordings.get_mut(&request.tab_id) {
+                recording.chose_files(
+                    files
+                        .iter()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .collect(),
+                );
+            }
+        }
         if let (
             UiKind::Site { site, .. },
             UiAnswer::Site { allow, always },
@@ -3735,6 +3884,167 @@ mod tests {
             Ok(tab) => tab,
             Err(_) => panic!("the tab did not reach the state: {:?}", svc.tab(id).await),
         }
+    }
+
+    /// The engine session of tab `id`.
+    async fn session_of(svc: &BrowserService, id: &str) -> String {
+        until(svc, id, |t| !t.loading).await;
+        let inner = svc.inner.lock().await;
+        inner.tabs[id].live.as_ref().unwrap().session_id.clone()
+    }
+
+    fn a_step(action: &str, name: &str, url: &str) -> HelperMessage {
+        HelperMessage::Step(
+            super::super::recording::step_from_helper(&json!({
+                "kind": "step",
+                "step": { "action": action, "role": "button", "name": name, "url": url }
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn recording_only_on_a_personal_tab() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(session("s1"), None).await.unwrap();
+        let err = svc.record_start(&tab.id).await.unwrap_err();
+        assert_eq!(err.code, "not_personal");
+        let mine = svc.open(TabOwner::Personal, None).await.unwrap();
+        svc.record_start(&mine.id).await.unwrap();
+        assert_eq!(svc.record_start(&mine.id).await.unwrap_err().code, "already_recording");
+    }
+
+    #[tokio::test]
+    async fn steps_collect_in_order_and_stop_returns_them() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mine = svc
+            .open(TabOwner::Personal, Some("https://jobs.example/search"))
+            .await
+            .unwrap();
+        let session = session_of(&svc, &mine.id).await;
+        svc.helper_ready(&session, 7).await;
+        let mut events = svc.subscribe();
+        svc.record_start(&mine.id).await.unwrap();
+        // The helper in the current document is told to record.
+        assert!(fake
+            .calls("Runtime.evaluate")
+            .iter()
+            .any(|c| c["contextId"] == 7 && c["expression"] == "globalThis.__zwiimUiHelper.record(true)"));
+        svc.helper_said(
+            &session,
+            7,
+            vec![
+                a_step("click", "Apply", "https://jobs.example/search"),
+                a_step("click", "Next", "https://jobs.example/search"),
+            ],
+        )
+        .await;
+        let recorded = loop {
+            match events.recv().await.unwrap() {
+                BrowserEvent::Recorded { count: 2, .. } => break true,
+                _ => continue,
+            }
+        };
+        assert!(recorded);
+        let recording = svc.record_stop(&mine.id).await.unwrap();
+        assert_eq!(recording.start_url, "https://jobs.example/search");
+        let names: Vec<&str> = recording.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Apply", "Next"]);
+        assert_eq!(svc.record_stop(&mine.id).await.unwrap_err().code, "not_recording");
+    }
+
+    #[tokio::test]
+    async fn a_new_document_rearms_the_recorder_and_adds_a_navigate_step() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mine = svc
+            .open(TabOwner::Personal, Some("https://jobs.example/search"))
+            .await
+            .unwrap();
+        let session = session_of(&svc, &mine.id).await;
+        svc.record_start(&mine.id).await.unwrap();
+        svc.navigate(&mine.id, Navigation::Url("https://jobs.example/j/1".into()))
+            .await
+            .unwrap();
+        until(&svc, &mine.id, |t| t.url == "https://jobs.example/j/1").await;
+        svc.helper_ready(&session, 8).await;
+        // A message from the old document's helper is not this page's.
+        svc.helper_said(&session, 7, vec![a_step("click", "Stale", "https://jobs.example/search")])
+            .await;
+        let rearmed = || {
+            fake.calls("Runtime.evaluate")
+                .iter()
+                .any(|c| c["contextId"] == 8 && c["expression"] == "globalThis.__zwiimUiHelper.record(true)")
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !rearmed() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the new document records too");
+        let recording = svc.record_stop(&mine.id).await.unwrap();
+        assert_eq!(recording.steps.len(), 1, "{:?}", recording.steps);
+        assert_eq!(recording.steps[0].action, super::super::recording::StepAction::Navigate);
+        assert_eq!(recording.steps[0].url, "https://jobs.example/j/1");
+    }
+
+    #[tokio::test]
+    async fn a_chosen_file_path_joins_its_step() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mine = svc
+            .open(TabOwner::Personal, Some("https://jobs.example/apply"))
+            .await
+            .unwrap();
+        let session = session_of(&svc, &mine.id).await;
+        svc.helper_ready(&session, 7).await;
+        svc.record_start(&mine.id).await.unwrap();
+        let mut events = svc.subscribe();
+        fake.emit(
+            "Page.fileChooserOpened",
+            json!({"frameId": "F1", "mode": "selectSingle", "backendNodeId": 7}),
+            Some(&session),
+        );
+        let request = loop {
+            if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                if matches!(r.kind, UiKind::FileChooser { .. }) {
+                    break r;
+                }
+            }
+        };
+        svc.answer(
+            &request.request_id,
+            &UiAnswer::FileChooser {
+                accept: true,
+                workspace_id: Some("w1".into()),
+                paths: vec!["cv.pdf".into()],
+                files: vec![std::path::PathBuf::from("/Users/me/ws/cv.pdf")],
+            },
+        )
+        .await
+        .unwrap();
+        svc.helper_said(&session, 7, vec![a_step("file", "Upload CV", "https://jobs.example/apply")])
+            .await;
+        let recording = svc.record_stop(&mine.id).await.unwrap();
+        assert_eq!(recording.steps[0].paths, vec!["/Users/me/ws/cv.pdf".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn closing_the_tab_drops_its_recording() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mine = svc.open(TabOwner::Personal, None).await.unwrap();
+        svc.record_start(&mine.id).await.unwrap();
+        svc.close(&mine.id).await.unwrap();
+        assert_eq!(svc.record_stop(&mine.id).await.unwrap_err().code, "not_recording");
     }
 
     #[tokio::test]

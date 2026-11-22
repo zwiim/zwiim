@@ -166,6 +166,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         )
         .route("/browser.tab.preview", post(browser::tab_preview))
         .route("/browser.tab.pick_cancel", post(browser::tab_pick_cancel))
+        .route("/browser.record.start", post(browser::record_start))
+        .route("/browser.record.stop", post(browser::record_stop))
         .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))
         .route("/host.update.status", post(http::host_update_status))

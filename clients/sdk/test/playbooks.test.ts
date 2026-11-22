@@ -88,6 +88,15 @@ describe("playbook and run methods", () => {
       options: { mutating: true },
     });
 
+    t.transport.handlers["browser.record.start"] = () => ({});
+    await t.controller.startRecording("tab1");
+    expect(sent()).toMatchObject({ op: "browser.record.start", params: { tab_id: "tab1" }, options: { mutating: true } });
+
+    const recording = { tab_id: "tab1", start_url: "https://jobs.example/", steps: [] };
+    t.transport.handlers["browser.record.stop"] = () => ({ recording });
+    expect((await t.controller.stopRecording("tab1")).recording).toEqual(recording);
+    expect(sent()).toMatchObject({ op: "browser.record.stop", params: { tab_id: "tab1" }, options: { mutating: true } });
+
     t.transport.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
     await t.controller.listRuns({ playbookId: "pb1", limit: 5 });
     expect(sent()).toMatchObject({ op: "run.list", params: { playbook_id: "pb1", limit: 5 } });

@@ -46,6 +46,9 @@ impl From<BrowserError> for ZwiimError {
             "page_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, e.message),
             "session_tab_only" | "unknown_preview" => (StatusCode::BAD_REQUEST, e.message),
             "nothing_to_save" => (StatusCode::CONFLICT, e.message),
+            "not_personal" | "already_recording" | "not_recording" => {
+                (StatusCode::CONFLICT, e.message)
+            }
             "login_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
@@ -384,6 +387,38 @@ pub async fn tab_pick(
     visible_tab(&browser, caller, &p.tab_id).await?;
     browser.pick(&p.tab_id).await?;
     Ok(Json(json!({})))
+}
+
+/// `browser.record.start {tab_id}`: record what the person does in a tab
+/// of their own (recording design §1); each step arrives as
+/// `browser.tab.recorded`.
+pub async fn record_start(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<TabParams>,
+) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    browser.record_start(&p.tab_id).await?;
+    Ok(Json(json!({})))
+}
+
+/// `browser.record.stop {tab_id}`: end the recording and return it.
+pub async fn record_stop(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<TabParams>,
+) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    let recording = browser.record_stop(&p.tab_id).await?;
+    Ok(Json(json!({ "recording": recording })))
 }
 
 /// `browser.tab.pick_cancel {tab_id}`: call the tab's pick off; it ends with
@@ -1003,6 +1038,15 @@ impl BrowserFeed {
                         "tab_id": tab_id,
                         "owner": owner,
                         "pick": handoff.map(|h| json!({ "label": h.label, "text": h.text, "url": h.url })),
+                    })),
+                    // The count and the latest step's action and name: never
+                    // a value the person typed.
+                    Ok(BrowserEvent::Recorded { tab_id, owner, count, last }) => Some(json!({
+                        "type": "browser.tab.recorded",
+                        "tab_id": tab_id,
+                        "owner": owner,
+                        "count": count,
+                        "last": { "action": last.action, "name": last.name },
                     })),
                     // Told to the agent that acted (design 10.3); clients
                     // follow downloads in the Host's downloads.
