@@ -1,8 +1,9 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { tabRecording, type PlaybookDraft } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 
+const TAB_CLOSED = "Recording ended: its tab closed.";
 const NO_WORKSPACE = "Add a project folder first: recording happens in the Browser panel beside it.";
 
 /**
@@ -31,6 +32,9 @@ export interface RecordingApi {
 
 const RecordingContext = createContext<RecordingApi | null>(null);
 
+/** The error's code, if it has one. */
+const codeOf = (e: unknown) => (e && typeof e === "object" && "code" in e ? (e as { code: unknown }).code : null);
+
 export function useRecording(): RecordingApi | null {
   return useContext(RecordingContext);
 }
@@ -53,17 +57,37 @@ export function RecordingProvider({
   const [showBrowser, setShowBrowser] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  // A tab that closes takes its recording with it on the Host.
+  const tabs = useHost((s) => s.browser.tabs);
+  const seen = useRef(false);
+  useEffect(() => {
+    if (!tabId) return;
+    const there = tabs.some((t) => t.tab_id === tabId);
+    if (there) seen.current = true;
+    else if (seen.current) {
+      seen.current = false;
+      setTabId(null);
+      setError(TAB_CLOSED);
+    }
+  }, [tabId, tabs]);
+  const recordIn = useCallback((id: string | null) => {
+    seen.current = false;
+    setTabId(id);
+  }, []);
+
   const start = useCallback(
     async (id: string) => {
       setError(null);
       try {
         await controller.startRecording(id);
-        setTabId(id);
+        recordIn(id);
       } catch (e) {
-        setError(errorMessage(e));
+        // Still recording on the Host (the app reloaded): carry on with it.
+        if (codeOf(e) === "already_recording") recordIn(id);
+        else setError(errorMessage(e));
       }
     },
-    [controller],
+    [controller, recordIn],
   );
 
   const record = useCallback(async () => {
@@ -72,13 +96,13 @@ export function RecordingProvider({
     try {
       const tab = await controller.openBrowserTab({ kind: "personal" });
       await controller.startRecording(tab.tab_id);
-      setTabId(tab.tab_id);
+      recordIn(tab.tab_id);
       setShowBrowser((n) => n + 1);
       onShowBrowser();
     } catch (e) {
       setError(errorMessage(e));
     }
-  }, [canShowBrowser, controller, onShowBrowser]);
+  }, [canShowBrowser, controller, onShowBrowser, recordIn]);
 
   const end = useCallback(
     async (keep: boolean) => {
@@ -86,17 +110,19 @@ export function RecordingProvider({
       setError(null);
       try {
         const { draft } = await controller.stopRecording(tabId);
+        recordIn(null);
         if (keep) {
           setReview({ draft });
           onReview();
         }
       } catch (e) {
-        setError(errorMessage(e));
-      } finally {
-        setTabId(null);
+        // Stopped already (its tab closed): nothing left to stop. Otherwise
+        // the Host still records, so Stop stays to try again.
+        if (codeOf(e) === "not_recording") recordIn(null);
+        else setError(errorMessage(e));
       }
     },
-    [controller, onReview, tabId],
+    [controller, onReview, recordIn, tabId],
   );
 
   const api = useMemo<RecordingApi>(

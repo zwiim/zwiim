@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, type PlaybookDraft } from "@zwiim/sdk";
+import { HostClient, HostController, ZwiimClientError, type PlaybookDraft } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { RecordingBar, RecordingProvider, useRecording } from "@/panels/automations/recording";
 import { ReviewRecording } from "@/panels/automations/ReviewRecording";
@@ -124,8 +124,9 @@ describe("recording flow", () => {
 
     controller.watchBrowser();
     await tick();
+    const mine = t.handlers["browser.tab.open"]!({} as never);
     await act(async () => {
-      t.frame({ type: "browser.snapshot", tabs: [], engine: { state: "running", version: "157" } } as never);
+      t.frame({ type: "browser.snapshot", tabs: [mine], engine: { state: "running", version: "157" } } as never);
       t.frame({
         type: "browser.tab.recorded",
         tab_id: "mine1",
@@ -185,6 +186,85 @@ describe("recording flow", () => {
   });
 });
 
+describe("recording that goes wrong", () => {
+  async function mounted(t: FakeTransport) {
+    const controller = await controllerFor(t);
+    const Err = () => <p data-testid="err">{useRecording()!.error ?? ""}</p>;
+    render(
+      <HostProvider value={controller}>
+        <RecordingProvider canShowBrowser onShowBrowser={() => {}} onReview={() => {}}>
+          <Probe />
+          <Err />
+        </RecordingProvider>
+      </HostProvider>,
+    );
+    controller.watchBrowser();
+    await tick();
+    await act(async () => {
+      t.frame({ type: "browser.snapshot", tabs: [], engine: { state: "running", version: "157" } } as never);
+    });
+    return controller;
+  }
+
+  it("a tab that closes ends its recording and says so", async () => {
+    const t = transport();
+    await mounted(t);
+    fireEvent.click(screen.getByRole("button", { name: "Record" }));
+    await tick();
+    expect(screen.getByTestId("recording-tab").textContent).toBe("mine1");
+    await act(async () => {
+      t.frame({ type: "browser.tab.removed", tab_id: "mine1", owner: { kind: "personal" } } as never);
+    });
+    await tick();
+    expect(screen.getByTestId("recording-tab").textContent).toBe("none");
+    expect(screen.getByTestId("err").textContent).toBe("Recording ended: its tab closed.");
+  });
+
+  it("a stop that fails keeps the recording to stop again", async () => {
+    const t = transport();
+    await mounted(t);
+    fireEvent.click(screen.getByRole("button", { name: "Record" }));
+    await tick();
+    t.handlers["browser.record.stop"] = () => {
+      throw new ZwiimClientError("network", "down");
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await tick();
+    expect(screen.getByTestId("recording-tab").textContent).toBe("mine1");
+    expect(screen.getByTestId("err").textContent).not.toBe("");
+    t.handlers["browser.record.stop"] = () => {
+      throw new ZwiimClientError("not_recording", "This tab is not recording", 409);
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await tick();
+    expect(screen.getByTestId("recording-tab").textContent).toBe("none");
+  });
+
+  it("a tab the Host still records is taken up again", async () => {
+    const t = transport();
+    const controller = await mounted(t);
+    t.handlers["browser.record.start"] = () => {
+      throw new ZwiimClientError("already_recording", "This tab is already recording", 409);
+    };
+    const Start = () => {
+      const r = useRecording()!;
+      return <button onClick={() => void r.start("mine1")}>Start here</button>;
+    };
+    cleanup();
+    render(
+      <HostProvider value={controller}>
+        <RecordingProvider canShowBrowser onShowBrowser={() => {}} onReview={() => {}}>
+          <Probe />
+          <Start />
+        </RecordingProvider>
+      </HostProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start here" }));
+    await tick();
+    expect(screen.getByTestId("recording-tab").textContent).toBe("mine1");
+  });
+});
+
 describe("review", () => {
   async function mount(d: PlaybookDraft, picked: string | null = "/Users/ada/cv.pdf") {
     const t = transport();
@@ -225,5 +305,27 @@ describe("review", () => {
     expect(saved.sites).toEqual(["jobs.test"]);
     expect(saved.check_text).toBe("Application sent");
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ playbook_id: "pb9" }), true);
+  });
+
+  it("turning a value back into info keeps its own input name", async () => {
+    const d = draft();
+    d.steps.splice(2, 0, {
+      action: "fill",
+      target: "Email",
+      role: "textbox",
+      url: "https://jobs.test/j/1",
+      value: { kind: "my_info", input: "Email 2", value: "work@example.com" },
+    });
+    d.send_step = 4;
+    const { t } = await mount(d);
+    fireEvent.click(screen.getByRole("button", { name: "Pick CV" }));
+    await tick();
+    const boxes = screen.getAllByRole("checkbox", { name: "Email is my info" });
+    fireEvent.click(boxes[1]!);
+    fireEvent.click(boxes[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    const [{ draft: saved }] = calls(t, "playbook.create_from_draft") as [{ draft: PlaybookDraft }];
+    expect(saved.steps[2]!.value).toEqual({ kind: "my_info", input: "Email 2", value: "work@example.com" });
   });
 });
