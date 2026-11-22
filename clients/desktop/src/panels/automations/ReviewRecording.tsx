@@ -164,11 +164,12 @@ export function ReviewRecording({
                     onChange={(e) => {
                       const v = step.value;
                       const text = v.kind === "my_info" ? v.value : v.kind === "fixed" ? v.text : "";
+                      // Back to info: the input name the Host gave it, or its field's.
+                      const was = recorded.steps[i]?.value;
+                      const input = was?.kind === "my_info" ? was.input : step.target || "Info";
                       setStep(i, {
                         ...step,
-                        value: e.target.checked
-                          ? { kind: "my_info", input: step.target || "Info", value: text }
-                          : { kind: "fixed", text },
+                        value: e.target.checked ? { kind: "my_info", input, value: text } : { kind: "fixed", text },
                       });
                     }}
                   />

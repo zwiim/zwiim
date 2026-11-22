@@ -243,23 +243,56 @@ pub fn draft_to_doc(
         .send_step
         .filter(|&at| at < draft.steps.len())
         .ok_or_else(|| "Choose which step sends.".to_string())?;
+    // The person may have renamed or re-marked values in review: each input
+    // gets a clean name of its own, and the same info under one name is
+    // one input.
+    let mut named: Vec<(String, Option<String>)> = Vec::new();
+    let mut resolve = |wanted: &str, fact: Option<&str>| {
+        let base = match wanted.replace('"', "'").trim() {
+            "" => "Info".to_string(),
+            w => w.to_string(),
+        };
+        let mut name = base.clone();
+        let mut n = 1;
+        loop {
+            match named.iter().find(|(taken, _)| *taken == name) {
+                None => break,
+                Some((_, Some(value))) if Some(value.as_str()) == fact => return (name, false),
+                Some(_) => {
+                    n += 1;
+                    name = format!("{base} {n}");
+                }
+            }
+        }
+        named.push((name.clone(), fact.map(str::to_string)));
+        (name, true)
+    };
+    let mut steps = draft.steps.clone();
     let mut inputs = Vec::new();
-    for step in &draft.steps {
-        match &step.value {
-            DraftValue::MyInfo { input, value } => inputs.push(Input::Fact {
-                name: input.clone(),
-                value: value.clone(),
-            }),
-            DraftValue::File { input, .. } => {
+    for (step, original) in steps.iter_mut().zip(&draft.steps) {
+        match (&mut step.value, &original.value) {
+            (DraftValue::MyInfo { input, value }, _) => {
+                let (name, new) = resolve(input, Some(value));
+                if new {
+                    inputs.push(Input::Fact {
+                        name: name.clone(),
+                        value: value.clone(),
+                    });
+                }
+                *input = name;
+            }
+            (DraftValue::File { input, .. }, DraftValue::File { input: asked, .. }) => {
                 let file = stored
-                    .get(input)
-                    .ok_or_else(|| format!("Pick the file for {input}."))?;
+                    .get(asked)
+                    .ok_or_else(|| format!("Pick the file for {asked}."))?;
+                let (name, _) = resolve(input, None);
                 inputs.push(Input::File {
-                    name: input.clone(),
+                    name: name.clone(),
                     path: None,
                     file: Some(file.file.clone()),
                     sha256: Some(file.sha256.clone()),
                 });
+                *input = name;
             }
             _ => {}
         }
@@ -286,8 +319,7 @@ pub fn draft_to_doc(
         main_kind: draft.send_kind,
         inputs,
         rules: Vec::new(),
-        steps: draft
-            .steps
+        steps: steps
             .iter()
             .enumerate()
             .map(|(i, s)| step_line(s, i == send))
@@ -597,5 +629,54 @@ mod tests {
         let doc = draft_to_doc(&draft_from_recording(&r), &HashMap::new()).unwrap();
         let text = serde_yaml::to_string(&doc).unwrap();
         crate::automation::validate_playbook(&text).expect("the step names its input");
+    }
+
+    #[test]
+    fn a_reviewed_draft_saves_with_clean_distinct_input_names() {
+        let url = "https://forms.example/";
+        let step = |target: &str, input: &str, value: &str| DraftStep {
+            action: StepAction::Fill,
+            target: target.into(),
+            role: "textbox".into(),
+            url: url.into(),
+            value: DraftValue::MyInfo {
+                input: input.into(),
+                value: value.into(),
+            },
+        };
+        let d = PlaybookDraft {
+            name: "Submit on forms.example".into(),
+            goal: "Do it".into(),
+            source: DraftSource::List {
+                urls: vec![url.into()],
+            },
+            sites: vec!["forms.example".into()],
+            steps: vec![
+                step("Email", "Email", "a@x.test"),
+                step("Email", "Email", "b@x.test"),
+                step("Work email", "Email", "a@x.test"),
+                step("Your \"nick\"", "Your \"nick\"", "Ada"),
+                DraftStep {
+                    action: StepAction::Click,
+                    target: "Go".into(),
+                    role: "button".into(),
+                    url: url.into(),
+                    value: DraftValue::None,
+                },
+            ],
+            send_step: Some(4),
+            send_kind: ActionKind::SubmitForm,
+            check_text: None,
+        };
+        let doc = draft_to_doc(&d, &HashMap::new()).unwrap();
+        let text = serde_yaml::to_string(&doc).unwrap();
+        let back = crate::automation::validate_playbook(&text).expect("valid");
+        let names: Vec<&str> = back.inputs.iter().map(Input::name).collect();
+        assert_eq!(names, ["Email", "Email 2", "Your 'nick'"]);
+        assert_eq!(back.steps[1], "Fill \"Email\" with input \"Email 2\"");
+        assert_eq!(
+            back.steps[2], "Fill \"Work email\" with input Email",
+            "same info, one input"
+        );
     }
 }

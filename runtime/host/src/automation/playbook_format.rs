@@ -260,22 +260,28 @@ fn yaml_error(e: &serde_yaml::Error, source: &str) -> ValidationError {
     }
 }
 
-/// The input names a step uses: each `input <name>`, the name quoted or
-/// running to ` to `, ` into `, ` in ` or the end.
+/// The input names a step uses: each `input <name>` outside quoted text,
+/// the name quoted or running to ` to `, ` into `, ` in ` or the end.
 pub fn step_inputs(step: &str) -> Vec<&str> {
     let mut names = Vec::new();
-    let mut rest = step;
-    while let Some(at) = rest.find("input ") {
-        let starts_word = at == 0 || rest[..at].ends_with(' ');
-        let after = &rest[at + "input ".len()..];
-        if !starts_word {
-            rest = after;
+    let mut at = 0;
+    while at < step.len() {
+        let rest = &step[at..];
+        // Quoted text (a field's name, fixed text) is never a reference.
+        if let Some(quoted) = rest.strip_prefix('"') {
+            at += 1 + quoted.find('"').map_or(quoted.len(), |end| end + 1);
             continue;
         }
-        let (name, next) = match after.strip_prefix('"') {
+        let starts_word = at == 0 || step[..at].ends_with(' ');
+        let Some(after) = rest.strip_prefix("input ").filter(|_| starts_word) else {
+            at += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        let after_at = at + "input ".len();
+        let (name, used) = match after.strip_prefix('"') {
             Some(quoted) => match quoted.find('"') {
-                Some(end) => (&quoted[..end], &quoted[end + 1..]),
-                None => (quoted, ""),
+                Some(end) => (&quoted[..end], end + 2),
+                None => (quoted, after.len()),
             },
             None => {
                 let end = [" to ", " into ", " in "]
@@ -283,14 +289,14 @@ pub fn step_inputs(step: &str) -> Vec<&str> {
                     .filter_map(|w| after.find(w))
                     .min()
                     .unwrap_or(after.len());
-                (&after[..end], &after[end..])
+                (&after[..end], end)
             }
         };
         let name = name.trim();
         if !name.is_empty() {
             names.push(name);
         }
-        rest = next;
+        at = after_at + used;
     }
     names
 }
@@ -398,6 +404,19 @@ fn check_doc(doc: &PlaybookDoc, source: &str, errors: &mut Vec<ValidationError>)
                 });
             }
         }
+    }
+    // Each input has its own name: steps and declarations name them.
+    let mut seen: Vec<&str> = Vec::new();
+    for input in &doc.inputs {
+        if seen.contains(&input.name()) {
+            errors.push(ValidationError {
+                line: line_of("inputs"),
+                field: format!("inputs.{}", input.name()),
+                problem: format!("two inputs are named `{}`", input.name()),
+                fix: "give each input its own name".into(),
+            });
+        }
+        seen.push(input.name());
     }
     // A step may only use an input the playbook has.
     let known: Vec<&str> = doc.inputs.iter().map(Input::name).collect();
@@ -765,6 +784,26 @@ checks:
             vec!["Email"]
         );
         assert!(step_inputs("Click \"Apply\"").is_empty());
+    }
+
+    #[test]
+    fn quoted_text_is_never_an_input_name() {
+        assert!(step_inputs("Click \"Your input here\"").is_empty());
+        assert!(step_inputs("Type \"I'd like to input data\" into \"Notes\"").is_empty());
+        assert_eq!(
+            step_inputs("Fill \"Say input here\" with input \"Say input here\""),
+            vec!["Say input here"]
+        );
+    }
+
+    #[test]
+    fn two_inputs_with_one_name_are_refused() {
+        let text = WITH_STEPS.replace(
+            "steps:",
+            "  - type: fact\n    name: Email\n    value: other@example.com\nsteps:",
+        );
+        let errs = validate(&text).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "inputs.Email"), "{errs:?}");
     }
 }
 
