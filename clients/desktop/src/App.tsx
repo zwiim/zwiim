@@ -283,6 +283,7 @@ export function Workbench({
   useTurnAlerts(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
+  const [askFile, setAskFile] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   /** What the middle shows: the workspace's sessions and files, or the Automations canvas. */
@@ -570,10 +571,25 @@ export function Workbench({
           }}
         />
       )}
+      {askFile && (
+        <HostPathDialog
+          kind="file"
+          onDone={(path) => {
+            askFile(path);
+            setAskFile(null);
+          }}
+        />
+      )}
       {pane === "automations" && (
         <main className="flex min-w-0 flex-1 flex-col">
           <OfflineBanner />
-          <AutomationsView />
+          <AutomationsView
+            pickFile={() =>
+              !remote && bridge.pickFile
+                ? bridge.pickFile()
+                : new Promise<string | null>((resolve) => setAskFile(() => resolve))
+            }
+          />
         </main>
       )}
       {/* Hidden, not unmounted, behind the canvas: open files keep typing not yet saved. */}

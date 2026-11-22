@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { PlaybookRow } from "./data";
+import { InputsCard } from "./InputsCard";
 import { ItemTile } from "./ItemTile";
 import { failureText, runCounts, sectionLine, type Dot } from "./status";
 import { StatusDot } from "./StatusDot";
@@ -60,6 +61,7 @@ export function PlaybookSection({
   onToggle,
   onAction,
   onOpen,
+  pickFile,
 }: {
   row: PlaybookRow;
   open: boolean;
@@ -70,6 +72,8 @@ export function PlaybookSection({
   onAction(action: SectionAction): void;
   /** Open an item in the focus view. */
   onOpen(itemId: string): void;
+  /** A file on the Host's computer for an input, or null when cancelled. */
+  pickFile(): Promise<string | null>;
 }) {
   const counts = runCounts(row.items);
   const line = sectionLine(row.run, counts);
@@ -138,6 +142,11 @@ export function PlaybookSection({
         ) : (
           <p className="text-muted-foreground pl-5.5 text-xs">Start it to watch each item here as it runs.</p>
         ))}
+      {open && (
+        <div className="pl-5.5">
+          <InputsCard playbookId={row.playbook.playbook_id} pickFile={pickFile} />
+        </div>
+      )}
     </section>
   );
 }

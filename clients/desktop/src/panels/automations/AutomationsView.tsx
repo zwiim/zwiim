@@ -20,7 +20,14 @@ function isOpen(row: PlaybookRow): boolean {
 }
 
 /** The Automations canvas: each playbook a section with its latest run's items. */
-export function AutomationsView() {
+const NO_PICKER = () => Promise.resolve(null);
+
+export function AutomationsView({
+  pickFile = NO_PICKER,
+}: {
+  /** A file on the Host's computer for a playbook input, or null when cancelled. */
+  pickFile?(): Promise<string | null>;
+} = {}) {
   const controller = useController();
   const { state, error, rows, pausedSites, reload, turnOn } = useAutomations();
   const [, rerender] = useState(0);
@@ -186,6 +193,7 @@ export function AutomationsView() {
               onToggle={() => setOpen([id], !open)}
               onAction={(action) => onAction(row, action)}
               onOpen={(item_id) => setFocus({ playbook_id: id, item_id })}
+              pickFile={pickFile}
             />
           );
         })
