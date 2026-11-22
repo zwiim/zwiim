@@ -1,6 +1,6 @@
-//! Sign-ins kept between engines (design 6.3): the personal context's, each
-//! workspace's saved login that its sessions start from, and each run
-//! lane's login (automation spec 14.2).
+//! Sign-ins kept between engines (design 6.3): the personal context's, which
+//! run lanes also start from and write back to, and each workspace's saved
+//! login that its sessions start from.
 //!
 //! The engine's contexts are ephemeral and the headless shell protects its
 //! own cookie file with Chromium's built-in mock password, so the Host keeps
@@ -31,8 +31,6 @@ const KEY_SECRET: &str = "browser-snapshot-key";
 const AAD: &[u8] = b"zwiim browser personal snapshot v1";
 /// The same for a workspace's login, followed by the workspace's id.
 const LOGIN_AAD: &str = "zwiim browser workspace login v1 ";
-/// The same for a lane's login, followed by its site and account.
-const LANE_AAD: &str = "zwiim browser lane login v1 ";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotError {
@@ -128,30 +126,6 @@ impl Snapshot {
         Some(self.beside(
             Path::new("logins").join(format!("{workspace_id}.snapshot")),
             format!("{LOGIN_AAD}{workspace_id}"),
-        ))
-    }
-
-    /// Lane (`site`, `account`)'s login, beside this snapshot under
-    /// `lanes/<site>/<account>.snapshot`, sealed by the same key and bound
-    /// to that lane. None unless `site` is a lowercase host name and
-    /// `account` a plain name.
-    pub fn lane(&self, site: &str, account: &str) -> Option<Snapshot> {
-        let host = !site.is_empty()
-            && site.len() <= 253
-            && site.split('.').all(|label| {
-                !label.is_empty()
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            });
-        if !host || !plain(account) {
-            return None;
-        }
-        Some(self.beside(
-            Path::new("lanes")
-                .join(site)
-                .join(format!("{account}.snapshot")),
-            format!("{LANE_AAD}{site} {account}"),
         ))
     }
 
@@ -367,37 +341,6 @@ mod tests {
         login.remove().unwrap();
         login.remove().unwrap();
         assert_eq!(login.load().unwrap(), Contents::default());
-    }
-
-    #[test]
-    fn a_lane_login_is_its_own_file_bound_to_its_site_and_account() {
-        let dir = tempfile::tempdir().unwrap();
-        let personal = Snapshot::with_key(dir.path().join("personal.snapshot"), [7; 32]);
-        for (site, account) in [
-            ("..", "main"),
-            ("jobsy.example", "../x"),
-            ("Jobsy.example", "main"),
-            ("jobsy..example", "main"),
-            ("", "main"),
-            ("jobsy.example", ""),
-        ] {
-            assert!(personal.lane(site, account).is_none(), "{site} {account}");
-        }
-        let lane = personal.lane("jobsy.example", "main").unwrap();
-        lane.save(&contents()).unwrap();
-        assert!(dir.path().join("lanes/jobsy.example/main.snapshot").exists());
-        assert_eq!(lane.load().unwrap(), contents());
-
-        // Copied to another account's or another site's name, it does not open.
-        for (site, account) in [("jobsy.example", "second"), ("acme.example", "main")] {
-            let to = dir.path().join(format!("lanes/{site}/{account}.snapshot"));
-            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
-            std::fs::copy(dir.path().join("lanes/jobsy.example/main.snapshot"), &to).unwrap();
-            assert_eq!(
-                personal.lane(site, account).unwrap().load().unwrap_err(),
-                SnapshotError::Corrupt
-            );
-        }
     }
 
     #[test]

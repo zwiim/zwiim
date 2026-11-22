@@ -469,6 +469,7 @@ fn error_meaning(code: ErrorCode) -> &'static str {
             "A site of the playbook has no risk step yet; `details.sites` lists them."
         }
         ErrorCode::NoOpenQuestion => "The item is not waiting on a question.",
+        ErrorCode::ItemNotWaiting => "The item is not waiting on the person.",
     }
 }
 
@@ -501,6 +502,8 @@ pub enum ErrorCode {
     SiteRiskNotAccepted,
     /// `run.answer` for an item that waits on no question.
     NoOpenQuestion,
+    /// `run.resolve` for an item that is not waiting on the person.
+    ItemNotWaiting,
 }
 
 impl ErrorCode {
@@ -519,6 +522,7 @@ impl ErrorCode {
             ErrorCode::RunNotRunning => "run_not_running",
             ErrorCode::SiteRiskNotAccepted => "site_risk_not_accepted",
             ErrorCode::NoOpenQuestion => "no_open_question",
+            ErrorCode::ItemNotWaiting => "item_not_waiting",
         }
     }
 
@@ -537,6 +541,7 @@ impl ErrorCode {
             ErrorCode::RunNotRunning,
             ErrorCode::SiteRiskNotAccepted,
             ErrorCode::NoOpenQuestion,
+            ErrorCode::ItemNotWaiting,
         ]
     }
 }

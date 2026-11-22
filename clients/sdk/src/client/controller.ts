@@ -36,6 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
+  RunResolveChoice,
   SessionEvent,
   SessionOptions,
   SessionRevertResult,
@@ -860,6 +861,11 @@ export class HostController {
   /** Answer the question an item waits on; it goes back to the queue. */
   answer(item_id: string, answer: string): Promise<OpResult<"run.answer">> {
     return this.client.request("run.answer", { item_id, answer });
+  }
+
+  /** Settle an item waiting on the person: it was sent, it was not (redo), or skip it. */
+  resolve(item_id: string, choice: RunResolveChoice): Promise<OpResult<"run.resolve">> {
+    return this.client.request("run.resolve", { item_id, choice });
   }
 
   listSites(): Promise<OpResult<"site.list">> {

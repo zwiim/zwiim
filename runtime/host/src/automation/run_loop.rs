@@ -508,15 +508,28 @@ impl RunLoop {
     /// (and retried up to the limit). Left `working`, it would hold its lane,
     /// and the run, forever.
     async fn abandon(&self, item: &playbook_item::Model, epoch: i32) {
+        // The tab it recorded, read before the item ends.
+        let tab = playbook_item::Entity::find_by_id(item.id)
+            .one(&self.db)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|row| row.tab_id);
         let outcome = ItemOutcome::Failed(ReasonCode::AgentFailed);
         match self
             .runner
             .finish_session(item.id, &bare_ref(item, epoch), outcome)
             .await
         {
-            // Ended meanwhile, or no longer working: nothing to undo.
-            Ok(_)
-            | Err(StepError::Transition(
+            // Ended here: its tab goes with it.
+            Ok(_) => {
+                if let Some(tab) = tab {
+                    self.close_item_tab(item.id, &tab).await;
+                }
+            }
+            // Ended meanwhile, or no longer working (a parked item keeps
+            // its tab): nothing to undo.
+            Err(StepError::Transition(
                 TransitionError::StaleAttempt { .. } | TransitionError::ItemStale { .. },
             )) => {}
             Err(e) => tracing::warn!("[automation] item {} left working: {e}", item.id),
@@ -1386,6 +1399,29 @@ mod tests {
             "no item stays working: {statuses:?}"
         );
         assert_ne!(run(&f.db, f.run_id).await.status, "running");
+    }
+
+    /// Work that errs after its tab opened closes the tab and names none.
+    #[tokio::test]
+    async fn an_item_whose_work_errs_closes_its_tab() {
+        use sea_orm::ConnectionTrait;
+        let f = fixture(Vec::new()).await;
+        for task in f.run_loop.tick().await.unwrap() {
+            task.await.unwrap();
+        }
+        // Site knowledge is read once the tab is open: each item errs there.
+        f.db.execute_unprepared("DROP TABLE playbook_knowledge")
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        assert_eq!(f.tabs.closed.lock().unwrap().len(), 3, "every tab closes");
+        let named = playbook_item::Entity::find()
+            .filter(playbook_item::Column::TabId.is_not_null())
+            .count(&f.db)
+            .await
+            .unwrap();
+        assert_eq!(named, 0, "no item names a closed tab");
     }
 
     /// Session limits fail the item before anything went out (spec 7.1.6).

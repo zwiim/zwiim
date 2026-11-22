@@ -163,6 +163,7 @@ const OPS: &[&str] = &[
     "run.approve",
     "run.reject",
     "run.answer",
+    "run.resolve",
     "site.list",
     "site.pause",
     "site.resume",
@@ -4715,6 +4716,34 @@ async fn host_feed_snapshot_carries_keep_awake() {
 }
 
 #[tokio::test]
+async fn host_feed_snapshot_frame_carries_the_whole_snapshot() {
+    // A field the snapshot has but the socket frame drops never reaches a
+    // client: a run active before the client connected must be in it.
+    let h = host(true).await;
+    let conn = h.state.db.conn.clone();
+    let pb = crate::automation::PlaybookStore::new(conn.clone())
+        .create("Apply", "goal")
+        .await
+        .unwrap();
+    crate::automation::AutomationEngine::new(conn)
+        .start_run(pb.id, pb.version, crate::automation::RunTrigger::Mac, None)
+        .await
+        .unwrap();
+    let (_ws, snapshot) = h.feed().await;
+    for key in [
+        "conflicts",
+        "clones",
+        "resolving",
+        "downloads",
+        "approvals",
+        "runs",
+    ] {
+        assert!(snapshot.get(key).is_some(), "{key} missing: {snapshot}");
+    }
+    assert_eq!(snapshot["runs"].as_array().map(Vec::len), Some(1), "{snapshot}");
+}
+
+#[tokio::test]
 async fn host_feed_invalid_subscribe_and_resubscribe() {
     let h = host(true).await;
     let mut ws = h.ws().await;
@@ -8922,6 +8951,149 @@ async fn an_answer_puts_the_waiting_item_back_in_the_queue() {
         .call("run.answer", json!({ "item_id": "nope", "answer": "x" }))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// An item waiting on the person with no question, as the runner leaves it:
+/// `outward` marks one whose send may have gone out, with its key reserved.
+async fn seed_waiting_item(
+    h: &Host,
+    run_id: &str,
+    playbook_id: i32,
+    key: &str,
+    reason: &str,
+    outward: bool,
+) -> crate::automation::entities::playbook_item::Model {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    let now = chrono::Utc::now();
+    let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
+        run_id: Set(run_row_id(h, run_id).await),
+        playbook_id: Set(playbook_id),
+        site: Set("indeed.com".into()),
+        account: Set("main".into()),
+        item_key: Set(key.into()),
+        status: Set("waiting_person".into()),
+        reason_code: Set(Some(reason.into())),
+        epoch: Set(1),
+        outward_started_at: Set(outward.then_some(now)),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(&h.state.db.conn)
+    .await
+    .unwrap();
+    if outward {
+        crate::automation::engine::LedgerKey::reserve(&h.state.db.conn, &ledger_key(key), item.id)
+            .await
+            .unwrap();
+    }
+    item
+}
+
+fn ledger_key(key: &str) -> crate::automation::engine::LedgerKey {
+    crate::automation::engine::LedgerKey {
+        site: "indeed.com".into(),
+        account: "main".into(),
+        action_kind: "submit_application".into(),
+        item_key: key.into(),
+    }
+}
+
+async fn ledger_state(h: &Host, key: &str) -> Option<String> {
+    use crate::automation::entities::never_twice_ledger;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    never_twice_ledger::Entity::find()
+        .filter(never_twice_ledger::Column::ItemKey.eq(key))
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .map(|m| m.state)
+}
+
+/// Spec 8.9 "May have been sent": It was sent ends the item `done` with its
+/// key done; Not sent, redo queues it with its key released; Skip ends it
+/// `skipped` on the skip list with the key kept.
+#[tokio::test]
+async fn a_may_have_been_sent_item_is_resolved_by_the_person() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id.clone() }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let sent = seed_waiting_item(&h, &run_id, pb.id, "job-sent", "check_failed", true).await;
+    let redo = seed_waiting_item(&h, &run_id, pb.id, "job-redo", "check_failed", true).await;
+    let skip = seed_waiting_item(&h, &run_id, pb.id, "job-skip", "check_failed", true).await;
+
+    let (_, body) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert!(body["items"].as_array().unwrap().iter().all(|i| i["may_have_sent"] == true), "{body}");
+
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": sent.public_id, "choice": "sent" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "done");
+    assert_eq!(ledger_state(&h, "job-sent").await.as_deref(), Some("done"));
+
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": redo.public_id, "choice": "not_sent" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "queued");
+    assert_eq!(ledger_state(&h, "job-redo").await, None);
+
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": skip.public_id, "choice": "skip" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "skipped");
+    assert_eq!(ledger_state(&h, "job-skip").await.as_deref(), Some("reserved"));
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    assert!(store.is_skipped(pb.id, "indeed.com", "main", "job-skip").await.unwrap());
+
+    // Resolved once: a second answer finds it no longer waiting.
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": sent.public_id, "choice": "not_sent" }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "item_not_waiting");
+}
+
+/// An item whose page needs the person before anything went out tries
+/// again with Not sent; It was sent is refused, as nothing went out.
+#[tokio::test]
+async fn an_item_with_nothing_sent_tries_again() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id.clone() }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let item = seed_waiting_item(&h, &run_id, pb.id, "job-1", "page_needs_person", false).await;
+
+    let (_, body) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert_eq!(body["items"][0]["may_have_sent"], false, "{body}");
+
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": item.public_id, "choice": "sent" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h
+        .call("run.resolve", json!({ "item_id": item.public_id, "choice": "not_sent" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "queued");
+
+    let (status, _) = h
+        .call("run.resolve", json!({ "item_id": "nope", "choice": "skip" }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = h
+        .call("run.resolve", json!({ "item_id": item.public_id, "choice": "maybe" }))
+        .await;
+    assert_ne!(status, StatusCode::OK);
 }
 
 /// A run with one item parked on a pending approval, as the runner leaves it.

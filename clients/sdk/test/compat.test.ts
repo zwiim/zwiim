@@ -103,8 +103,8 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
-  it("speaks revision 43 for the automations canvas", () => {
-    expect(CLIENT_REVISION).toBe(43);
+  it("speaks revision 44 and settles an item waiting on the person", () => {
+    expect(CLIENT_REVISION).toBe(44);
   });
 
   it("speaks revision 42 and answers an item's question", () => {

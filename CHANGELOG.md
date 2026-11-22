@@ -21,6 +21,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
+- Protocol revision 44: `run.resolve {item_id, choice}` settles a playbook item waiting on the person — `sent`, `not_sent` (requeued, keys released) or `skip` — and items carry `may_have_sent`; `item_not_waiting` once settled. Older clients ignore the field and never call it.
 - Protocol revision 43: `run.list` pages a playbook's past runs; runs carry `error` and live counts; items carry `tab_id` (and `run.item_changed` adds `site`, `url`, `question`, `tab_id`); pending approvals carry `playbook_name`, `site`, `item_title`, `item_url` and mark `prefilled` fields; playbooks carry `sites` with `risk_accepted`. Older clients ignore the new fields and never call `run.list`.
 - Protocol revision 42: `run.answer {item_id, answer}` answers the question a playbook item waits on (saved for the site, item requeued; `no_open_question` otherwise), and `run.items` entries carry `question` while one is open. Older clients never see or call them.
 - Protocol revision 40: `playbook.*`, `run.*` and `site.*` operations (capability `playbooks`, behind the `playbooks.enabled` Labs setting), and the Host feed's `run.approval_requested` / `run.approval_cleared` events with `approvals` in its snapshot. Older clients never see or call them.

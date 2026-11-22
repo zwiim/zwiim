@@ -223,18 +223,12 @@ async fn resnapshot_rewound(
     fresh.unwrap_or(msg)
 }
 
+/// The whole snapshot as one frame: every field the feed projects reaches
+/// the client, so none can be left out by hand.
 fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
-    json!({
-        "type": "host.snapshot",
-        "epoch": snapshot.epoch,
-        "seq": snapshot.seq,
-        "workspaces": snapshot.workspaces,
-        "layout": snapshot.layout,
-        "sessions": snapshot.sessions,
-        "terminals": snapshot.terminals,
-        "prs": snapshot.prs,
-        "keep_awake": snapshot.keep_awake,
-    })
+    let mut frame = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
+    frame["type"] = json!("host.snapshot");
+    frame
 }
 
 type FeedReceiver = tokio::sync::broadcast::Receiver<Arc<HostEvent>>;

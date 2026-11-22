@@ -33,6 +33,7 @@ describe("playbook and run methods", () => {
           reason_code: null,
           updated_at: "2026-11-21T10:00:00Z",
           tab_id: "tab-1",
+          may_have_sent: true,
         },
       ],
       next_cursor: "i1",
@@ -41,6 +42,7 @@ describe("playbook and run methods", () => {
     expect(next).toBe("i1");
     expect(t.transport.requests.at(-1)).toMatchObject({ op: "run.items", params: { run_id: "r1" } });
     expect(t.store.getState().runItems.r1?.i1?.tab_id).toBe("tab-1");
+    expect(t.store.getState().runItems.r1?.i1?.may_have_sent).toBe(true);
 
     await t.controller.loadRunItems("r1", "i1");
     expect(t.transport.requests.at(-1)?.params).toEqual({ run_id: "r1", cursor: "i1" });
@@ -60,6 +62,10 @@ describe("playbook and run methods", () => {
     t.transport.handlers["run.answer"] = () => ({ item_id: "i1", requeued: true });
     expect(await t.controller.answer("i1", "20 LPA")).toEqual({ item_id: "i1", requeued: true });
     expect(sent()).toMatchObject({ op: "run.answer", params: { item_id: "i1", answer: "20 LPA" } });
+
+    t.transport.handlers["run.resolve"] = () => ({ item_id: "i1", status: "done" });
+    expect(await t.controller.resolve("i1", "sent")).toEqual({ item_id: "i1", status: "done" });
+    expect(sent()).toMatchObject({ op: "run.resolve", params: { item_id: "i1", choice: "sent" }, options: { mutating: true } });
 
     t.transport.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
     await t.controller.listRuns({ playbookId: "pb1", limit: 5 });

@@ -475,6 +475,18 @@ fn site_name(site: &str) -> String {
     site.trim().trim_start_matches('.').to_ascii_lowercase()
 }
 
+/// Whether `cookie` goes to `site`: set for the site itself, a domain above
+/// it, or one under it.
+fn for_site(cookie: &Value, site: &str) -> bool {
+    let Some(domain) = cookie_site(cookie) else {
+        return false;
+    };
+    let site = site_name(site);
+    domain == site
+        || site.ends_with(&format!(".{domain}"))
+        || domain.ends_with(&format!(".{site}"))
+}
+
 /// The site a cookie belongs to: its domain, as [`site_name`] has it.
 fn cookie_site(cookie: &Value) -> Option<String> {
     let domain = site_name(cookie["domain"].as_str()?);
@@ -1139,17 +1151,27 @@ impl BrowserService {
                     .to_string();
                 inner.contexts.insert(owner.clone(), ctx.clone());
                 self.direct_downloads(cdp, owner, &ctx).await;
-                let jar = match owner {
+                let restored = match owner {
                     TabOwner::Session { session_id } => {
                         self.restore_login(cdp, &ctx, session_id).await;
-                        None
+                        false
                     }
-                    owner => self.jar_of(owner),
+                    TabOwner::Lane { site, .. } => {
+                        // The person's browser, when open, holds the newest sign-in.
+                        let open = inner
+                            .contexts
+                            .get(&TabOwner::Personal)
+                            .filter(|_| inner.restored.contains(&TabOwner::Personal))
+                            .cloned();
+                        self.restore_lane(cdp, &ctx, site, open.as_deref()).await
+                    }
+                    TabOwner::Personal => match self.snapshot.clone() {
+                        Some(jar) => self.restore_jar(jar, cdp, &ctx).await,
+                        None => false,
+                    },
                 };
-                if let Some(jar) = jar {
-                    if self.restore_jar(jar, cdp, &ctx).await {
-                        inner.restored.insert(owner.clone());
-                    }
+                if restored {
+                    inner.restored.insert(owner.clone());
                 }
                 ctx
             }
@@ -2795,18 +2817,6 @@ impl BrowserService {
         }
     }
 
-    /// Where `owner`'s whole cookie jar is kept between engines: the
-    /// person's snapshot, or a lane's login. None for a session, whose
-    /// workspace login is its own, or a Host that keeps none.
-    fn jar_of(&self, owner: &TabOwner) -> Option<Arc<Snapshot>> {
-        let snapshot = self.snapshot.as_ref()?;
-        match owner {
-            TabOwner::Personal => Some(snapshot.clone()),
-            TabOwner::Lane { site, account } => snapshot.lane(site, account).map(Arc::new),
-            TabOwner::Session { .. } => None,
-        }
-    }
-
     /// Load `jar`'s cookies into the new context `ctx`. Returns whether the
     /// context now holds them (or there were none).
     async fn restore_jar(&self, jar: Arc<Snapshot>, cdp: &Cdp, ctx: &str) -> bool {
@@ -2840,8 +2850,9 @@ impl BrowserService {
         self.save_jar(&TabOwner::Personal).await;
     }
 
-    /// Write lane (`site`, `account`)'s cookies back to its login now, so
-    /// cookies the site rotated persist into the next run (spec 14.2).
+    /// Write lane (`site`, `account`)'s cookies for its site back into the
+    /// person's sign-ins now, so cookies the site rotated persist into the
+    /// next run and the person's browser (spec 14.2).
     pub async fn save_lane(&self, site: &str, account: &str) {
         self.save_jar(&TabOwner::Lane {
             site: site.to_string(),
@@ -2850,12 +2861,137 @@ impl BrowserService {
         .await;
     }
 
-    /// Save `owner`'s cookies to its jar. Does nothing before its context
-    /// exists, or when its restore failed: an empty or partial jar must
-    /// never replace the saved one.
-    async fn save_jar(&self, owner: &TabOwner) {
-        let Some(snapshot) = self.jar_of(owner) else {
+    /// Start lane context `ctx` from the person's sign-in for `site`: the
+    /// open personal context `open` if there is one, else the personal
+    /// snapshot. Returns whether it did (or there was none to start from).
+    async fn restore_lane(&self, cdp: &Cdp, ctx: &str, site: &str, open: Option<&str>) -> bool {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return false;
+        };
+        let cookies: Vec<Value> = match open {
+            Some(mine) => match cdp
+                .call("Storage.getCookies", json!({ "browserContextId": mine }), None)
+                .await
+            {
+                Ok(got) => got["cookies"]
+                    .as_array()
+                    .map(|all| all.iter().filter_map(snapshot::cookie_param).collect())
+                    .unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the person's sign-ins for a lane");
+                    return false;
+                }
+            },
+            None => match tokio::task::spawn_blocking(move || snapshot.load()).await {
+                Ok(Ok(contents)) => contents.cookies,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "could not read the person's sign-ins for a lane");
+                    return false;
+                }
+                Err(_) => return false,
+            },
+        };
+        let cookies: Vec<Value> = cookies.into_iter().filter(|c| for_site(c, site)).collect();
+        if cookies.is_empty() {
+            return true;
+        }
+        let set = cdp
+            .call(
+                "Storage.setCookies",
+                json!({ "cookies": cookies, "browserContextId": ctx }),
+                None,
+            )
+            .await;
+        if let Err(e) = &set {
+            tracing::warn!(error = %e, "could not give a lane the person's sign-in");
+        }
+        set.is_ok()
+    }
+
+    /// Write lane `owner`'s cookies for `site` back into the person's
+    /// sign-ins, replacing what they held for it: into the open personal
+    /// context when there is one (its own save keeps them), else into the
+    /// personal snapshot.
+    async fn save_lane_jar(&self, owner: &TabOwner, site: &str) {
+        let Some(snapshot) = self.snapshot.clone() else {
             return;
+        };
+        let (cdp, ctx, open) = {
+            let inner = self.inner.lock().await;
+            match (&inner.cdp, inner.contexts.get(owner)) {
+                (Some(cdp), Some(ctx)) if inner.restored.contains(owner) => (
+                    cdp.clone(),
+                    ctx.clone(),
+                    inner
+                        .contexts
+                        .get(&TabOwner::Personal)
+                        .filter(|_| inner.restored.contains(&TabOwner::Personal))
+                        .cloned(),
+                ),
+                _ => return,
+            }
+        };
+        let cookies: Vec<Value> = match cdp
+            .call("Storage.getCookies", json!({ "browserContextId": ctx }), None)
+            .await
+        {
+            Ok(got) => got["cookies"]
+                .as_array()
+                .map(|all| {
+                    all.iter()
+                        .filter(|c| for_site(c, site))
+                        .filter_map(snapshot::cookie_param)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read a lane's cookies");
+                return;
+            }
+        };
+        if let Some(mine) = open {
+            if cookies.is_empty() {
+                return;
+            }
+            if let Err(e) = cdp
+                .call(
+                    "Storage.setCookies",
+                    json!({ "cookies": cookies, "browserContextId": mine }),
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "could not give the person a lane's sign-in");
+                return;
+            }
+            self.save_jar(&TabOwner::Personal).await;
+            return;
+        }
+        let site = site.to_string();
+        let saved = tokio::task::spawn_blocking(move || {
+            let mut contents = snapshot.load()?;
+            contents.cookies.retain(|c| !for_site(c, &site));
+            contents.cookies.extend(cookies);
+            snapshot.save(&contents)
+        })
+        .await;
+        if let Ok(Err(e)) = saved {
+            tracing::warn!(error = %e, "could not save a lane's sign-in");
+        }
+    }
+
+    /// Save `owner`'s cookies to its jar: a lane's into the person's
+    /// sign-ins, the person's to the snapshot. Does nothing before its
+    /// context exists, or when its restore failed: an empty or partial jar
+    /// must never replace the saved one.
+    async fn save_jar(&self, owner: &TabOwner) {
+        let snapshot = match owner {
+            TabOwner::Lane { site, .. } => return Box::pin(self.save_lane_jar(owner, site)).await,
+            TabOwner::Session { .. } => return,
+            TabOwner::Personal => match self.snapshot.clone() {
+                Some(snapshot) => snapshot,
+                None => return,
+            },
         };
         let (cdp, ctx) = {
             let inner = self.inner.lock().await;
@@ -4926,96 +5062,196 @@ mod tests {
             .to_string()
     }
 
-    /// Spec 14.2: what a lane's context holds at write-back is what its next
-    /// context starts from, so a cookie the site rotated in run 1 is there
-    /// in run 2; no other lane gets it.
-    #[tokio::test]
-    async fn a_lane_login_written_back_starts_the_next_engines_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.snapshot");
-        let db = fresh_in_memory_db().await;
-        let start = |fake: &FakeEngine| {
-            BrowserService::start(
-                EngineManager::new(fake.start_fn()),
-                db.conn.clone(),
-                Some(Snapshot::with_key(path.clone(), [3; 32])),
-            )
-        };
-        let rotated = json!({ "name": "sid", "value": "rotated", "domain": "jobsy.example", "path": "/", "session": false, "expires": 1_900_000_000.0 });
-
-        let fake = FakeEngine::default();
-        let svc = start(&fake).await.unwrap();
-        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
-        let ctx = personal_ctx(&fake);
-        fake.lock().cookies.insert(ctx, vec![rotated.clone()]);
-        svc.save_lane("jobsy.example", "main").await;
-        assert!(dir.path().join("lanes/jobsy.example/main.snapshot").is_file());
-        svc.stop_engine().await;
-
-        let fresh = FakeEngine::default();
-        let svc = start(&fresh).await.unwrap();
-        svc.open(lane("jobsy.example", "second"), None).await.unwrap();
-        assert!(
-            fresh.calls("Storage.setCookies").is_empty(),
-            "another account starts empty"
-        );
-        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
-        let set = fresh.calls("Storage.setCookies");
-        assert_eq!(set.len(), 1);
-        assert_eq!(set[0]["browserContextId"], personal_ctx(&fresh));
-        assert_eq!(set[0]["cookies"][0]["value"], "rotated");
+    fn cookie(name: &str, value: &str, domain: &str) -> Value {
+        json!({ "name": name, "value": value, "domain": domain, "path": "/", "session": true })
     }
 
-    /// A lane whose saved login would not load never saves over it: an
-    /// empty jar must not replace the login (spec 14.2).
-    #[tokio::test]
-    async fn a_lane_that_could_not_restore_keeps_its_saved_login() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.snapshot");
-        let lane_file = dir.path().join("lanes/jobsy.example/main.snapshot");
-        std::fs::create_dir_all(lane_file.parent().unwrap()).unwrap();
-        std::fs::write(&lane_file, b"not a snapshot").unwrap();
+    fn personal_snapshot(dir: &tempfile::TempDir) -> Snapshot {
+        Snapshot::with_key(dir.path().join("personal.snapshot"), [3; 32])
+    }
+
+    fn saved_cookies(dir: &tempfile::TempDir) -> Vec<(String, String)> {
+        let mut all: Vec<(String, String)> = personal_snapshot(dir)
+            .load()
+            .unwrap()
+            .cookies
+            .iter()
+            .map(|c| {
+                (
+                    c["domain"].as_str().unwrap().to_string(),
+                    c["value"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    async fn start_with_personal(
+        fake: &FakeEngine,
+        dir: &tempfile::TempDir,
+    ) -> Arc<BrowserService> {
         let db = fresh_in_memory_db().await;
-        let fake = FakeEngine::default();
-        let svc = BrowserService::start(
+        BrowserService::start(
             EngineManager::new(fake.start_fn()),
             db.conn.clone(),
-            Some(Snapshot::with_key(path, [3; 32])),
+            Some(personal_snapshot(dir)),
         )
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    /// A lane starts from the person's sign-in for its site: the site, a
+    /// parent domain's cookie and a subdomain's, never another site's.
+    #[tokio::test]
+    async fn a_lane_starts_from_the_persons_sign_in_for_its_site_only() {
+        let dir = tempfile::tempdir().unwrap();
+        personal_snapshot(&dir)
+            .save(&snapshot::Contents {
+                cookies: vec![
+                    cookie("sid", "site", "jobsy.example"),
+                    cookie("pref", "parent", ".example"),
+                    cookie("w", "sub", "www.jobsy.example"),
+                    cookie("bank", "other", "bank.example"),
+                    cookie("x", "lookalike", "notjobsy.example"),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        let fake = FakeEngine::default();
+        let svc = start_with_personal(&fake, &dir).await;
+        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let set = fake.calls("Storage.setCookies");
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0]["browserContextId"], personal_ctx(&fake));
+        let mut values: Vec<&str> = set[0]["cookies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["value"].as_str().unwrap())
+            .collect();
+        values.sort();
+        assert_eq!(values, ["parent", "site", "sub"]);
+    }
+
+    /// With the person's browser open, a lane starts from what it holds now,
+    /// not from the last saved snapshot.
+    #[tokio::test]
+    async fn a_lane_starts_from_the_open_personal_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeEngine::default();
+        let svc = start_with_personal(&fake, &dir).await;
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        let mine = personal_ctx(&fake);
+        fake.lock()
+            .cookies
+            .insert(mine, vec![cookie("sid", "fresh", "jobsy.example")]);
+        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let set = fake.calls("Storage.setCookies");
+        let last = set.last().unwrap();
+        assert_eq!(last["browserContextId"], personal_ctx(&fake));
+        assert_eq!(last["cookies"][0]["value"], "fresh");
+    }
+
+    /// Spec 14.2, one copy: a lane writes its site's cookies back into the
+    /// person's sign-ins, replacing that site's and keeping every other.
+    #[tokio::test]
+    async fn a_lane_writes_its_site_back_into_the_persons_sign_ins() {
+        let dir = tempfile::tempdir().unwrap();
+        personal_snapshot(&dir)
+            .save(&snapshot::Contents {
+                cookies: vec![
+                    cookie("sid", "old", "jobsy.example"),
+                    cookie("bank", "keep", "bank.example"),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        let fake = FakeEngine::default();
+        let svc = start_with_personal(&fake, &dir).await;
+        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let ctx = personal_ctx(&fake);
+        fake.lock()
+            .cookies
+            .insert(ctx, vec![cookie("sid", "rotated", "jobsy.example")]);
+        svc.save_lane("jobsy.example", "main").await;
+        assert_eq!(
+            saved_cookies(&dir),
+            [
+                ("bank.example".to_string(), "keep".to_string()),
+                ("jobsy.example".to_string(), "rotated".to_string()),
+            ]
+        );
+        assert!(!dir.path().join("lanes").exists(), "no lane copy");
+    }
+
+    /// With the person's browser open, a lane's write-back lands in it too,
+    /// so the browser's own next save keeps it.
+    #[tokio::test]
+    async fn a_lane_writes_back_into_the_open_personal_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeEngine::default();
+        let svc = start_with_personal(&fake, &dir).await;
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        let mine = personal_ctx(&fake);
+        fake.lock()
+            .cookies
+            .insert(mine.clone(), vec![cookie("bank", "keep", "bank.example")]);
+        svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let ctx = personal_ctx(&fake);
+        fake.lock()
+            .cookies
+            .insert(ctx, vec![cookie("sid", "rotated", "jobsy.example")]);
+        svc.save_lane("jobsy.example", "main").await;
+        let jar = fake.lock().cookies[&mine].clone();
+        assert!(jar.iter().any(|c| c["value"] == "rotated"));
+        svc.save_personal().await;
+        assert_eq!(
+            saved_cookies(&dir),
+            [
+                ("bank.example".to_string(), "keep".to_string()),
+                ("jobsy.example".to_string(), "rotated".to_string()),
+            ]
+        );
+    }
+
+    /// A lane that could not read the person's sign-ins never writes back:
+    /// the unreadable snapshot is never overwritten (spec 14.2).
+    #[tokio::test]
+    async fn a_lane_that_could_not_restore_never_writes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.snapshot");
+        std::fs::write(&path, b"not a snapshot").unwrap();
+        let fake = FakeEngine::default();
+        let svc = start_with_personal(&fake, &dir).await;
         let tab = svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let ctx = personal_ctx(&fake);
+        fake.lock()
+            .cookies
+            .insert(ctx, vec![cookie("sid", "v", "jobsy.example")]);
         svc.save_lane("jobsy.example", "main").await;
         svc.close(&tab.id).await.unwrap();
         svc.stop_engine().await;
-        assert_eq!(std::fs::read(&lane_file).unwrap(), b"not a snapshot");
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a snapshot");
     }
 
-    /// Closing a lane's tab writes its login back, as closing a personal
+    /// Closing a lane's tab writes its sign-in back, as closing a personal
     /// tab does.
     #[tokio::test]
     async fn closing_a_lane_tab_writes_its_login_back() {
         let dir = tempfile::tempdir().unwrap();
-        let db = fresh_in_memory_db().await;
         let fake = FakeEngine::default();
-        let svc = BrowserService::start(
-            EngineManager::new(fake.start_fn()),
-            db.conn.clone(),
-            Some(Snapshot::with_key(dir.path().join("personal.snapshot"), [3; 32])),
-        )
-        .await
-        .unwrap();
+        let svc = start_with_personal(&fake, &dir).await;
         let tab = svc.open(lane("jobsy.example", "main"), None).await.unwrap();
-        let cookie = json!({ "name": "sid", "value": "v", "domain": "jobsy.example", "path": "/", "session": true });
         let ctx = personal_ctx(&fake);
-        fake.lock().cookies.insert(ctx, vec![cookie]);
+        fake.lock()
+            .cookies
+            .insert(ctx, vec![cookie("sid", "v", "jobsy.example")]);
         svc.close(&tab.id).await.unwrap();
-        let saved = Snapshot::with_key(dir.path().join("personal.snapshot"), [3; 32])
-            .lane("jobsy.example", "main")
-            .unwrap()
-            .load()
-            .unwrap();
-        assert_eq!(saved.cookies[0]["value"], "v");
+        assert_eq!(
+            saved_cookies(&dir),
+            [("jobsy.example".to_string(), "v".to_string())]
+        );
     }
 
     #[tokio::test]
