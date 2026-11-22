@@ -22,6 +22,7 @@ pub mod declaration;
 pub mod discovery;
 pub mod engine;
 pub mod entities;
+pub mod input_files;
 pub mod item_runner;
 #[cfg(test)]
 mod item_runner_tests;

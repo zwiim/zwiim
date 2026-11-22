@@ -24,6 +24,7 @@ use crate::automation::discovery::{item_id_rule, item_key, Discovery, LaneTabs};
 use crate::automation::engine::AutomationEngine;
 use crate::automation::engine::LedgerKey;
 use crate::automation::entities::{playbook_item, playbook_run};
+use crate::automation::input_files::InputFileStore;
 use crate::automation::item_runner::{
     DispatchResult, ItemOutcome, ItemRef, ItemRunner, RunError as StepError, SessionLimits,
     SessionResult,
@@ -65,6 +66,8 @@ pub struct RunLoop {
     tabs: Arc<dyn LaneTabs>,
     gate: ItemAgentGate,
     limits: SessionLimits,
+    /// Where stored file inputs live; `None` attaches none of them.
+    files: Option<InputFileStore>,
     /// Runs whose discovery is running now.
     discovering: Mutex<HashSet<i32>>,
     /// The tab of each item parked for the person's approval (spec 8.7).
@@ -96,9 +99,16 @@ impl RunLoop {
             tabs,
             gate: ItemAgentGate::new(DEFAULT_ITEM_AGENTS),
             limits: SessionLimits::default(),
+            files: None,
             discovering: Mutex::new(HashSet::new()),
             parked: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Attach stored file inputs from `files`.
+    pub fn with_files(mut self: Arc<Self>, files: InputFileStore) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("not shared yet").files = Some(files);
+        self
     }
 
     #[cfg(test)]
@@ -378,7 +388,7 @@ impl RunLoop {
                         scope: Some(EngineScope {
                             lane,
                             tabs: vec![tab.clone()],
-                            files: input_files(&doc),
+                            files: input_files(&doc, self.files.as_ref()),
                         }),
                         limits: self.limits,
                     },
@@ -976,7 +986,8 @@ pub fn spawn(state: Arc<crate::app_state::AppState>) {
             state: state.clone(),
             worlds: Default::default(),
         }),
-    );
+    )
+    .with_files(InputFileStore::new(&state.data_dir));
     let mut changes = state.playbook_changes.subscribe();
     tokio::spawn(async move {
         if let Err(e) = run_loop.recover().await {
@@ -1032,13 +1043,52 @@ fn agent_of(doc: &PlaybookDoc) -> AgentType {
         .unwrap_or(AgentType::ClaudeCode)
 }
 
-/// The playbook's file inputs, as (name, path), for `playbook_attach_file`.
-fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
+/// The playbook's file inputs, as (name, path), for `playbook_attach_file`:
+/// a stored copy from `store`, or an older playbook's own path.
+fn input_files(doc: &PlaybookDoc, store: Option<&InputFileStore>) -> Vec<(String, String)> {
     use crate::automation::playbook_format::Input;
     doc.inputs
         .iter()
         .filter_map(|input| match input {
-            Input::File { name, path } => Some((name.clone(), path.clone())),
+            Input::File {
+                name,
+                file: Some(file),
+                sha256: Some(sha256),
+                ..
+            } => store.map(|s| {
+                (
+                    name.clone(),
+                    s.path_of(sha256, file).to_string_lossy().into_owned(),
+                )
+            }),
+            Input::File {
+                name,
+                path: Some(path),
+                ..
+            } => Some((name.clone(), path.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The playbook's file inputs, as (name, the file's own name).
+fn input_file_names(doc: &PlaybookDoc) -> Vec<(String, String)> {
+    use crate::automation::playbook_format::Input;
+    doc.inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::File {
+                name,
+                file: Some(file),
+                ..
+            } => Some((name.clone(), file.clone())),
+            Input::File {
+                name,
+                path: Some(path),
+                ..
+            } => std::path::Path::new(path)
+                .file_name()
+                .map(|f| (name.clone(), f.to_string_lossy().into_owned())),
             _ => None,
         })
         .collect()
@@ -1047,13 +1097,9 @@ fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
 /// The scope with each attached file named as the declaration names it: by
 /// the playbook input whose file it is, not the file's own name.
 fn by_input_name(mut scope: Vec<ScopeControl>, doc: &PlaybookDoc) -> Vec<ScopeControl> {
-    let files = input_files(doc);
+    let files = input_file_names(doc);
     for control in scope.iter_mut().filter(|c| c.control == ControlKind::File) {
-        let input = files.iter().find(|(_, path)| {
-            std::path::Path::new(path)
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy() == control.value)
-        });
+        let input = files.iter().find(|(_, file)| *file == control.value);
         if let Some((name, _)) = input {
             control.value = name.clone();
         }
@@ -1324,6 +1370,37 @@ mod tests {
             calls: 2,
             result: Some(status),
         }
+    }
+
+    /// A stored file input is attached from the Host's copy, under its own
+    /// name (recording design §4).
+    #[tokio::test]
+    async fn an_item_attaches_the_stored_copy() {
+        let data = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let store = crate::automation::input_files::InputFileStore::new(data.path());
+        std::fs::write(src.path().join("resume.pdf"), b"cv").unwrap();
+        let stored = store.put(&src.path().join("resume.pdf")).unwrap();
+        let playbook = PLAYBOOK.replace(
+            "inputs:\n",
+            &format!(
+                "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+                stored.sha256
+            ),
+        );
+        let mut f = fixture_with(
+            &playbook,
+            vec![result(json!({ "status": "failed", "note": "x" }))],
+        )
+        .await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        drive(&f.run_loop).await;
+        let (_, _, scope) = item_prompts(&f.launcher).remove(0);
+        let path = store.path_of(&stored.sha256, "resume.pdf");
+        assert_eq!(
+            scope.unwrap().files,
+            vec![("Resume".to_string(), path.to_string_lossy().into_owned())]
+        );
     }
 
     /// A recorded playbook's steps reach the item agent as a guide it adapts
@@ -1829,6 +1906,17 @@ mod tests {
         let scope = by_input_name(vec![file("Ada CV.pdf"), file("other.pdf")], &doc);
         assert_eq!(scope[0].value, "resume");
         assert_eq!(scope[1].value, "other.pdf");
+
+        let stored = crate::automation::validate_playbook(&PLAYBOOK.replace(
+            "inputs:\n",
+            &format!(
+                "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+                "a".repeat(64)
+            ),
+        ))
+        .unwrap();
+        let scope = by_input_name(vec![file("resume.pdf")], &stored);
+        assert_eq!(scope[0].value, "Resume");
     }
 
     /// A declared button the Host cannot find on the page fails the item.

@@ -71,8 +71,18 @@ pub enum Source {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
-    /// A file the Host attaches (e.g. the resume).
-    File { name: String, path: String },
+    /// A file the Host attaches (e.g. the resume): a copy the Host keeps
+    /// (`file` and its `sha256`), or, in older playbooks, a `path` on this
+    /// computer.
+    File {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
     /// A fact known about the person (a profile answer).
     Fact { name: String, value: String },
     /// A keychain secret, referenced by handle.
@@ -341,6 +351,38 @@ fn check_doc(doc: &PlaybookDoc, source: &str, errors: &mut Vec<ValidationError>)
                 problem: format!("`{}` is always ask and cannot be auto", entry.kind.as_str()),
                 fix: "set it to `ask` or `never`, or remove the entry (absent is ask)".into(),
             });
+        }
+    }
+    // A file input is a stored copy or a path, never both or neither.
+    for input in &doc.inputs {
+        if let Input::File {
+            name,
+            path,
+            file,
+            sha256,
+        } = input
+        {
+            let problem = match (path, file, sha256) {
+                (Some(_), None, None) => None,
+                (None, Some(f), Some(h))
+                    if !f.trim().is_empty() && crate::automation::input_files::is_sha256(h) =>
+                {
+                    None
+                }
+                (None, Some(_), Some(_)) => {
+                    Some("a stored file needs its `sha256`, 64 hex characters")
+                }
+                (None, None, None) => Some("a file input needs a file"),
+                _ => Some("a file input is either a stored `file` with its `sha256`, or a `path`"),
+            };
+            if let Some(problem) = problem {
+                errors.push(ValidationError {
+                    line: line_of("inputs"),
+                    field: format!("inputs.{name}"),
+                    problem: problem.into(),
+                    fix: "pick the file again in the playbook's Inputs".into(),
+                });
+            }
         }
     }
     // A secret input must give a handle, never a value (spec 10.11.1).
@@ -723,5 +765,73 @@ checks:
             vec!["Email"]
         );
         assert!(step_inputs("Click \"Apply\"").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stored_files {
+    use super::*;
+
+    const SHA: &str = "9f3a000000000000000000000000000000000000000000000000000000000001";
+
+    fn with_input(input: &str) -> String {
+        format!(
+            "format: 1\nname: Apply\ngoal: Apply\nmain_kind: submit_application\n\
+             sources:\n  - type: list\n    items: [\"https://jobs.example/1\"]\n\
+             inputs:\n{input}\
+             checks:\n  - kind: text_present\n    text: Sent\n"
+        )
+    }
+
+    #[test]
+    fn a_stored_file_input_validates() {
+        let doc = validate(&with_input(&format!(
+            "  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {SHA}\n"
+        )))
+        .expect("valid");
+        assert_eq!(
+            doc.inputs,
+            vec![Input::File {
+                name: "Resume".into(),
+                path: None,
+                file: Some("resume.pdf".into()),
+                sha256: Some(SHA.into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_old_path_form_still_validates() {
+        let doc = validate(&with_input(
+            "  - type: file\n    name: Resume\n    path: ~/resume.pdf\n",
+        ))
+        .expect("valid");
+        assert!(
+            matches!(&doc.inputs[0], Input::File { path: Some(p), file: None, .. } if p == "~/resume.pdf")
+        );
+    }
+
+    #[test]
+    fn a_file_input_needs_a_path_or_a_stored_file() {
+        for input in [
+            "  - type: file\n    name: Resume\n".to_string(),
+            format!("  - type: file\n    name: Resume\n    path: ~/r.pdf\n    file: r.pdf\n    sha256: {SHA}\n"),
+            "  - type: file\n    name: Resume\n    file: r.pdf\n".to_string(),
+        ] {
+            let errs = validate(&with_input(&input)).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.field == "inputs.Resume"),
+                "{input:?}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_file_needs_a_hex_sha256() {
+        let errs = validate(&with_input(
+            "  - type: file\n    name: Resume\n    file: r.pdf\n    sha256: not-a-hash\n",
+        ))
+        .unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "inputs.Resume"), "{errs:?}");
     }
 }
