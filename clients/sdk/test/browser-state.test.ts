@@ -233,6 +233,26 @@ describe("browser feed", () => {
     expect(transport.requests.find((r) => r.op === "browser.tab.open")!.options?.mutating).toBe(true);
   });
 
+  it("receives a recording tab's steps from the feed", async () => {
+    const { transport, controller } = setup();
+    controller.client.start();
+    await flush();
+    transport.channel.open();
+    controller.watchBrowser();
+    transport.channel.frame({ type: "browser.snapshot", tabs: [tab("a", 0, null)], engine: { state: "running", version: "157" } });
+    transport.channel.frame({
+      type: "browser.tab.recorded",
+      tab_id: "a",
+      owner: { kind: "personal" },
+      count: 1,
+      last: { action: "click", name: "Apply" },
+    });
+    expect(tabRecording(controller.store.getState().browser, "a")).toEqual({
+      count: 1,
+      last: { action: "click", name: "Apply" },
+    });
+  });
+
   it("answers a dialog once, and receives its requests", async () => {
     const { transport, controller } = setup();
     transport.handlers["browser.ui.answer"] = () => ({});
