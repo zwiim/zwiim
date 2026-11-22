@@ -154,6 +154,9 @@ pub enum ReasonCode {
     Timeout,
     HostRestarted,
     PageNeedsPerson,
+    /// A step uses an input the playbook's latest version no longer has
+    /// (recording design §5).
+    InputMissing,
     /// A playbook rule says skip (spec 6.4: incl. detail rules); spec 11.2.1
     /// has no code for it.
     SkippedByRule,
@@ -180,6 +183,7 @@ impl ReasonCode {
             ReasonCode::Timeout => "timeout",
             ReasonCode::HostRestarted => "host_restarted",
             ReasonCode::PageNeedsPerson => "page_needs_person",
+            ReasonCode::InputMissing => "input_missing",
             ReasonCode::SkippedByRule => "skipped_by_rule",
         }
     }
@@ -204,6 +208,7 @@ impl ReasonCode {
             "timeout" => ReasonCode::Timeout,
             "host_restarted" => ReasonCode::HostRestarted,
             "page_needs_person" => ReasonCode::PageNeedsPerson,
+            "input_missing" => ReasonCode::InputMissing,
             "skipped_by_rule" => ReasonCode::SkippedByRule,
             _ => return None,
         })
@@ -229,6 +234,7 @@ impl ReasonCode {
             ReasonCode::Timeout,
             ReasonCode::HostRestarted,
             ReasonCode::PageNeedsPerson,
+            ReasonCode::InputMissing,
             ReasonCode::SkippedByRule,
         ]
     }
@@ -242,7 +248,8 @@ impl ReasonCode {
             | ReasonCode::ApprovalRejected
             | ReasonCode::DailyCapHit
             | ReasonCode::NavigationOutsidePlaybookSites
-            | ReasonCode::SkippedByRule => SideEffects::None,
+            | ReasonCode::SkippedByRule
+            | ReasonCode::InputMissing => SideEffects::None,
             ReasonCode::Captcha
             | ReasonCode::BlockedBySite
             | ReasonCode::LoginExpired
@@ -401,6 +408,12 @@ pub fn reason_infos() -> &'static [ReasonInfo] {
             meaning: "The site's page asked something only a person can answer.",
             retried: false,
             fix: "Answer it in the playbook tab on the Mac, then Resume.",
+        },
+        ReasonInfo {
+            code: InputMissing,
+            meaning: "A step uses an input the playbook no longer has.",
+            retried: false,
+            fix: "Add the input back in the playbook's Inputs, or remove the step, then Try again.",
         },
         ReasonInfo {
             code: SkippedByRule,

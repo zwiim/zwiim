@@ -103,6 +103,8 @@ export function needsYouText(code: string | null | undefined): string {
       return "The site wants to check that a person is there.";
     case "blocked_by_site":
       return "The site blocked it.";
+    case "input_missing":
+      return "A step uses an input the playbook no longer has. Add it back in Inputs, then Try again.";
     default:
       return "The page needs you.";
   }

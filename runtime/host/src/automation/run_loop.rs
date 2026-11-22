@@ -250,6 +250,20 @@ impl RunLoop {
         })
     }
 
+    /// The pinned playbook with the latest version's inputs: a file or fact
+    /// the person changed mid-run reaches the items still to work, while the
+    /// rest stays as the run pinned it (recording design §5). A latest text
+    /// that does not parse leaves the pinned inputs.
+    async fn item_doc(&self, run: &playbook_run::Model) -> Result<PlaybookDoc, String> {
+        let mut doc = self.doc(run).await?;
+        if let Ok(latest) = self.store.get(run.playbook_id).await {
+            if let Ok(latest) = crate::automation::validate_playbook(&latest.source) {
+                doc.inputs = latest.inputs;
+            }
+        }
+        Ok(doc)
+    }
+
     /// Discover the run's sources; then it runs, or ends with nothing to do.
     async fn discover(&self, run: playbook_run::Model) -> Result<(), DbError> {
         let doc = match self.doc(&run).await {
@@ -351,7 +365,7 @@ impl RunLoop {
         epoch: i32,
         _slot: ItemAgentSlot,
     ) -> Result<(), StepError> {
-        let doc = self.doc(&run).await.map_err(|e| {
+        let doc = self.item_doc(&run).await.map_err(|e| {
             StepError::Db(DbError::Validation(format!(
                 "playbook of run {}: {e}",
                 run.id
@@ -362,7 +376,19 @@ impl RunLoop {
             site: lane_site(&item).to_string(),
             account: item.account.clone(),
         };
-        let (outcome, tab) = match self.open_item_page(&lane, &item).await? {
+        let missing = doc.steps.iter().any(|step| {
+            crate::automation::playbook_format::step_inputs(step)
+                .iter()
+                .any(|name| !doc.inputs.iter().any(|i| i.name() == *name))
+        });
+        let page = match missing {
+            true => Err(ReasonCode::InputMissing),
+            false => self.open_item_page(&lane, &item).await?,
+        };
+        let (outcome, tab) = match page {
+            Err(ReasonCode::InputMissing) => {
+                (ItemOutcome::NeedsPerson(ReasonCode::InputMissing), None)
+            }
             Err(reason) => (ItemOutcome::Failed(reason), None),
             Ok(tab) => {
                 self.set_item_tab(item.id, Some(&tab)).await?;
@@ -1401,6 +1427,100 @@ mod tests {
             scope.unwrap().files,
             vec![("Resume".to_string(), path.to_string_lossy().into_owned())]
         );
+    }
+
+    /// A stored file input `Resume` with content `bytes`, as playbook text.
+    fn resume_input(store: &InputFileStore, bytes: &[u8]) -> String {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("resume.pdf"), bytes).unwrap();
+        let stored = store.put(&src.path().join("resume.pdf")).unwrap();
+        format!(
+            "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+            stored.sha256
+        )
+    }
+
+    /// The run's playbook saved again as `source`: a later version than the
+    /// one the run pinned.
+    async fn save_again(db: &DatabaseConnection, source: &str) {
+        let store = PlaybookStore::new(db.clone());
+        let pb = crate::automation::entities::playbook::Entity::find()
+            .one(db)
+            .await
+            .unwrap()
+            .unwrap();
+        store.save_source(pb.id, "Apply", source).await.unwrap();
+    }
+
+    /// Inputs changed after the run started reach the items still to work;
+    /// the rest of the playbook stays as the run pinned it (recording
+    /// design §5).
+    #[tokio::test]
+    async fn waiting_items_use_a_file_replaced_mid_run() {
+        let data = tempfile::tempdir().unwrap();
+        let store = InputFileStore::new(data.path());
+        let first = PLAYBOOK.replace("inputs:\n", &resume_input(&store, b"old"));
+        let failed = || result(json!({ "status": "failed", "note": "x" }));
+        let mut f = fixture_with(&first, vec![failed(), failed(), failed()]).await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        let second = PLAYBOOK
+            .replace("inputs:\n", &resume_input(&store, b"new"))
+            .replace("Skip roles that need relocation", "Skip roles in Mars");
+        save_again(&f.db, &second).await;
+        drive(&f.run_loop).await;
+
+        let new_sha = match &crate::automation::validate_playbook(&second)
+            .unwrap()
+            .inputs[0]
+        {
+            crate::automation::playbook_format::Input::File { sha256, .. } => {
+                sha256.clone().unwrap()
+            }
+            _ => unreachable!(),
+        };
+        let new_path = store
+            .path_of(&new_sha, "resume.pdf")
+            .to_string_lossy()
+            .into_owned();
+        let prompted = item_prompts(&f.launcher);
+        assert_eq!(prompted.len(), 3);
+        for (_, prompt, scope) in prompted {
+            assert_eq!(
+                scope.unwrap().files,
+                vec![("Resume".to_string(), new_path.clone())]
+            );
+            // Rules stay pinned.
+            assert!(
+                prompt.contains("Skip roles that need relocation"),
+                "{prompt}"
+            );
+            assert!(!prompt.contains("Mars"), "{prompt}");
+            // A fact the latest version has reaches the agent too.
+            assert!(prompt.contains("notice_period: 30 days"), "{prompt}");
+        }
+    }
+
+    /// A pinned step that uses an input the latest version dropped waits on
+    /// the person; it never reaches an agent that would guess.
+    #[tokio::test]
+    async fn a_removed_input_a_step_needs_waits_on_the_person() {
+        let with_step = PLAYBOOK.replace(
+            "rules:\n",
+            "steps:\n  - Fill \"Notice\" with input notice_period\nrules:\n",
+        );
+        let f = fixture_with(&with_step, vec![]).await;
+        let dropped = PLAYBOOK.replace(
+            "  - type: fact\n    name: notice_period\n    value: 30 days\n",
+            "",
+        );
+        assert_ne!(dropped, PLAYBOOK);
+        save_again(&f.db, &dropped).await;
+        drive(&f.run_loop).await;
+        assert!(item_prompts(&f.launcher).is_empty());
+        for (status, reason) in items(&f.db, f.run_id).await {
+            assert_eq!(status, "waiting_person");
+            assert_eq!(reason.as_deref(), Some("input_missing"));
+        }
     }
 
     /// A recorded playbook's steps reach the item agent as a guide it adapts

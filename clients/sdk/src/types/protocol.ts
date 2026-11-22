@@ -2301,6 +2301,7 @@ export type ItemReasonCode =
   | "captcha"
   | "blocked_by_site"
   | "form_field_unanswerable"
+  | "input_missing"
   | "daily_cap_hit"
   | "approval_rejected"
   | "undeclared_outward_action"
