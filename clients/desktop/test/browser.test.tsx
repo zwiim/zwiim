@@ -19,7 +19,14 @@ import { FakeTransport, tick } from "./fakes";
 
 afterEach(cleanup);
 
-const key = (key: string, more: Partial<KeyboardEvent> = {}) => ({
+const automations = vi.hoisted(() => ({ shown: true }));
+vi.mock("@/panels/automations/shown", () => ({
+  get AUTOMATIONS_SHOWN() {
+    return automations.shown;
+  },
+}));
+
+const key =(key: string, more: Partial<KeyboardEvent> = {}) => ({
   key,
   code: more.code ?? "",
   keyCode: more.keyCode ?? 0,
@@ -1036,5 +1043,35 @@ describe("recording in the browser panel", () => {
     await tick();
     expect(screen.queryByTitle("Record what you do here as a playbook")).toBeNull();
     controller.dispose();
+  });
+
+  it("a release without Automations shows no Record button", async () => {
+    automations.shown = false;
+    try {
+      const t = new StreamingTransport();
+      t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+      t.handlers["browser.view.close"] = () => ({});
+      const client = new HostClient({ transport: t });
+      const controller = new HostController(client);
+      client.start();
+      await tick();
+      render(
+        <HostProvider value={controller}>
+          <RecordingProvider canShowBrowser onShowBrowser={() => {}} onReview={() => {}}>
+            <BrowserPanel workspaceId="w1" sessionId={null} active />
+          </RecordingProvider>
+        </HostProvider>,
+      );
+      await tick();
+      const mine = tab("p", { owner: { kind: "personal" } });
+      await act(async () =>
+        t.frame({ type: "browser.snapshot", tabs: [mine], engine: { state: "running", version: "157" } } as never),
+      );
+      await tick();
+      expect(screen.queryByTitle("Record what you do here as a playbook")).toBeNull();
+      controller.dispose();
+    } finally {
+      automations.shown = true;
+    }
   });
 });

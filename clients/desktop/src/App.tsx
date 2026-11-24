@@ -68,6 +68,7 @@ import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { AutomationsRow } from "@/panels/automations/AutomationsRow";
 import { AutomationsView } from "@/panels/automations/AutomationsView";
 import { RecordingProvider, useRecording } from "@/panels/automations/recording";
+import { AUTOMATIONS_SHOWN } from "@/panels/automations/shown";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
@@ -289,7 +290,7 @@ export function Workbench({
   const [sessionId, setSessionId] = useState<string | null>(null);
   /** What the middle shows: the workspace's sessions and files, or the Automations canvas. */
   const [pane, setPane] = useState<"workspace" | "automations">("workspace");
-  const automations = useHost((s) => hasCapability(s.connection.compat, "playbooks"));
+  const automations = useHost((s) => AUTOMATIONS_SHOWN && hasCapability(s.connection.compat, "playbooks"));
   // The browser widened over the chat (Expand): the chat narrows to a column
   // and the sidebar folds, until the person shrinks it again.
   const [browserWide, setBrowserWide] = useState(false);

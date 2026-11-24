@@ -71,6 +71,7 @@ import { handToChat } from "@/lib/page-handoff";
 import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
 import { RecordingBar, useRecording } from "@/panels/automations/recording";
+import { AUTOMATIONS_SHOWN } from "@/panels/automations/shown";
 import { BrowserLogin } from "@/panels/BrowserLogin";
 import { BrowserSites } from "@/panels/BrowserSites";
 import { BrowserSteps } from "@/panels/BrowserSteps";
@@ -358,7 +359,7 @@ export function BrowserPanel({
           }
           onPreview={(preview) => void run(() => controller.setBrowserPreview(tab.tab_id, preview))}
           onRecord={
-            recording && !recording.tabId && tab.owner.kind === "personal"
+            AUTOMATIONS_SHOWN && recording && !recording.tabId && tab.owner.kind === "personal"
               ? () => void recording.start(tab.tab_id)
               : null
           }
