@@ -6,6 +6,7 @@
 //! create. Local stdio servers stay refused until the Phase 5 sandbox ships;
 //! the stdio transport is only ever run against trusted test servers.
 
+pub mod egress;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake_mcp;
 pub mod upstream;
