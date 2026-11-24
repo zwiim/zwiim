@@ -1,10 +1,11 @@
 // Modified from upstream Apache-2.0 source; see NOTICE.
-//! Companion-side MCP protocol — the bits that live inside the `zwiim-mcp`
-//! binary but are factored out into the library so they can be unit-tested
-//! without spawning the binary.
+//! Companion-side tools — the bits that live inside the `zwiim-mcp` binary but
+//! are factored out into the library so they can be unit-tested without
+//! spawning the binary.
 //!
-//! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
-//! one request → one response per line, with concurrent dispatch so
+//! The MCP wire itself (both eras, negotiation, `ping`) is
+//! [`super::mcp_server`], on rmcp. It drives this module with one JSON-RPC
+//! line per message through [`dispatch_line`], concurrently, so
 //! `notifications/cancelled` can race an in-flight `tools/call`. It exposes up
 //! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
@@ -29,7 +30,7 @@
 //!    notification handler pops the entry, fires `cancel_tx`, and sends a
 //!    `BrokerMessage::Cancel { external_handle }` to the broker.
 //! 3. The `tools/call` task observes `cancel_tx`, abandons its UDS read,
-//!    and returns `None` — the binary suppresses the response per spec.
+//!    and returns `None` — no response goes out, per spec.
 //! 4. If the round-trip completes before the cancel arrives, the entry is
 //!    removed normally and the response goes out on stdout; a late cancel
 //!    notification finds nothing and is silently ignored.

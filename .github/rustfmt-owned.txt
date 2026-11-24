@@ -131,3 +131,5 @@ runtime/host/src/connectors/mcp/tests.rs
 runtime/host/src/connectors/mcp/stdio.rs
 runtime/host/src/connectors/mcp/stdio/tests.rs
 runtime/host/src/connectors/bench.rs
+runtime/host/src/acp/delegation/mcp_server.rs
+runtime/host/src/acp/delegation/mcp_server/tests.rs

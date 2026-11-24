@@ -69,11 +69,12 @@ walkdir = "2"
 ignore = "0.4"
 sacp = "11.0.0"
 sacp-tokio = "11.0.0"
-# MCP protocol for the connector platform's client, used only in
-# `src/connectors/mcp/`. Pinned exactly: upgrades are deliberate and go through
-# the connector protocol tests. No HTTP client or process features: Zwiim owns
+# MCP protocol: the connector platform's client (`src/connectors/mcp/`) and the
+# `zwiim-mcp` companion's server (`src/acp/delegation/mcp_server.rs`), nowhere
+# else. Pinned exactly: upgrades are deliberate and go through the connector
+# and companion protocol tests. No HTTP client or process features: Zwiim owns
 # DNS, egress policy and child processes, and hands rmcp only the streams.
-rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-streamable-http-client", "transport-async-rw"] }
+rmcp = { version = "=3.11.0", default-features = false, features = ["client", "server", "transport-streamable-http-client", "transport-async-rw"] }
 # The SSE parser rmcp's own HTTP clients use, fed with bytes that already went
 # through the egress caps. Same version as rmcp's.
 sse-stream = "=0.2.6"

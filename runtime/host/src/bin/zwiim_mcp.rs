@@ -22,29 +22,21 @@
 //! in the parent, so `delegate_to_agent`'s schema can offer them as targets;
 //! `--disabled-agents` optionally names the built-ins to drop from that
 //! schema so only agents enabled in settings are advertised.
-//! Everything heavyweight — JSON-RPC dispatch, UDS round-trip, MCP tool
-//! schema, cancellation tracking — lives in
-//! `zwiim_host::acp::delegation::{companion, transport}` so it's
-//! unit-testable without spawning a process.
-//!
-//! Stdin lines are dispatched concurrently: synchronous methods
-//! (`initialize`, `tools/list`) emit a response inline, `tools/call`
-//! spawns a tokio task that drives the UDS round-trip racing a cancel
-//! channel, and `notifications/cancelled` wakes the relevant task without
-//! blocking the reader. Stdout writes are serialized through a mutex so
-//! interleaved frames never corrupt the wire.
+//! Everything heavyweight lives in the library so it's unit-testable without
+//! spawning a process: the MCP protocol (both eras, on rmcp) in
+//! `zwiim_host::acp::delegation::mcp_server`, and the tools (schemas, UDS
+//! round-trips, cancellation tracking) in
+//! `zwiim_host::acp::delegation::{companion, transport}`.
 
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use zwiim_host::acp::delegation::companion::{
-    dispatch_line, drain_and_cancel_all, CompanionContext, CompanionFeatures, InflightCalls,
-    parse_csv_list, JsonRpcResponse, LineAction, SpawnResult,
+    drain_and_cancel_all, CompanionContext, CompanionFeatures, InflightCalls, parse_csv_list,
 };
+use zwiim_host::acp::delegation::mcp_server;
 use zwiim_host::acp::delegation::parent_watcher::{wait_for_parent_exit, DEFAULT_POLL_INTERVAL};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
-use tokio::sync::Mutex;
 
 struct Args {
     parent_connection_id: String,
@@ -174,22 +166,6 @@ fn parse_csv(raw: Option<&str>) -> Vec<String> {
     .unwrap_or_default()
 }
 
-/// Serialize a `JsonRpcResponse` and append a newline; small enough to keep
-/// inline so the write-mutex critical section stays tight.
-async fn write_response(
-    stdout: &Arc<Mutex<Stdout>>,
-    resp: &JsonRpcResponse,
-) -> std::io::Result<()> {
-    let serialized = serde_json::to_string(resp).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
-    })?;
-    let mut guard = stdout.lock().await;
-    guard.write_all(serialized.as_bytes()).await?;
-    guard.write_all(b"\n").await?;
-    guard.flush().await?;
-    Ok(())
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     // Stderr-only subscriber: stdout is the JSON-RPC protocol channel, and
@@ -213,113 +189,58 @@ async fn main() -> ExitCode {
         only_tools: parse_csv_list(args.tools.as_deref()),
     };
 
-    let stdin = tokio::io::stdin();
-    let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let inflight = Arc::new(InflightCalls::new());
-    let mut lines = BufReader::new(stdin).lines();
 
     // Optional parent-PID watchdog. Composed as a separate future so the
-    // main loop can race it against stdin reads via `tokio::select!`;
-    // when no PID was provided we substitute a never-ready future, which
-    // tokio's branch evaluation skips for free.
+    // server can be raced against it via `tokio::select!`; when no PID was
+    // provided we substitute a never-ready future, which tokio's branch
+    // evaluation skips for free.
     let watchdog: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
         match args.parent_pid {
             Some(pid) => Box::pin(wait_for_parent_exit(pid, DEFAULT_POLL_INTERVAL)),
             None => Box::pin(std::future::pending()),
         };
-    tokio::pin!(watchdog);
 
-    loop {
-        tokio::select! {
-            // Bias toward parent-exit detection: if the watchdog fires
-            // mid-stdin-read we want to bail rather than finish a round-trip
-            // whose response no one will read.
-            biased;
-            _ = &mut watchdog => {
-                // Best-effort: cancel every in-flight delegation BEFORE we
-                // hard-exit so the broker doesn't park each pending row
-                // on `rx.await` waiting for a TurnComplete it can never
-                // deliver. cancel_by_parent on the Zwiim main side is the
-                // ultimate backstop, but firing the explicit cancels here
-                // closes the window between MCP shutdown and parent ACP
-                // disconnect detection on the Zwiim side.
-                drain_and_cancel_all(&ctx, &inflight, "parent process exited").await;
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "zwiim-mcp: parent process exited, shutting down"
-                );
-                // Hard exit on purpose: `tokio::io::stdin()` parks a
-                // blocking worker thread that the runtime can't cancel,
-                // so returning normally would keep the process alive
-                // until the parent agent CLI also closes stdin — defeating
-                // the watchdog. The agent CLI sees the stdout pipe close
-                // and tears down its MCP client cleanly.
-                std::process::exit(0);
-            }
-            line_result = lines.next_line() => {
-                let line = match line_result {
-                    Ok(Some(l)) => l,
-                    Ok(None) => {
-                        // Parent closed stdin. Same shutdown rationale as
-                        // the watchdog branch: drain pending delegations
-                        // before returning so the broker can resolve them
-                        // immediately.
-                        drain_and_cancel_all(&ctx, &inflight, "companion stdio closed").await;
-                        break;
-                    }
-                    Err(e) => {
-                        let _ = writeln!(std::io::stderr(), "zwiim-mcp: read stdin: {e}");
-                        drain_and_cancel_all(&ctx, &inflight, "companion stdin error").await;
-                        return ExitCode::from(1);
-                    }
-                };
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                let action = dispatch_line(&ctx, inflight.clone(), &line).await;
-                match action {
-                    LineAction::Respond(resp) => {
-                        if let Err(e) = write_response(&stdout, &resp).await {
-                            let _ = writeln!(std::io::stderr(), "zwiim-mcp: write stdout: {e}");
-                            return ExitCode::from(1);
-                        }
-                    }
-                    LineAction::Spawn(spawned) => {
-                        // Drive the round-trip in a detached task so the
-                        // stdin reader stays responsive — the next line may
-                        // be a `notifications/cancelled` for THIS request.
-                        let stdout = stdout.clone();
-                        tokio::spawn(async move {
-                            let SpawnResult {
-                                response,
-                                after_relay,
-                            } = spawned.future.await;
-                            // `None` → cancellation won; suppress per MCP spec.
-                            let Some(resp) = response else {
-                                return;
-                            };
-                            if let Err(e) = write_response(&stdout, &resp).await {
-                                let _ = writeln!(
-                                    std::io::stderr(),
-                                    "zwiim-mcp: write stdout: {e}"
-                                );
-                                // Relay failed (agent stdin gone) → skip any
-                                // post-relay action so feedback notes stay
-                                // pending for the next check (at-least-once).
-                                return;
-                            }
-                            // The response reached the agent's stdin. Only now
-                            // run any post-relay action — for
-                            // `check_user_feedback`, the delivery commit that
-                            // marks the pulled notes `Delivered`.
-                            if let Some(after) = after_relay {
-                                after.await;
-                            }
-                        });
-                    }
-                    LineAction::Silent => {}
-                }
+    let server = mcp_server::serve(
+        ctx.clone(),
+        inflight.clone(),
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+    );
+    tokio::select! {
+        // Bias toward parent-exit detection: if the watchdog fires while a
+        // call is in flight we want to bail rather than finish a round-trip
+        // whose response no one will read.
+        biased;
+        () = watchdog => {
+            // Best-effort: cancel every in-flight delegation BEFORE we
+            // hard-exit so the broker doesn't park each pending row
+            // on `rx.await` waiting for a TurnComplete it can never
+            // deliver. cancel_by_parent on the Zwiim main side is the
+            // ultimate backstop, but firing the explicit cancels here
+            // closes the window between MCP shutdown and parent ACP
+            // disconnect detection on the Zwiim side.
+            drain_and_cancel_all(&ctx, &inflight, "parent process exited").await;
+            let _ = writeln!(
+                std::io::stderr(),
+                "zwiim-mcp: parent process exited, shutting down"
+            );
+            // Hard exit on purpose: `tokio::io::stdin()` parks a
+            // blocking worker thread that the runtime can't cancel,
+            // so returning normally would keep the process alive
+            // until the parent agent CLI also closes stdin — defeating
+            // the watchdog. The agent CLI sees the stdout pipe close
+            // and tears down its MCP client cleanly.
+            std::process::exit(0);
+        }
+        served = server => {
+            // The agent closed stdin (or the stream broke). Drain pending
+            // delegations before returning so the broker can resolve them
+            // immediately.
+            drain_and_cancel_all(&ctx, &inflight, "companion stdio closed").await;
+            if let Err(e) = served {
+                let _ = writeln!(std::io::stderr(), "zwiim-mcp: {e}");
+                return ExitCode::from(1);
             }
         }
     }

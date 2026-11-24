@@ -30,11 +30,17 @@ mod tests {
     }
 
     /// rmcp is the MCP protocol implementation, not the connector platform:
-    /// its types stay inside `connectors::mcp`, behind [`super::upstream`].
+    /// its types stay inside its two adapters, `connectors::mcp` (behind
+    /// [`super::upstream`]) and the companion's `acp::delegation::mcp_server`.
     #[test]
-    fn rmcp_is_only_used_inside_connectors_mcp() {
+    fn rmcp_is_only_used_inside_its_adapters() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let allowed = src.join("connectors").join("mcp");
+        let delegation = src.join("acp").join("delegation");
+        let allowed = [
+            src.join("connectors").join("mcp"),
+            delegation.join("mcp_server.rs"),
+            delegation.join("mcp_server"),
+        ];
         // Built at runtime so this file doesn't match its own search.
         let crate_name = ["rm", "cp"].concat();
         let (path_use, import) = (format!("{crate_name}::"), format!("use {crate_name}"));
@@ -42,7 +48,7 @@ mod tests {
         rust_files(&src, &mut files);
         let offenders: Vec<_> = files
             .iter()
-            .filter(|path| !path.starts_with(&allowed))
+            .filter(|path| !allowed.iter().any(|dir| path.starts_with(dir)))
             .filter(|path| {
                 let text = std::fs::read_to_string(path).unwrap();
                 text.lines().any(|line| {
@@ -53,7 +59,7 @@ mod tests {
             .collect();
         assert!(
             offenders.is_empty(),
-            "rmcp used outside connectors/mcp: {offenders:?}"
+            "rmcp used outside its adapters: {offenders:?}"
         );
     }
 }
