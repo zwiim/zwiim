@@ -130,3 +130,4 @@ runtime/host/src/connectors/mcp/http_client.rs
 runtime/host/src/connectors/mcp/tests.rs
 runtime/host/src/connectors/mcp/stdio.rs
 runtime/host/src/connectors/mcp/stdio/tests.rs
+runtime/host/src/connectors/bench.rs
