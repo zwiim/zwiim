@@ -96,11 +96,7 @@ pub fn draft_from_recording(recording: &Recording) -> PlaybookDraft {
 
     let mut taken: Vec<String> = Vec::new();
     let mut fresh = |wanted: &str, fallback: &str| {
-        // A step quotes the name, so it holds no double quote.
-        let base = match wanted.trim() {
-            "" => fallback.to_string(),
-            w => w.replace('"', "'"),
-        };
+        let base = input_base(wanted, fallback);
         let mut name = base.clone();
         let mut n = 1;
         while taken.contains(&name) {
@@ -182,6 +178,21 @@ pub fn draft_from_recording(recording: &Recording) -> PlaybookDraft {
 }
 
 /// The word a draft's name starts with.
+/// An input's name from a field's label: no trailing colon or required
+/// star, and no double quote, since a step quotes the name.
+fn input_base(label: &str, fallback: &str) -> String {
+    let name = label
+        .replace('"', "'")
+        .trim_end_matches(|c: char| c == ':' || c == '*' || c.is_whitespace())
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        fallback.to_string()
+    } else {
+        name
+    }
+}
+
 fn verb(kind: ActionKind) -> &'static str {
     match kind {
         ActionKind::SubmitApplication => "Apply",
@@ -248,10 +259,7 @@ pub fn draft_to_doc(
     // one input.
     let mut named: Vec<(String, Option<String>)> = Vec::new();
     let mut resolve = |wanted: &str, fact: Option<&str>| {
-        let base = match wanted.replace('"', "'").trim() {
-            "" => "Info".to_string(),
-            w => w.to_string(),
-        };
+        let base = input_base(wanted, "Info");
         let mut name = base.clone();
         let mut n = 1;
         loop {
@@ -472,6 +480,40 @@ mod tests {
         assert_eq!(d.send_kind, ActionKind::SubmitForm);
         assert_eq!(d.name, "Submit on forms.example");
         assert_eq!(d.send_step, Some(1), "the last click when no page followed");
+    }
+
+    /// A label's trailing colon or required star is not part of the
+    /// input's name, in the draft and when it saves.
+    #[test]
+    fn input_names_drop_a_labels_colon_and_star() {
+        let url = "https://forms.example/order";
+        let mut r = Recording::new("t1", url);
+        for name in ["Customer name:", "Email *", "Phone *:", ":"] {
+            r.push(step(StepAction::Fill, "textbox", name, Some("x"), url));
+        }
+        r.push(step(StepAction::Click, "button", "Order", None, url));
+        let d = draft_from_recording(&r);
+        let names: Vec<&str> = d
+            .steps
+            .iter()
+            .filter_map(|s| match &s.value {
+                DraftValue::MyInfo { input, .. } => Some(input.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["Customer name", "Email", "Phone", "Info"]);
+
+        let mut renamed = d.clone();
+        if let DraftValue::MyInfo { input, .. } = &mut renamed.steps[0].value {
+            *input = "Full name: ".into();
+        }
+        let doc = draft_to_doc(&renamed, &HashMap::new()).unwrap();
+        let saved: Vec<&str> = doc.inputs.iter().map(Input::name).collect();
+        assert_eq!(saved, ["Full name", "Email", "Phone", "Info"]);
+        assert_eq!(
+            doc.steps[0],
+            "Fill \"Customer name:\" with input \"Full name\""
+        );
     }
 
     #[test]
