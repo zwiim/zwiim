@@ -8,3 +8,48 @@
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake_mcp;
+pub mod upstream;
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// rmcp is the MCP protocol implementation, not the connector platform:
+    /// its types stay inside `connectors::mcp`, behind [`super::upstream`].
+    #[test]
+    fn rmcp_is_only_used_inside_connectors_mcp() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = src.join("connectors").join("mcp");
+        // Built at runtime so this file doesn't match its own search.
+        let crate_name = ["rm", "cp"].concat();
+        let (path_use, import) = (format!("{crate_name}::"), format!("use {crate_name}"));
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        let offenders: Vec<_> = files
+            .iter()
+            .filter(|path| !path.starts_with(&allowed))
+            .filter(|path| {
+                let text = std::fs::read_to_string(path).unwrap();
+                text.lines().any(|line| {
+                    let line = line.trim_start();
+                    !line.starts_with("//") && (line.contains(&path_use) || line.contains(&import))
+                })
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "rmcp used outside connectors/mcp: {offenders:?}"
+        );
+    }
+}
