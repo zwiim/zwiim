@@ -124,3 +124,7 @@ runtime/host/src/connectors/fake_mcp/mod.rs
 runtime/host/src/connectors/fake_mcp/stream.rs
 runtime/host/src/connectors/fake_mcp/http.rs
 runtime/host/src/connectors/upstream.rs
+runtime/host/src/connectors/mcp/mod.rs
+runtime/host/src/connectors/mcp/convert.rs
+runtime/host/src/connectors/mcp/http_client.rs
+runtime/host/src/connectors/mcp/tests.rs

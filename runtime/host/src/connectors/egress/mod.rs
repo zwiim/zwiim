@@ -518,8 +518,14 @@ impl EgressResponse {
 
     /// The whole body, refused once it passes the cap and before anything
     /// parses it.
-    pub async fn bytes(mut self) -> Result<Bytes, EgressError> {
+    pub async fn bytes(self) -> Result<Bytes, EgressError> {
         let limit = self.max_body;
+        self.bytes_up_to(limit).await
+    }
+
+    /// [`Self::bytes`] with a lower cap for this one response.
+    pub async fn bytes_up_to(mut self, limit: usize) -> Result<Bytes, EgressError> {
+        let limit = limit.min(self.max_body);
         let too_large = EgressError::BodyTooLarge { limit };
         if self
             .response
