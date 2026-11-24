@@ -1,10 +1,11 @@
 //! Outbound HTTP for connectors (design r3 §5.3). Every request a connector
 //! makes goes through [`EgressHttpClient`]: it reaches only origins in the
 //! connection's endpoint rules, connects only to addresses [`EgressGuard`]
-//! checked, follows no redirects and caps what it reads back.
+//! checked, follows redirects only within the same origin and caps what it
+//! reads back.
 //!
-//! Not here yet: redirect-following for uncredentialed OAuth discovery (comes
-//! with OAuth), admin-blocked origins (comes with `policy.json`), and refusing
+//! Not here yet: cross-origin redirects for uncredentialed OAuth discovery
+//! (comes with OAuth), admin-blocked origins (comes with `policy.json`), and refusing
 //! the Host's own listen ports in `local` rules (checked when a connection's
 //! endpoints are validated).
 
@@ -23,6 +24,8 @@ use http::Method;
 use url::{Host, Url};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Same-origin redirects followed for one request.
+const MAX_REDIRECTS: usize = 3;
 /// Largest whole response body read into memory.
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -49,7 +52,7 @@ pub enum EgressError {
     CredentialHeader(String),
     #[error("the credential isn't a valid header value")]
     InvalidCredential,
-    #[error("the service redirected ({status}); redirects aren't followed")]
+    #[error("the service redirected ({status}) to somewhere Zwiim doesn't follow")]
     Redirect {
         status: u16,
         location: Option<String>,
@@ -415,7 +418,13 @@ impl EgressHttpClient {
 
     /// Sends one request. Nothing leaves the Host unless the origin is an
     /// endpoint, the credential (if any) may go there and every address it
-    /// connects to passes the guard. A 3xx answer is an error.
+    /// connects to passes the guard.
+    ///
+    /// Redirects within the same origin are followed, up to
+    /// [`MAX_REDIRECTS`], so a server that moves `/mcp` to `/mcp/` still
+    /// works. 307 and 308 keep the method and body; 301, 302 and 303 are
+    /// followed only for GET. Any other 3xx, including every redirect to
+    /// another origin, is an error and its target is never contacted.
     pub async fn send(&self, request: EgressRequest) -> Result<EgressResponse, EgressError> {
         let rule = self.guard.check_url(&request.url)?;
         if request.credential.is_some() && !rule.credentials {
@@ -433,28 +442,47 @@ impl EgressHttpClient {
         if let Some(credential) = request.credential {
             headers.insert(credential.header, credential.value);
         }
-        let mut builder = self
-            .http
-            .request(request.method, request.url)
-            .headers(headers);
-        if let Some(body) = request.body {
-            builder = builder.body(body);
+        let mut url = request.url;
+        let mut redirects = 0;
+        loop {
+            let mut builder = self
+                .http
+                .request(request.method.clone(), url.clone())
+                .headers(headers.clone());
+            if let Some(body) = &request.body {
+                builder = builder.body(body.clone());
+            }
+            let response = builder.send().await.map_err(transport_error)?;
+            let status = response.status();
+            if !status.is_redirection() {
+                return Ok(EgressResponse {
+                    response,
+                    max_body: self.max_body,
+                });
+            }
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let refused = || EgressError::Redirect {
+                status: status.as_u16(),
+                location: location.clone(),
+            };
+            let keeps_method = matches!(status.as_u16(), 307 | 308)
+                || (matches!(status.as_u16(), 301..=303) && request.method == Method::GET);
+            let next = location
+                .as_deref()
+                .and_then(|location| url.join(location).ok())
+                .filter(|next| next.origin() == url.origin() && self.guard.check_url(next).is_ok());
+            match next {
+                Some(next) if keeps_method && redirects < MAX_REDIRECTS => {
+                    redirects += 1;
+                    url = next;
+                }
+                _ => return Err(refused()),
+            }
         }
-        let response = builder.send().await.map_err(transport_error)?;
-        if response.status().is_redirection() {
-            return Err(EgressError::Redirect {
-                status: response.status().as_u16(),
-                location: response
-                    .headers()
-                    .get(header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string),
-            });
-        }
-        Ok(EgressResponse {
-            response,
-            max_body: self.max_body,
-        })
     }
 }
 

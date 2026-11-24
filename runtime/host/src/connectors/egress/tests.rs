@@ -10,10 +10,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap as AxumHeaders, StatusCode};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use futures::StreamExt;
-use http::header::{self, HeaderMap};
+use http::header::{self, HeaderMap, HeaderName};
 use http::Method;
 use url::Url;
 
@@ -350,30 +350,110 @@ async fn connects_to_the_checked_address() {
     assert_eq!(response.bytes().await.unwrap(), Bytes::from("pinned"));
 }
 
+fn redirect(location: &str) -> (StatusCode, [(HeaderName, String); 1]) {
+    (
+        StatusCode::TEMPORARY_REDIRECT,
+        [(header::LOCATION, location.to_string())],
+    )
+}
+
 #[tokio::test]
-async fn redirects_are_errors_and_the_target_is_never_contacted() {
-    let followed = Arc::new(AtomicUsize::new(0));
-    let hits = followed.clone();
+async fn same_origin_redirects_are_followed() {
+    let loops = Arc::new(AtomicUsize::new(0));
+    let loop_hits = loops.clone();
     let router = Router::new()
+        .route("/mcp", post(|| async { redirect("/mcp/") }))
         .route(
-            "/mcp",
-            get(|| async {
-                (
-                    StatusCode::TEMPORARY_REDIRECT,
-                    [(header::LOCATION, "/elsewhere")],
+            "/mcp/",
+            post(|headers: AxumHeaders, body: Bytes| async move {
+                let auth = headers.get(header::AUTHORIZATION).unwrap();
+                format!(
+                    "{} {}",
+                    auth.to_str().unwrap(),
+                    String::from_utf8_lossy(&body)
                 )
             }),
         )
         .route(
-            "/elsewhere",
+            "/old",
+            get(|| async { (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, "/new")]) }),
+        )
+        .route("/new", get(|| async { "moved" }))
+        .route(
+            "/see-other",
+            post(|| async { (StatusCode::SEE_OTHER, [(header::LOCATION, "/new")]) }),
+        )
+        .route(
+            "/loop",
             get(move || async move {
-                hits.fetch_add(1, Ordering::SeqCst);
-                "followed"
+                loop_hits.fetch_add(1, Ordering::SeqCst);
+                redirect("/loop")
             }),
         );
     let addr = serve(router).await;
     let origin = format!("http://127.0.0.1:{}", addr.port());
     let client = client(vec![local(&origin)], &[]);
+
+    // 307 keeps the method, the body and the credential.
+    let mut request = get_request(&format!("{origin}/mcp"));
+    request.method = Method::POST;
+    request.body = Some(Bytes::from("{}"));
+    request.credential = Some(credential("Bearer s3cret"));
+    let response = client.send(request).await.unwrap();
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        Bytes::from("Bearer s3cret {}")
+    );
+
+    // 301 is followed for GET.
+    let response = client
+        .send(get_request(&format!("{origin}/old")))
+        .await
+        .unwrap();
+    assert_eq!(response.bytes().await.unwrap(), Bytes::from("moved"));
+
+    // 303 would turn a POST into a GET, so it is an error.
+    let mut request = get_request(&format!("{origin}/see-other"));
+    request.method = Method::POST;
+    assert!(matches!(
+        client.send(request).await,
+        Err(EgressError::Redirect { status: 303, .. })
+    ));
+
+    // The first request plus three followed redirects, then an error.
+    let err = client
+        .send(get_request(&format!("{origin}/loop")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EgressError::Redirect { status: 307, .. }),
+        "{err:?}"
+    );
+    assert_eq!(loops.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn cross_origin_redirects_are_errors_and_the_target_is_never_contacted() {
+    let (other, accepted) = counting_listener().await;
+    let other_origin = format!("http://127.0.0.1:{}", other.port());
+    let to_other = format!("{other_origin}/mcp");
+    let location = to_other.clone();
+    let router = Router::new()
+        .route(
+            "/mcp",
+            get(move || {
+                let location = location.clone();
+                async move { redirect(&location) }
+            }),
+        )
+        .route(
+            "/userinfo",
+            get(|| async { redirect("http://user:pw@127.0.0.1/") }),
+        );
+    let addr = serve(router).await;
+    let origin = format!("http://127.0.0.1:{}", addr.port());
+    // Even an origin that is itself an endpoint isn't reached by a redirect.
+    let client = client(vec![local(&origin), local(&other_origin)], &[]);
     let err = client
         .send(get_request(&format!("{origin}/mcp")))
         .await
@@ -382,10 +462,16 @@ async fn redirects_are_errors_and_the_target_is_never_contacted() {
         err,
         EgressError::Redirect {
             status: 307,
-            location: Some("/elsewhere".into()),
+            location: Some(to_other),
         }
     );
-    assert_eq!(followed.load(Ordering::SeqCst), 0);
+    assert_eq!(accepted.load(Ordering::SeqCst), 0);
+
+    let err = client
+        .send(get_request(&format!("{origin}/userinfo")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EgressError::Redirect { .. }), "{err:?}");
 }
 
 #[tokio::test]
