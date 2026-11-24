@@ -5819,8 +5819,10 @@ dependencies = [
  "http",
  "indexmap 2.14.2",
  "libc",
+ "pastey",
  "percent-encoding",
  "pin-project-lite",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -5832,6 +5834,7 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]
