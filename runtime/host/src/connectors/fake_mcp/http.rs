@@ -6,6 +6,7 @@
 //! GET                -> 405 (no server-initiated stream for legacy clients)
 //! DELETE             -> 200, ends the legacy session
 //! redirect set       -> 307 to that location, for every request
+//! client goes away   -> recorded as `HTTP abandoned`
 //! ```
 //!
 //! Legacy `initialize` gets an `Mcp-Session-Id`; later requests carrying it
@@ -168,7 +169,10 @@ async fn handle(
         .and_then(|id| shared.sessions.lock().unwrap().get(id).cloned())
         .unwrap_or_default();
 
-    match shared.fake.handle(message, header_list, &session).await {
+    let abandoned = AbandonGuard(Some(&shared.fake));
+    let reply = shared.fake.handle(message, header_list, &session).await;
+    abandoned.disarm();
+    match reply {
         Reply::Nothing if is_listen => status(StatusCode::OK).body(Body::empty()).unwrap(),
         Reply::Nothing => status(StatusCode::ACCEPTED).body(Body::empty()).unwrap(),
         Reply::Drop => {
@@ -193,6 +197,24 @@ async fn handle(
                 response = response.header(SESSION_HEADER, id);
             }
             response.body(Body::from(reply.to_string())).unwrap()
+        }
+    }
+}
+
+/// Records `HTTP abandoned` if the client goes away before the reply is
+/// ready, which is how a 2026-07-28 client cancels a request over HTTP.
+struct AbandonGuard<'a>(Option<&'a FakeMcp>);
+
+impl AbandonGuard<'_> {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for AbandonGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(fake) = self.0 {
+            fake.record("HTTP abandoned", Vec::new());
         }
     }
 }

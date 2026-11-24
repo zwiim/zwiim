@@ -306,10 +306,16 @@ impl FakeMcp {
             Era::Modern => vec![MODERN],
             Era::DualEra => LEGACY.into_iter().chain([MODERN]).collect(),
         };
+        // 2026-07-28 makes the discover result cacheable and moves the
+        // server's identity into `_meta`.
         Ok(json!({
             "supportedVersions": supported,
             "capabilities": { "tools": { "listChanged": true } },
-            "serverInfo": { "name": "fake-mcp", "version": "0.0.0" },
+            "ttlMs": 0,
+            "cacheScope": "private",
+            "_meta": {
+                "io.modelcontextprotocol/serverInfo": { "name": "fake-mcp", "version": "0.0.0" },
+            },
         }))
     }
 
