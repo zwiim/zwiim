@@ -301,7 +301,8 @@ impl RunLoop {
                 Err(e) => Err(db_err(e)),
             }
         } else {
-            self.finish(&run, RunStatus::Discovering).await
+            self.finish(&run, RunStatus::Discovering, summary.known > 0)
+                .await
         }
     }
 
@@ -923,11 +924,18 @@ impl RunLoop {
         if self.count(run.id, &IN_FLIGHT).await? > 0 {
             return Ok(());
         }
-        self.finish(run, RunStatus::Running).await
+        self.finish(run, RunStatus::Running, false).await
     }
 
     /// The run is `done`, with its outcome and totals (spec 6.5.5).
-    async fn finish(&self, run: &playbook_run::Model, from: RunStatus) -> Result<(), DbError> {
+    /// `known_only`: discovery queued nothing because every item it found
+    /// was done or skipped before.
+    async fn finish(
+        &self,
+        run: &playbook_run::Model,
+        from: RunStatus,
+        known_only: bool,
+    ) -> Result<(), DbError> {
         match self
             .engine
             .transition_run(run.id, from, RunStatus::Done, None)
@@ -943,12 +951,14 @@ impl RunLoop {
                 &[ItemStatus::WaitingPerson, ItemStatus::RetriesExhausted],
             )
             .await?;
+        let total = self.count(run.id, ItemStatus::all()).await?;
         let outcome = if waiting > 0 {
             RunOutcome::NeedsPerson
+        } else if total == 0 && known_only {
+            RunOutcome::NothingNew
         } else {
             RunOutcome::Complete
         };
-        let total = self.count(run.id, ItemStatus::all()).await?;
         let done = self.count(run.id, &[ItemStatus::Done]).await?;
         self.write_run(run.id, |m| {
             m.outcome = sea_orm::Set(Some(outcome.as_str().to_string()));
@@ -1610,6 +1620,50 @@ mod tests {
         drive(&f.run_loop).await;
         let (_, prompt, _) = item_prompts(&f.launcher).remove(0);
         assert!(!prompt.contains("How the person did this once"), "{prompt}");
+    }
+
+    /// Every listed item was done before: the run ends at once and says
+    /// there was nothing new, so Run again does not look broken.
+    #[tokio::test]
+    async fn a_run_with_every_item_done_before_ends_with_nothing_new() {
+        use sea_orm::{ActiveModelTrait, Set};
+        let f = fixture(vec![]).await;
+        let now = chrono::Utc::now();
+        for key in ["jobs.test/j/1", "jobs.test/j/2", "jobs.test/j/3"] {
+            crate::automation::entities::never_twice_ledger::ActiveModel {
+                site: Set("jobs.test".into()),
+                account: Set("main".into()),
+                action_kind: Set("submit_application".into()),
+                item_key: Set(key.into()),
+                state: Set("done".into()),
+                round_id: Set(None),
+                item_id: Set(None),
+                created_at: Set(now),
+                updated_at: Set(now),
+            }
+            .insert(&f.db)
+            .await
+            .unwrap();
+        }
+        drive(&f.run_loop).await;
+
+        let run = run(&f.db, f.run_id).await;
+        assert_eq!(run.status, "done");
+        assert_eq!(run.outcome.as_deref(), Some("nothing_new"));
+        assert_eq!(run.items_total, 0);
+    }
+
+    /// A list with nothing on the playbook's sites is not "nothing new":
+    /// nothing was done before.
+    #[tokio::test]
+    async fn a_run_with_no_item_on_its_sites_ends_complete() {
+        let off = PLAYBOOK.replace("https://jobs.test/j/", "https://other.test/j/");
+        let f = fixture_with(&off, vec![]).await;
+        drive(&f.run_loop).await;
+
+        let run = run(&f.db, f.run_id).await;
+        assert_eq!(run.status, "done");
+        assert_eq!(run.outcome.as_deref(), Some("complete"));
     }
 
     /// A run of three listed items: each item gets a session on its lane

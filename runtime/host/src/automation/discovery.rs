@@ -206,6 +206,8 @@ pub const JUDGMENT_LIMITS: SessionLimits = SessionLimits {
 struct Counts {
     queued: usize,
     dropped: usize,
+    /// Of `dropped`: done or skipped before, or already in this run.
+    known: usize,
     ruled: usize,
 }
 
@@ -214,6 +216,8 @@ struct Counts {
 pub struct DiscoverySummary {
     /// Items queued by this call.
     pub queued: usize,
+    /// Items dropped because they were done or skipped before.
+    pub known: usize,
     /// One note per source discovered by this call.
     pub notes: Vec<String>,
     /// Set when a source's discovery agent could not start: discovery
@@ -253,9 +257,11 @@ impl Discovery<'_> {
             let Counts {
                 queued,
                 dropped,
+                known,
                 ruled,
             } = self.queue(run_id, doc, candidates).await?;
             summary.queued += queued;
+            summary.known += known;
             if ruled > 0 {
                 note.push_str(&format!("; {ruled} skipped by a rule"));
             }
@@ -414,12 +420,16 @@ impl Discovery<'_> {
                 continue;
             };
             let repeated = fresh.iter().any(|(_, s, k)| *s == site && *k == key);
-            if repeated
-                || self
-                    .known(run_id, run.playbook_id, doc, &site, &key, &store)
-                    .await?
+            if repeated {
+                counts.dropped += 1;
+                continue;
+            }
+            if self
+                .known(run_id, run.playbook_id, doc, &site, &key, &store)
+                .await?
             {
                 counts.dropped += 1;
+                counts.known += 1;
                 continue;
             }
             fresh.push((candidate, site, key));

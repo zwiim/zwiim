@@ -1,4 +1,9 @@
-import type { RunItemView, RunStatus, SitePauseCause } from "@zwiim/sdk";
+import type {
+  RunItemView,
+  RunOutcome,
+  RunStatus,
+  SitePauseCause,
+} from "@zwiim/sdk";
 
 /** The status dot an item or a playbook shows (design §4). */
 export type Dot = "idle" | "work" | "need" | "done" | "off" | "err";
@@ -10,7 +15,11 @@ export interface RunCounts {
 }
 
 /** What an item's tile says about it, and the overlay on its page when it waits on the person. */
-export function itemStatus(item: RunItemView): { dot: Dot; label: string; overlay: string | null } {
+export function itemStatus(item: RunItemView): {
+  dot: Dot;
+  label: string;
+  overlay: string | null;
+} {
   switch (item.status) {
     case "queued":
       return { dot: "idle", label: "Queued", overlay: null };
@@ -21,7 +30,11 @@ export function itemStatus(item: RunItemView): { dot: Dot; label: string; overla
     case "waiting_person":
       // Without a question the page itself needs the person (a check that failed, a sign-in).
       return item.question
-        ? { dot: "need", label: "Question", overlay: `Question for you · ${item.question}` }
+        ? {
+            dot: "need",
+            label: "Question",
+            overlay: `Question for you · ${item.question}`,
+          }
         : { dot: "need", label: "Needs you", overlay: "Needs you" };
     case "done":
       return { dot: "done", label: "Sent", overlay: null };
@@ -50,19 +63,29 @@ export function runCounts(items: RunItemView[]): RunCounts {
   let need = 0;
   for (const item of items) {
     if (item.status === "done") sent += 1;
-    else if (item.status === "waiting_approval" || item.status === "waiting_person") need += 1;
+    else if (
+      item.status === "waiting_approval" ||
+      item.status === "waiting_person"
+    )
+      need += 1;
   }
   return { total: items.length, sent, need };
 }
 
 /** The one line a collapsed playbook shows (design §3.3.2). */
-export function sectionLine(run: { status: RunStatus } | null, counts: RunCounts): { text: string; need: boolean } {
+export function sectionLine(
+  run: { status: RunStatus; outcome?: RunOutcome | null } | null,
+  counts: RunCounts,
+): { text: string; need: boolean } {
   if (counts.need > 0) return { text: `${counts.need} need you`, need: true };
   if (!run) return { text: "Not run yet", need: false };
   switch (run.status) {
     case "running":
     case "discovering":
-      return { text: `Running · ${counts.sent} of ${counts.total} sent`, need: false };
+      return {
+        text: `Running · ${counts.sent} of ${counts.total} sent`,
+        need: false,
+      };
     case "paused":
       return { text: "Paused", need: false };
     case "stopped":
@@ -70,14 +93,23 @@ export function sectionLine(run: { status: RunStatus } | null, counts: RunCounts
     case "failed":
       return { text: "Failed", need: false };
     case "done":
+      if (run.outcome === "nothing_new")
+        return { text: "Nothing new", need: false };
       return { text: `${counts.sent} sent`, need: false };
   }
 }
 
 /** Whether a playbook starts open: while its run is active, or when it needs the person. */
-export function defaultOpen(run: { status: RunStatus } | null, counts: RunCounts): boolean {
+export function defaultOpen(
+  run: { status: RunStatus } | null,
+  counts: RunCounts,
+): boolean {
   if (counts.need > 0) return true;
-  return run?.status === "running" || run?.status === "discovering" || run?.status === "paused";
+  return (
+    run?.status === "running" ||
+    run?.status === "discovering" ||
+    run?.status === "paused"
+  );
 }
 
 /** Why a run failed, from its reason code, in the person's words. */

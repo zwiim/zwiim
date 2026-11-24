@@ -2248,7 +2248,7 @@ export type RunPauseReason =
 export type RunTrigger = "mac" | "phone" | "schedule" | "agent";
 
 /** How a finished run ended (spec 6.5.5). */
-export type RunOutcome = "complete" | "needs_person";
+export type RunOutcome = "complete" | "needs_person" | "nothing_new";
 
 /** A control the agent declared, as the approval sheet shows it. */
 export interface PlaybookTarget {

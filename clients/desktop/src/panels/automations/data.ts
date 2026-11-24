@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isClientError, type PlaybookSummary, type RunItemView, type RunStatus, type SiteSummary } from "@zwiim/sdk";
+import {
+  isClientError,
+  type PlaybookSummary,
+  type RunItemView,
+  type RunOutcome,
+  type RunStatus,
+  type SiteSummary,
+} from "@zwiim/sdk";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 
 /** A playbook, its latest run and that run's items. */
 export interface PlaybookRow {
   playbook: PlaybookSummary;
-  run: { run_id: string; status: RunStatus; error?: string | null } | null;
+  run: {
+    run_id: string;
+    status: RunStatus;
+    outcome?: RunOutcome | null;
+    error?: string | null;
+  } | null;
   items: RunItemView[];
   /** The run's items are in the store; false until they load (again after a new snapshot). */
   itemsLoaded: boolean;
@@ -25,6 +37,7 @@ interface LatestRun {
   run_id: string;
   playbook_id: string;
   status: RunStatus;
+  outcome?: RunOutcome | null;
   error?: string | null;
   created_at: string;
 }
@@ -91,7 +104,9 @@ export function useAutomations(): Automations {
   }, [controller, generation, runItems]);
 
   const turnOn = useCallback(async () => {
-    await controller.client.request("settings.update", { values: { "playbooks.enabled": true } });
+    await controller.client.request("settings.update", {
+      values: { "playbooks.enabled": true },
+    });
     reload();
   }, [controller, reload]);
 
@@ -103,7 +118,8 @@ export function useAutomations(): Automations {
     for (const r of Object.values(liveRuns)) runs.set(r.run_id, r);
     for (const r of runs.values()) {
       const prev = byPlaybook.get(r.playbook_id);
-      if (!prev || r.created_at > prev.created_at) byPlaybook.set(r.playbook_id, r);
+      if (!prev || r.created_at > prev.created_at)
+        byPlaybook.set(r.playbook_id, r);
     }
     return byPlaybook;
   }, [listed, liveRuns]);
@@ -123,7 +139,8 @@ export function useAutomations(): Automations {
     if (!listed) return;
     const known = new Set(listed.playbooks.map((p) => p.playbook_id));
     for (const r of Object.values(liveRuns)) {
-      if (known.has(r.playbook_id) || seenUnknown.current.has(r.run_id)) continue;
+      if (known.has(r.playbook_id) || seenUnknown.current.has(r.run_id))
+        continue;
       seenUnknown.current.add(r.run_id);
       reload();
       return;
@@ -164,7 +181,14 @@ export function useAutomations(): Automations {
         const r = latest.get(playbook.playbook_id);
         return {
           playbook,
-          run: r ? { run_id: r.run_id, status: r.status, error: r.error ?? null } : null,
+          run: r
+            ? {
+                run_id: r.run_id,
+                status: r.status,
+                outcome: r.outcome ?? null,
+                error: r.error ?? null,
+              }
+            : null,
           items: r ? Object.values(runItems[r.run_id] ?? {}) : [],
           itemsLoaded: !r || r.run_id in runItems,
         };
@@ -173,7 +197,11 @@ export function useAutomations(): Automations {
   );
 
   const pausedSites = useMemo(() => {
-    const ours = new Set((listed?.playbooks ?? []).flatMap((p) => (p.sites ?? []).map((s) => s.site)));
+    const ours = new Set(
+      (listed?.playbooks ?? []).flatMap((p) =>
+        (p.sites ?? []).map((s) => s.site),
+      ),
+    );
     return sites.filter((s) => s.paused_cause && ours.has(s.site));
   }, [listed, sites]);
 
