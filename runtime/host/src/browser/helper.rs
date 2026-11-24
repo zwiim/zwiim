@@ -94,6 +94,8 @@ pub enum HelperMessage {
         at: PageBox,
     },
     Title,
+    /// Something the person did while the tab records (recording design §1).
+    Step(super::recording::RecordedStep),
 }
 
 /// The messages in one answer of `next()`; what does not check out is
@@ -167,6 +169,7 @@ fn message(m: &Value) -> Option<HelperMessage> {
             })
         }
         "title" => Some(HelperMessage::Title),
+        "step" => super::recording::step_from_helper(m).map(HelperMessage::Step),
         _ => None,
     }
 }
@@ -277,6 +280,22 @@ pub async fn follow(service: Weak<BrowserService>, cdp: Cdp, session: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recorded_step_is_a_message_and_a_bad_one_is_dropped() {
+        let raw = json!([
+            { "kind": "step", "step": { "action": "click", "role": "button", "name": "Apply", "url": "https://jobs.example/" } },
+            { "kind": "step", "step": { "action": "fill", "role": "password", "name": "Password", "value": "hunter2", "url": "https://jobs.example/" } },
+            { "kind": "step", "step": { "action": "teleport", "role": "button", "name": "x", "url": "https://jobs.example/" } }
+        ])
+        .to_string();
+        let messages = parse(&raw);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        let HelperMessage::Step(click) = &messages[0] else { panic!("{messages:?}") };
+        assert_eq!(click.name, "Apply");
+        let HelperMessage::Step(password) = &messages[1] else { panic!("{messages:?}") };
+        assert_eq!(password.value, None);
+    }
 
     #[test]
     fn what_the_helper_says_is_checked_and_capped() {

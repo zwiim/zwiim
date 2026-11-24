@@ -23,6 +23,9 @@ async function rejection(p: Promise<unknown>): Promise<ZwiimClientError> {
 describe("codec", () => {
   it("decodes V1 frames and rejects everything else", () => {
     expect(decodeServerFrame('{"type":"pong"}')).toEqual({ type: "pong" });
+    expect(decodeServerFrame('{"type":"browser.tab.recorded","tab_id":"a","count":1}')).toMatchObject({
+      type: "browser.tab.recorded",
+    });
     const ev = decodeServerFrame(
       JSON.stringify({
         type: "event",

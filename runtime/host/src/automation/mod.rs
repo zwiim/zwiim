@@ -22,6 +22,7 @@ pub mod declaration;
 pub mod discovery;
 pub mod engine;
 pub mod entities;
+pub mod input_files;
 pub mod item_runner;
 #[cfg(test)]
 mod item_runner_tests;
@@ -33,6 +34,7 @@ pub mod pauses;
 pub mod playbook_format;
 pub mod playbook_store;
 pub mod reasons;
+pub mod recording_draft;
 pub mod run_loop;
 pub mod run_views;
 pub mod scope;

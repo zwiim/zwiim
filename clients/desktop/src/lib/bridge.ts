@@ -113,6 +113,8 @@ export interface NativeBridge {
   startHost(): Promise<void>;
   /** Absolute directory chosen by the user, or null when cancelled. */
   pickFolder(): Promise<string | null>;
+  /** Absolute file chosen by the user, or null when cancelled; absent where the app cannot show a picker. */
+  pickFile?(): Promise<string | null>;
   /** The kept account, read locally: works offline. */
   accountStatus(): Promise<AccountStatus>;
   /** Sign in with Google in the system browser. */
@@ -293,6 +295,11 @@ export function tauriBridge(): NativeBridge {
     async pickFolder() {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ directory: true, multiple: false });
+      return typeof picked === "string" ? picked : null;
+    },
+    async pickFile() {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: false, multiple: false });
       return typeof picked === "string" ? picked : null;
     },
     async accountStatus() {

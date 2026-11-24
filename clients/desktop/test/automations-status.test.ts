@@ -68,6 +68,10 @@ describe("sectionLine", () => {
     expect(sectionLine(null, zero)).toEqual({ text: "Not run yet", need: false });
   });
 
+  it("a done run that found nothing new", () => {
+    expect(sectionLine({ status: "done", outcome: "nothing_new" }, zero)).toEqual({ text: "Nothing new", need: false });
+  });
+
   it("needs-you wins", () => {
     expect(sectionLine({ status: "running" }, { total: 4, sent: 1, need: 2 })).toEqual({ text: "2 need you", need: true });
   });

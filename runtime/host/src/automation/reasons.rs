@@ -154,6 +154,9 @@ pub enum ReasonCode {
     Timeout,
     HostRestarted,
     PageNeedsPerson,
+    /// A step uses an input the playbook's latest version no longer has
+    /// (recording design §5).
+    InputMissing,
     /// A playbook rule says skip (spec 6.4: incl. detail rules); spec 11.2.1
     /// has no code for it.
     SkippedByRule,
@@ -180,6 +183,7 @@ impl ReasonCode {
             ReasonCode::Timeout => "timeout",
             ReasonCode::HostRestarted => "host_restarted",
             ReasonCode::PageNeedsPerson => "page_needs_person",
+            ReasonCode::InputMissing => "input_missing",
             ReasonCode::SkippedByRule => "skipped_by_rule",
         }
     }
@@ -204,6 +208,7 @@ impl ReasonCode {
             "timeout" => ReasonCode::Timeout,
             "host_restarted" => ReasonCode::HostRestarted,
             "page_needs_person" => ReasonCode::PageNeedsPerson,
+            "input_missing" => ReasonCode::InputMissing,
             "skipped_by_rule" => ReasonCode::SkippedByRule,
             _ => return None,
         })
@@ -229,6 +234,7 @@ impl ReasonCode {
             ReasonCode::Timeout,
             ReasonCode::HostRestarted,
             ReasonCode::PageNeedsPerson,
+            ReasonCode::InputMissing,
             ReasonCode::SkippedByRule,
         ]
     }
@@ -242,7 +248,8 @@ impl ReasonCode {
             | ReasonCode::ApprovalRejected
             | ReasonCode::DailyCapHit
             | ReasonCode::NavigationOutsidePlaybookSites
-            | ReasonCode::SkippedByRule => SideEffects::None,
+            | ReasonCode::SkippedByRule
+            | ReasonCode::InputMissing => SideEffects::None,
             ReasonCode::Captcha
             | ReasonCode::BlockedBySite
             | ReasonCode::LoginExpired
@@ -403,6 +410,12 @@ pub fn reason_infos() -> &'static [ReasonInfo] {
             fix: "Answer it in the playbook tab on the Mac, then Resume.",
         },
         ReasonInfo {
+            code: InputMissing,
+            meaning: "A step uses an input the playbook no longer has.",
+            retried: false,
+            fix: "Add the input back in the playbook's Inputs, or remove the step, then Try again.",
+        },
+        ReasonInfo {
             code: SkippedByRule,
             meaning: "A playbook rule says this item is not one to work.",
             retried: false,
@@ -470,6 +483,9 @@ fn error_meaning(code: ErrorCode) -> &'static str {
         }
         ErrorCode::NoOpenQuestion => "The item is not waiting on a question.",
         ErrorCode::ItemNotWaiting => "The item is not waiting on the person.",
+        ErrorCode::InputInUse => "A step still uses this input.",
+        ErrorCode::FileTooLarge => "The file is over 50 MB.",
+        ErrorCode::FileNotFound => "That file is not on this computer.",
     }
 }
 
@@ -504,6 +520,12 @@ pub enum ErrorCode {
     NoOpenQuestion,
     /// `run.resolve` for an item that is not waiting on the person.
     ItemNotWaiting,
+    /// `playbook.file.remove` for an input a step still names.
+    InputInUse,
+    /// `playbook.file.set` with a file over 50 MB.
+    FileTooLarge,
+    /// `playbook.file.set` with a path that is not a file.
+    FileNotFound,
 }
 
 impl ErrorCode {
@@ -523,6 +545,9 @@ impl ErrorCode {
             ErrorCode::SiteRiskNotAccepted => "site_risk_not_accepted",
             ErrorCode::NoOpenQuestion => "no_open_question",
             ErrorCode::ItemNotWaiting => "item_not_waiting",
+            ErrorCode::InputInUse => "input_in_use",
+            ErrorCode::FileTooLarge => "file_too_large",
+            ErrorCode::FileNotFound => "file_not_found",
         }
     }
 
@@ -542,6 +567,9 @@ impl ErrorCode {
             ErrorCode::SiteRiskNotAccepted,
             ErrorCode::NoOpenQuestion,
             ErrorCode::ItemNotWaiting,
+            ErrorCode::InputInUse,
+            ErrorCode::FileTooLarge,
+            ErrorCode::FileNotFound,
         ]
     }
 }

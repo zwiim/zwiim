@@ -7,6 +7,13 @@ import { HostProvider } from "@/lib/host-context";
 import { rememberWelcomed } from "@/lib/prefs";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
+const automations = vi.hoisted(() => ({ shown: true }));
+vi.mock("@/panels/automations/shown", () => ({
+  get AUTOMATIONS_SHOWN() {
+    return automations.shown;
+  },
+}));
+
 afterEach(cleanup);
 beforeEach(() => {
   window.localStorage.clear();
@@ -83,6 +90,17 @@ describe("Automations in the sidebar", () => {
     const c = await mount(t);
     expect(screen.queryByTestId("automations-row")).toBeNull();
     c.dispose();
+  });
+
+  it("the row is hidden in a release without Automations", async () => {
+    automations.shown = false;
+    try {
+      const c = await mount(host());
+      expect(screen.queryByTestId("automations-row")).toBeNull();
+      c.dispose();
+    } finally {
+      automations.shown = true;
+    }
   });
 
   it("the row shows waiting approvals and opens the canvas", async () => {

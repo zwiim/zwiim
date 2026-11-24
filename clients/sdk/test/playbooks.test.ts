@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
+import type { PlaybookDraft } from "../src/types/protocol";
 import { FakeTransport, flush } from "./fakes";
 
 async function live() {
@@ -66,6 +67,68 @@ describe("playbook and run methods", () => {
     t.transport.handlers["run.resolve"] = () => ({ item_id: "i1", status: "done" });
     expect(await t.controller.resolve("i1", "sent")).toEqual({ item_id: "i1", status: "done" });
     expect(sent()).toMatchObject({ op: "run.resolve", params: { item_id: "i1", choice: "sent" }, options: { mutating: true } });
+
+    t.transport.handlers["playbook.inputs"] = () => ({ files: [], facts: [] });
+    expect(await t.controller.listPlaybookInputs("pb1")).toEqual({ files: [], facts: [] });
+    expect(sent()).toMatchObject({ op: "playbook.inputs", params: { playbook_id: "pb1" } });
+
+    t.transport.handlers["playbook.input.set_fact"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.setPlaybookFact("pb1", "Email", "me@example.com");
+    expect(sent()).toMatchObject({
+      op: "playbook.input.set_fact",
+      params: { playbook_id: "pb1", input_name: "Email", value: "me@example.com" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["playbook.check.set"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.setPlaybookCheck("pb1", "Order placed");
+    expect(sent()).toMatchObject({
+      op: "playbook.check.set",
+      params: { playbook_id: "pb1", text: "Order placed" },
+      options: { mutating: true },
+    });
+    await t.controller.setPlaybookCheck("pb1", null);
+    expect(sent()).toMatchObject({ op: "playbook.check.set", params: { playbook_id: "pb1", text: null } });
+
+    const file = { input_name: "Resume", file: "cv.pdf", size: 2, sha256: "a".repeat(64) };
+    t.transport.handlers["playbook.file.set"] = () => ({ playbook: { playbook_id: "pb1" }, file });
+    expect((await t.controller.setPlaybookFile("pb1", "Resume", "/Users/me/cv.pdf")).file).toEqual(file);
+    expect(sent()).toMatchObject({
+      op: "playbook.file.set",
+      params: { playbook_id: "pb1", input_name: "Resume", path: "/Users/me/cv.pdf" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["playbook.file.remove"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.removePlaybookFile("pb1", "Resume");
+    expect(sent()).toMatchObject({
+      op: "playbook.file.remove",
+      params: { playbook_id: "pb1", input_name: "Resume" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["browser.record.start"] = () => ({});
+    await t.controller.startRecording("tab1");
+    expect(sent()).toMatchObject({ op: "browser.record.start", params: { tab_id: "tab1" }, options: { mutating: true } });
+
+    const recording = { tab_id: "tab1", start_url: "https://jobs.example/", steps: [] };
+    t.transport.handlers["browser.record.stop"] = () => ({ recording });
+    expect((await t.controller.stopRecording("tab1")).recording).toEqual(recording);
+    expect(sent()).toMatchObject({ op: "browser.record.stop", params: { tab_id: "tab1" }, options: { mutating: true } });
+
+    const draft: PlaybookDraft = {
+      name: "Apply on jobs.test",
+      goal: "Do what I did on jobs.test: Submit.",
+      source: { type: "list", urls: ["https://jobs.test/j/1"] },
+      sites: ["jobs.test"],
+      steps: [{ action: "click", target: "Submit", role: "button", url: "https://jobs.test/j/1", value: { kind: "none" } }],
+      send_step: 0,
+      send_kind: "submit_form",
+      check_text: null,
+    };
+    t.transport.handlers["playbook.create_from_draft"] = () => ({ playbook: { playbook_id: "pb2" } });
+    await t.controller.createPlaybookFromDraft(draft);
+    expect(sent()).toMatchObject({ op: "playbook.create_from_draft", params: { draft }, options: { mutating: true } });
 
     t.transport.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
     await t.controller.listRuns({ playbookId: "pb1", limit: 5 });

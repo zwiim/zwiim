@@ -10,11 +10,18 @@ import type {
   BrowserPick,
   BrowserTab,
   BrowserUiRequest,
+  RecordedStepAction,
   WireError,
 } from "../types/protocol";
 
 /** One step of the browser feed: the subscribe going out, or a frame back. */
 export type BrowserUpdate = { type: "browser.subscribing" } | BrowserFrame;
+
+/** How far a tab's recording got: its step count and the latest step. */
+export interface BrowserRecordingProgress {
+  count: number;
+  last: { action: RecordedStepAction; name: string };
+}
 
 export interface BrowserState {
   /**
@@ -36,6 +43,8 @@ export interface BrowserState {
   menus: Record<string, { menu: BrowserMenu; seq: number }>;
   /** Each tab's latest ended pick (`pick` null when called off); `seq` grows with every one. */
   picks: Record<string, { pick: BrowserPick | null; seq: number }>;
+  /** Each recording tab's step count and latest step. */
+  recordings: Record<string, BrowserRecordingProgress>;
   error: WireError | null;
 }
 
@@ -50,6 +59,7 @@ export function initialBrowserState(): BrowserState {
     agentTab: null,
     menus: {},
     picks: {},
+    recordings: {},
     error: null,
   };
 }
@@ -76,7 +86,15 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       const { [update.tab_id]: _, ...agentActions } = state.agentActions;
       const { [update.tab_id]: __, ...menus } = state.menus;
       const { [update.tab_id]: ___, ...picks } = state.picks;
-      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions, menus, picks };
+      const { [update.tab_id]: ____, ...recordings } = state.recordings;
+      return {
+        ...state,
+        tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id),
+        agentActions,
+        menus,
+        picks,
+        recordings,
+      };
     }
     case "browser.engine.state":
       return { ...state, engine: update.engine };
@@ -106,6 +124,10 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       const seq = state.agentSeq + 1;
       const picks = { ...state.picks, [update.tab_id]: { pick: update.pick, seq } };
       return { ...state, picks, agentSeq: seq };
+    }
+    case "browser.tab.recorded": {
+      const recordings = { ...state.recordings, [update.tab_id]: { count: update.count, last: update.last } };
+      return { ...state, recordings };
     }
     case "browser.error":
       return { ...state, status: "refused", error: update.error };
@@ -138,6 +160,11 @@ export function tabAgentAction(
 /** The tab's latest ended pick, if any. */
 export function tabPick(state: BrowserState, tab_id: string): { pick: BrowserPick | null; seq: number } | undefined {
   return state.picks[tab_id];
+}
+
+/** The tab's recording so far, once it kept a step. */
+export function tabRecording(state: BrowserState, tab_id: string): BrowserRecordingProgress | undefined {
+  return state.recordings[tab_id];
 }
 
 /** The tab's latest context menu, if any. */

@@ -327,6 +327,455 @@ pub async fn playbook_save(
     }))
 }
 
+// ── playbook.inputs / playbook.file.* / playbook.input.* (recording §4) ───
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookFilesParams {
+    pub playbook_id: String,
+}
+
+/// One file input as the person sees it.
+#[derive(Debug, Serialize)]
+pub struct PlaybookFileView {
+    pub input_name: String,
+    /// The stored copy's name; `None` for an older `path:` input.
+    pub file: Option<String>,
+    /// An older input's path on this computer.
+    pub path: Option<String>,
+    pub size: Option<u64>,
+    pub sha256: Option<String>,
+    /// When this copy was first saved into the playbook.
+    pub added_at: Option<String>,
+    /// The steps (by index) that use it.
+    pub used_by_steps: Vec<usize>,
+}
+
+/// One fact input: the person's info a step fills in.
+#[derive(Debug, Serialize)]
+pub struct PlaybookFactView {
+    pub input_name: String,
+    pub value: String,
+    pub used_by_steps: Vec<usize>,
+}
+
+#[derive(Serialize)]
+pub struct PlaybookInputsResult {
+    pub files: Vec<PlaybookFileView>,
+    pub facts: Vec<PlaybookFactView>,
+    pub check: PlaybookCheckView,
+}
+
+/// The text that shows a send worked, as the person sets it.
+#[derive(Debug, Serialize)]
+pub struct PlaybookCheckView {
+    /// `None`: the agent judges from the page.
+    pub text: Option<String>,
+    /// False when the checks are more than one text or agent check: they
+    /// are changed in the playbook text.
+    pub editable: bool,
+}
+
+fn check_view(checks: &[crate::automation::playbook_format::CheckSpec]) -> PlaybookCheckView {
+    use crate::automation::playbook_format::CheckSpec;
+    PlaybookCheckView {
+        text: checks.iter().find_map(|c| match c {
+            CheckSpec::TextPresent { text } => Some(text.clone()),
+            _ => None,
+        }),
+        editable: matches!(
+            checks,
+            [] | [CheckSpec::TextPresent { .. }] | [CheckSpec::AgentJudged { .. }]
+        ),
+    }
+}
+
+fn input_store(state: &AppState) -> crate::automation::input_files::InputFileStore {
+    crate::automation::input_files::InputFileStore::new(&state.data_dir)
+}
+
+/// The steps of `doc` that name input `name`.
+fn steps_using(doc: &crate::automation::PlaybookDoc, name: &str) -> Vec<usize> {
+    doc.steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| crate::automation::playbook_format::step_inputs(step).contains(&name))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// `playbook.inputs {playbook_id}`: the playbook's file and fact inputs.
+pub async fn playbook_inputs(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookFilesParams>,
+) -> ZResult<PlaybookInputsResult> {
+    use crate::automation::entities::playbook_version;
+    use crate::automation::playbook_format::Input;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    require_enabled(&state.db.conn).await?;
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let doc = validated(&book.source)?;
+    let versions = playbook_version::Entity::find()
+        .filter(playbook_version::Column::PlaybookId.eq(book.id))
+        .order_by_asc(playbook_version::Column::Version)
+        .all(&state.db.conn)
+        .await
+        .map_err(engine_err)?;
+    let store = input_store(&state);
+    let files = doc
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::File {
+                name,
+                path,
+                file,
+                sha256,
+            } => Some(PlaybookFileView {
+                input_name: name.clone(),
+                file: file.clone(),
+                path: path.clone(),
+                size: match (file, sha256) {
+                    (Some(f), Some(h)) => {
+                        std::fs::metadata(store.path_of(h, f)).ok().map(|m| m.len())
+                    }
+                    _ => None,
+                },
+                sha256: sha256.clone(),
+                added_at: sha256.as_ref().and_then(|h| {
+                    versions
+                        .iter()
+                        .find(|v| v.source.contains(h.as_str()))
+                        .map(|v| v.created_at.to_rfc3339())
+                }),
+                used_by_steps: steps_using(&doc, name),
+            }),
+            _ => None,
+        })
+        .collect();
+    let facts = doc
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::Fact { name, value } => Some(PlaybookFactView {
+                input_name: name.clone(),
+                value: value.clone(),
+                used_by_steps: steps_using(&doc, name),
+            }),
+            _ => None,
+        })
+        .collect();
+    Ok(Json(PlaybookInputsResult {
+        files,
+        facts,
+        check: check_view(&doc.checks),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookSetFactParams {
+    pub playbook_id: String,
+    pub input_name: String,
+    pub value: String,
+}
+
+/// `playbook.input.set_fact {playbook_id, input_name, value}`: add or change
+/// a fact input (a new version).
+pub async fn playbook_input_set_fact(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookSetFactParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::playbook_format::Input;
+    require_enabled(&state.db.conn).await?;
+    let name = p.input_name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZwiimError::invalid_input("Name the input"));
+    }
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let fact = Input::Fact {
+        name: name.clone(),
+        value: p.value,
+    };
+    let playbook = save_inputs(&state, &book, |inputs| {
+        match inputs.iter_mut().find(|i| i.name() == name) {
+            Some(existing @ Input::Fact { .. }) => *existing = fact,
+            Some(_) => {
+                return Err(ZwiimError::invalid_input(format!(
+                    "`{name}` is not an info input"
+                )))
+            }
+            None => inputs.push(fact),
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookSaveResult { playbook }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookCheckSetParams {
+    pub playbook_id: String,
+    /// `None` or blank: the agent judges from the page.
+    pub text: Option<String>,
+}
+
+/// `playbook.check.set {playbook_id, text}`: the text that shows a send
+/// worked, or none for the agent to judge (a new version).
+pub async fn playbook_check_set(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookCheckSetParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::playbook_format::CheckSpec;
+    require_enabled(&state.db.conn).await?;
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let check = match p.text.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => CheckSpec::TextPresent { text: text.into() },
+        _ => CheckSpec::AgentJudged {
+            note: "the page shows that the send went through".into(),
+        },
+    };
+    let playbook = save_doc(&state, &book, |doc| {
+        if !check_view(&doc.checks).editable {
+            return Err(ZwiimError::invalid_input(
+                "This playbook's checks are in its text: change them there",
+            ));
+        }
+        doc.checks = vec![check];
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookSaveResult { playbook }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookFileSetParams {
+    pub playbook_id: String,
+    pub input_name: String,
+    /// A file on this computer; the Host copies it in.
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct StoredFileView {
+    pub input_name: String,
+    pub file: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Serialize)]
+pub struct PlaybookFileSetResult {
+    pub playbook: PlaybookSummary,
+    pub file: StoredFileView,
+}
+
+/// Change the playbook's inputs and save the result as a new version. The
+/// text is parsed and written back, so YAML comments do not survive.
+async fn save_inputs(
+    state: &AppState,
+    book: &playbook::Model,
+    change: impl FnOnce(&mut Vec<crate::automation::playbook_format::Input>) -> Result<(), ZwiimError>,
+) -> Result<PlaybookSummary, ZwiimError> {
+    save_doc(state, book, |doc| change(&mut doc.inputs)).await
+}
+
+/// Change the playbook's document and save it as a new version.
+async fn save_doc(
+    state: &AppState,
+    book: &playbook::Model,
+    change: impl FnOnce(&mut crate::automation::PlaybookDoc) -> Result<(), ZwiimError>,
+) -> Result<PlaybookSummary, ZwiimError> {
+    let mut doc = validated(&book.source)?;
+    change(&mut doc)?;
+    let source = serde_yaml::to_string(&doc).map_err(engine_err)?;
+    let doc = validated(&source)?;
+    let store = PlaybookStore::new(state.db.conn.clone());
+    let saved = store
+        .save_source(book.id, &doc.name, &source)
+        .await
+        .map_err(engine_err)?;
+    use sea_orm::EntityTrait;
+    let row = playbook::Entity::find_by_id(saved.id)
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", saved.id)))?;
+    summary(state, row).await
+}
+
+/// `playbook.file.set {playbook_id, input_name, path}`: copy the file in and
+/// add or replace that input (a new version).
+pub async fn playbook_file_set(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookFileSetParams>,
+) -> ZResult<PlaybookFileSetResult> {
+    use crate::automation::input_files::StoreError;
+    use crate::automation::playbook_format::Input;
+    require_enabled(&state.db.conn).await?;
+    let name = p.input_name.trim().to_string();
+    if name.is_empty() {
+        return Err(ZwiimError::invalid_input("Name the input"));
+    }
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let path = std::path::PathBuf::from(&p.path);
+    let stored = {
+        let store = input_store(&state);
+        tokio::task::spawn_blocking(move || store.put(&path))
+            .await
+            .map_err(engine_err)?
+    }
+    .map_err(|e| match e {
+        StoreError::TooLarge => ZwiimError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            crate::automation::ErrorCode::FileTooLarge.as_str(),
+            "The file is over 50 MB",
+        ),
+        StoreError::NotAFile => ZwiimError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            crate::automation::ErrorCode::FileNotFound.as_str(),
+            "That file is not on this computer",
+        ),
+        StoreError::Io(e) => engine_err(e),
+    })?;
+    let file = Input::File {
+        name: name.clone(),
+        path: None,
+        file: Some(stored.file.clone()),
+        sha256: Some(stored.sha256.clone()),
+    };
+    let playbook = save_inputs(&state, &book, |inputs| {
+        match inputs.iter_mut().find(|i| i.name() == name) {
+            Some(existing @ Input::File { .. }) => *existing = file,
+            Some(_) => {
+                return Err(ZwiimError::invalid_input(format!(
+                    "`{name}` is not a file input"
+                )))
+            }
+            None => inputs.push(file),
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookFileSetResult {
+        playbook,
+        file: StoredFileView {
+            input_name: name,
+            file: stored.file,
+            size: stored.size,
+            sha256: stored.sha256,
+        },
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookFileRemoveParams {
+    pub playbook_id: String,
+    pub input_name: String,
+}
+
+/// `playbook.file.remove {playbook_id, input_name}`: drop a file input no
+/// step uses (a new version). The stored copy stays for older versions.
+pub async fn playbook_file_remove(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookFileRemoveParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::playbook_format::Input;
+    require_enabled(&state.db.conn).await?;
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let doc = validated(&book.source)?;
+    if !steps_using(&doc, &p.input_name).is_empty() {
+        return Err(ZwiimError::new(
+            axum::http::StatusCode::CONFLICT,
+            crate::automation::ErrorCode::InputInUse.as_str(),
+            "A step still uses this file. Remove that step or replace the file.",
+        ));
+    }
+    let name = p.input_name.clone();
+    let playbook = save_inputs(&state, &book, |inputs| {
+        let before = inputs.len();
+        inputs.retain(|i| !(matches!(i, Input::File { .. }) && i.name() == name));
+        if inputs.len() == before {
+            return Err(ZwiimError::not_found(format!("file input {name}")));
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookSaveResult { playbook }))
+}
+
+// ── playbook.create_from_draft (recording design §2) ──────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybookFromDraftParams {
+    pub draft: crate::automation::recording_draft::PlaybookDraft,
+}
+
+/// `playbook.create_from_draft {draft}`: a new playbook from a reviewed
+/// recording draft, its files copied into the Host's store.
+pub async fn playbook_create_from_draft(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookFromDraftParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::input_files::StoreError;
+    use crate::automation::recording_draft::{draft_to_doc, DraftValue};
+    require_enabled(&state.db.conn).await?;
+    // Refuse a draft with no send before copying any file in.
+    if !p.draft.send_step.is_some_and(|at| at < p.draft.steps.len()) {
+        return Err(ZwiimError::invalid_input("Choose which step sends."));
+    }
+    let mut stored = std::collections::HashMap::new();
+    for step in &p.draft.steps {
+        let DraftValue::File { input, path } = &step.value else {
+            continue;
+        };
+        let Some(path) = path.as_deref().filter(|p| !p.trim().is_empty()) else {
+            return Err(ZwiimError::invalid_input(format!(
+                "Pick the file for {input}."
+            )));
+        };
+        let store = input_store(&state);
+        let path = std::path::PathBuf::from(path);
+        let file = tokio::task::spawn_blocking(move || store.put(&path))
+            .await
+            .map_err(engine_err)?
+            .map_err(|e| match e {
+                StoreError::TooLarge => ZwiimError::new(
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    crate::automation::ErrorCode::FileTooLarge.as_str(),
+                    format!("{input} is over 50 MB"),
+                ),
+                StoreError::NotAFile => ZwiimError::new(
+                    axum::http::StatusCode::NOT_FOUND,
+                    crate::automation::ErrorCode::FileNotFound.as_str(),
+                    format!("The file for {input} is not on this computer"),
+                ),
+                StoreError::Io(e) => engine_err(e),
+            })?;
+        stored.insert(input.clone(), file);
+    }
+    let doc = draft_to_doc(&p.draft, &stored).map_err(ZwiimError::invalid_input)?;
+    let source = serde_yaml::to_string(&doc).map_err(engine_err)?;
+    let doc = validated(&source)?;
+    let created = PlaybookStore::new(state.db.conn.clone())
+        .create(&doc.name, &source)
+        .await
+        .map_err(engine_err)?;
+    use sea_orm::EntityTrait;
+    let row = playbook::Entity::find_by_id(created.id)
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", created.id)))?;
+    Ok(Json(PlaybookSaveResult {
+        playbook: summary(&state, row).await?,
+    }))
+}
+
 // ── run.start ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

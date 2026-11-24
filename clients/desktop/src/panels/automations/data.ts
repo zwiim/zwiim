@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isClientError, type PlaybookSummary, type RunItemView, type RunStatus, type SiteSummary } from "@zwiim/sdk";
+import {
+  isClientError,
+  type PlaybookSummary,
+  type RunItemView,
+  type RunOutcome,
+  type RunStatus,
+  type SiteSummary,
+} from "@zwiim/sdk";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 
 /** A playbook, its latest run and that run's items. */
 export interface PlaybookRow {
   playbook: PlaybookSummary;
-  run: { run_id: string; status: RunStatus; error?: string | null } | null;
+  run: { run_id: string; status: RunStatus; outcome?: RunOutcome | null; error?: string | null } | null;
   items: RunItemView[];
   /** The run's items are in the store; false until they load (again after a new snapshot). */
   itemsLoaded: boolean;
@@ -25,6 +32,7 @@ interface LatestRun {
   run_id: string;
   playbook_id: string;
   status: RunStatus;
+  outcome?: RunOutcome | null;
   error?: string | null;
   created_at: string;
 }
@@ -164,7 +172,7 @@ export function useAutomations(): Automations {
         const r = latest.get(playbook.playbook_id);
         return {
           playbook,
-          run: r ? { run_id: r.run_id, status: r.status, error: r.error ?? null } : null,
+          run: r ? { run_id: r.run_id, status: r.status, outcome: r.outcome ?? null, error: r.error ?? null } : null,
           items: r ? Object.values(runItems[r.run_id] ?? {}) : [],
           itemsLoaded: !r || r.run_id in runItems,
         };

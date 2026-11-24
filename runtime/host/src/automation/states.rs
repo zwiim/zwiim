@@ -218,6 +218,8 @@ pub enum RunOutcome {
     Complete,
     /// Some items are `waiting_person` or `retries_exhausted`.
     NeedsPerson,
+    /// No item queued: every one found was done or skipped before.
+    NothingNew,
 }
 
 impl RunOutcome {
@@ -225,6 +227,7 @@ impl RunOutcome {
         match self {
             RunOutcome::Complete => "complete",
             RunOutcome::NeedsPerson => "needs_person",
+            RunOutcome::NothingNew => "nothing_new",
         }
     }
 }

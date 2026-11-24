@@ -50,6 +50,8 @@ pub enum ItemOutcome {
     Skip(ReasonCode),
     /// A question the playbook cannot answer (spec 7.3).
     Unanswerable(String),
+    /// Nothing was opened or sent: the person must fix the playbook first.
+    NeedsPerson(ReasonCode),
     /// The agent failed (reason code; further sub-codes arrive with 1b).
     Failed(ReasonCode),
 }
@@ -368,6 +370,18 @@ impl ItemRunner {
                     )
                     .await?;
                 Ok(SessionResult::WaitingPerson(question))
+            }
+            ItemOutcome::NeedsPerson(reason) => {
+                self.engine
+                    .transition_attempt(
+                        item_id,
+                        item.epoch,
+                        ItemStatus::Working,
+                        ItemStatus::WaitingPerson,
+                        Some(reason.as_str()),
+                    )
+                    .await?;
+                Ok(SessionResult::WaitingPerson(reason.as_str().to_string()))
             }
             ItemOutcome::Failed(reason) => {
                 // After outward_started the item never fails (6.4.1): send it

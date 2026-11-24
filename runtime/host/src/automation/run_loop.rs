@@ -24,6 +24,7 @@ use crate::automation::discovery::{item_id_rule, item_key, Discovery, LaneTabs};
 use crate::automation::engine::AutomationEngine;
 use crate::automation::engine::LedgerKey;
 use crate::automation::entities::{playbook_item, playbook_run};
+use crate::automation::input_files::InputFileStore;
 use crate::automation::item_runner::{
     DispatchResult, ItemOutcome, ItemRef, ItemRunner, RunError as StepError, SessionLimits,
     SessionResult,
@@ -65,6 +66,8 @@ pub struct RunLoop {
     tabs: Arc<dyn LaneTabs>,
     gate: ItemAgentGate,
     limits: SessionLimits,
+    /// Where stored file inputs live; `None` attaches none of them.
+    files: Option<InputFileStore>,
     /// Runs whose discovery is running now.
     discovering: Mutex<HashSet<i32>>,
     /// The tab of each item parked for the person's approval (spec 8.7).
@@ -96,9 +99,16 @@ impl RunLoop {
             tabs,
             gate: ItemAgentGate::new(DEFAULT_ITEM_AGENTS),
             limits: SessionLimits::default(),
+            files: None,
             discovering: Mutex::new(HashSet::new()),
             parked: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Attach stored file inputs from `files`.
+    pub fn with_files(mut self: Arc<Self>, files: InputFileStore) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("not shared yet").files = Some(files);
+        self
     }
 
     #[cfg(test)]
@@ -240,6 +250,20 @@ impl RunLoop {
         })
     }
 
+    /// The pinned playbook with the latest version's inputs: a file or fact
+    /// the person changed mid-run reaches the items still to work, while the
+    /// rest stays as the run pinned it (recording design §5). A latest text
+    /// that does not parse leaves the pinned inputs.
+    async fn item_doc(&self, run: &playbook_run::Model) -> Result<PlaybookDoc, String> {
+        let mut doc = self.doc(run).await?;
+        if let Ok(latest) = self.store.get(run.playbook_id).await {
+            if let Ok(latest) = crate::automation::validate_playbook(&latest.source) {
+                doc.inputs = latest.inputs;
+            }
+        }
+        Ok(doc)
+    }
+
     /// Discover the run's sources; then it runs, or ends with nothing to do.
     async fn discover(&self, run: playbook_run::Model) -> Result<(), DbError> {
         let doc = match self.doc(&run).await {
@@ -277,7 +301,8 @@ impl RunLoop {
                 Err(e) => Err(db_err(e)),
             }
         } else {
-            self.finish(&run, RunStatus::Discovering).await
+            self.finish(&run, RunStatus::Discovering, summary.known > 0)
+                .await
         }
     }
 
@@ -341,7 +366,7 @@ impl RunLoop {
         epoch: i32,
         _slot: ItemAgentSlot,
     ) -> Result<(), StepError> {
-        let doc = self.doc(&run).await.map_err(|e| {
+        let doc = self.item_doc(&run).await.map_err(|e| {
             StepError::Db(DbError::Validation(format!(
                 "playbook of run {}: {e}",
                 run.id
@@ -352,7 +377,19 @@ impl RunLoop {
             site: lane_site(&item).to_string(),
             account: item.account.clone(),
         };
-        let (outcome, tab) = match self.open_item_page(&lane, &item).await? {
+        let missing = doc.steps.iter().any(|step| {
+            crate::automation::playbook_format::step_inputs(step)
+                .iter()
+                .any(|name| !doc.inputs.iter().any(|i| i.name() == *name))
+        });
+        let page = match missing {
+            true => Err(ReasonCode::InputMissing),
+            false => self.open_item_page(&lane, &item).await?,
+        };
+        let (outcome, tab) = match page {
+            Err(ReasonCode::InputMissing) => {
+                (ItemOutcome::NeedsPerson(ReasonCode::InputMissing), None)
+            }
             Err(reason) => (ItemOutcome::Failed(reason), None),
             Ok(tab) => {
                 self.set_item_tab(item.id, Some(&tab)).await?;
@@ -378,7 +415,7 @@ impl RunLoop {
                         scope: Some(EngineScope {
                             lane,
                             tabs: vec![tab.clone()],
-                            files: input_files(&doc),
+                            files: input_files(&doc, self.files.as_ref()),
                         }),
                         limits: self.limits,
                     },
@@ -610,12 +647,20 @@ impl RunLoop {
             let run = run.clone();
             started.push(tokio::spawn(async move {
                 let sent = async {
-                    let doc = this.doc(&run).await.map_err(|e| {
+                    let invalid = |e: String| {
                         StepError::Db(DbError::Validation(format!(
                             "playbook of run {}: {e}",
                             run.id
                         )))
-                    })?;
+                    };
+                    // The page may hold a file from the pinned version or
+                    // from a later one (an item worked after a replace):
+                    // both name their input.
+                    let mut doc = this.item_doc(&run).await.map_err(invalid)?;
+                    let pinned = this.doc(&run).await.map_err(invalid)?;
+                    doc.inputs.extend(pinned.inputs.into_iter().filter(|i| {
+                        matches!(i, crate::automation::playbook_format::Input::File { .. })
+                    }));
                     let mut item_ref = this.item_ref(&run, &doc, &item, item.epoch).await?;
                     this.send(&doc, item.id, &mut item_ref, &tab, &declaration, true)
                         .await
@@ -879,11 +924,18 @@ impl RunLoop {
         if self.count(run.id, &IN_FLIGHT).await? > 0 {
             return Ok(());
         }
-        self.finish(run, RunStatus::Running).await
+        self.finish(run, RunStatus::Running, false).await
     }
 
     /// The run is `done`, with its outcome and totals (spec 6.5.5).
-    async fn finish(&self, run: &playbook_run::Model, from: RunStatus) -> Result<(), DbError> {
+    /// `known_only`: discovery queued nothing because every item it found
+    /// was done or skipped before.
+    async fn finish(
+        &self,
+        run: &playbook_run::Model,
+        from: RunStatus,
+        known_only: bool,
+    ) -> Result<(), DbError> {
         match self
             .engine
             .transition_run(run.id, from, RunStatus::Done, None)
@@ -899,12 +951,14 @@ impl RunLoop {
                 &[ItemStatus::WaitingPerson, ItemStatus::RetriesExhausted],
             )
             .await?;
+        let total = self.count(run.id, ItemStatus::all()).await?;
         let outcome = if waiting > 0 {
             RunOutcome::NeedsPerson
+        } else if total == 0 && known_only {
+            RunOutcome::NothingNew
         } else {
             RunOutcome::Complete
         };
-        let total = self.count(run.id, ItemStatus::all()).await?;
         let done = self.count(run.id, &[ItemStatus::Done]).await?;
         self.write_run(run.id, |m| {
             m.outcome = sea_orm::Set(Some(outcome.as_str().to_string()));
@@ -976,7 +1030,8 @@ pub fn spawn(state: Arc<crate::app_state::AppState>) {
             state: state.clone(),
             worlds: Default::default(),
         }),
-    );
+    )
+    .with_files(InputFileStore::new(&state.data_dir));
     let mut changes = state.playbook_changes.subscribe();
     tokio::spawn(async move {
         if let Err(e) = run_loop.recover().await {
@@ -1032,13 +1087,52 @@ fn agent_of(doc: &PlaybookDoc) -> AgentType {
         .unwrap_or(AgentType::ClaudeCode)
 }
 
-/// The playbook's file inputs, as (name, path), for `playbook_attach_file`.
-fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
+/// The playbook's file inputs, as (name, path), for `playbook_attach_file`:
+/// a stored copy from `store`, or an older playbook's own path.
+fn input_files(doc: &PlaybookDoc, store: Option<&InputFileStore>) -> Vec<(String, String)> {
     use crate::automation::playbook_format::Input;
     doc.inputs
         .iter()
         .filter_map(|input| match input {
-            Input::File { name, path } => Some((name.clone(), path.clone())),
+            Input::File {
+                name,
+                file: Some(file),
+                sha256: Some(sha256),
+                ..
+            } => store.map(|s| {
+                (
+                    name.clone(),
+                    s.path_of(sha256, file).to_string_lossy().into_owned(),
+                )
+            }),
+            Input::File {
+                name,
+                path: Some(path),
+                ..
+            } => Some((name.clone(), path.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The playbook's file inputs, as (name, the file's own name).
+fn input_file_names(doc: &PlaybookDoc) -> Vec<(String, String)> {
+    use crate::automation::playbook_format::Input;
+    doc.inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::File {
+                name,
+                file: Some(file),
+                ..
+            } => Some((name.clone(), file.clone())),
+            Input::File {
+                name,
+                path: Some(path),
+                ..
+            } => std::path::Path::new(path)
+                .file_name()
+                .map(|f| (name.clone(), f.to_string_lossy().into_owned())),
             _ => None,
         })
         .collect()
@@ -1047,13 +1141,9 @@ fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
 /// The scope with each attached file named as the declaration names it: by
 /// the playbook input whose file it is, not the file's own name.
 fn by_input_name(mut scope: Vec<ScopeControl>, doc: &PlaybookDoc) -> Vec<ScopeControl> {
-    let files = input_files(doc);
+    let files = input_file_names(doc);
     for control in scope.iter_mut().filter(|c| c.control == ControlKind::File) {
-        let input = files.iter().find(|(_, path)| {
-            std::path::Path::new(path)
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy() == control.value)
-        });
+        let input = files.iter().find(|(_, file)| *file == control.value);
         if let Some((name, _)) = input {
             control.value = name.clone();
         }
@@ -1107,6 +1197,7 @@ fn item_prompt(
         "You are working one item for the playbook \"{name}\".\n\
          Goal: {goal}\n\n\
          Rules:\n{rules}\n\n\
+         {guide}\
          What you know about the person:\n{inputs}\n\n\
          Notes about this site:\n{tips}\n\n\
          The item: {title}\n{url}\n\
@@ -1125,6 +1216,20 @@ fn item_prompt(
          help with later items on this site. Then end your turn.",
         name = doc.name,
         goal = doc.goal,
+        guide = if doc.steps.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "How the person did this once (a guide: the page may differ, so find \
+                 the field or button that means the same thing):\n{}\n\
+                 Never click the send yourself: declare it with playbook_declare_action.\n\n",
+                doc.steps
+                    .iter()
+                    .map(|s| format!("- {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        },
         rules = if rules.is_empty() {
             none()
         } else {
@@ -1309,6 +1414,256 @@ mod tests {
             calls: 2,
             result: Some(status),
         }
+    }
+
+    /// A stored file input is attached from the Host's copy, under its own
+    /// name (recording design §4).
+    #[tokio::test]
+    async fn an_item_attaches_the_stored_copy() {
+        let data = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let store = crate::automation::input_files::InputFileStore::new(data.path());
+        std::fs::write(src.path().join("resume.pdf"), b"cv").unwrap();
+        let stored = store.put(&src.path().join("resume.pdf")).unwrap();
+        let playbook = PLAYBOOK.replace(
+            "inputs:\n",
+            &format!(
+                "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+                stored.sha256
+            ),
+        );
+        let mut f = fixture_with(
+            &playbook,
+            vec![result(json!({ "status": "failed", "note": "x" }))],
+        )
+        .await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        drive(&f.run_loop).await;
+        let (_, _, scope) = item_prompts(&f.launcher).remove(0);
+        let path = store.path_of(&stored.sha256, "resume.pdf");
+        assert_eq!(
+            scope.unwrap().files,
+            vec![("Resume".to_string(), path.to_string_lossy().into_owned())]
+        );
+    }
+
+    /// A stored file input `Resume` with content `bytes`, as playbook text.
+    fn resume_input(store: &InputFileStore, bytes: &[u8]) -> String {
+        resume_named(store, "resume.pdf", bytes)
+    }
+
+    /// A stored file input `Resume`: the file `file` with content `bytes`.
+    fn resume_named(store: &InputFileStore, file: &str, bytes: &[u8]) -> String {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join(file), bytes).unwrap();
+        let stored = store.put(&src.path().join(file)).unwrap();
+        format!(
+            "inputs:\n  - type: file\n    name: Resume\n    file: {file}\n    sha256: {}\n",
+            stored.sha256
+        )
+    }
+
+    /// A file replaced under a new name before the items are worked: the
+    /// page shows the new name, and an approved send still matches what the
+    /// person approved (review finding, recording design §5).
+    #[tokio::test]
+    async fn a_send_approved_after_a_file_is_renamed_still_goes() {
+        use crate::automation::approvals::{self, ApprovalAnswer};
+        let data = tempfile::tempdir().unwrap();
+        let store = InputFileStore::new(data.path());
+        let first = PLAYBOOK.replace("inputs:\n", &resume_input(&store, b"old"));
+        let with_file = || {
+            result(json!({
+                "status": "declared", "kind": "submit_application", "summary": "Apply",
+                "fields": [{ "role": "button", "name": "Resume", "file": "Resume" }],
+                "target": { "role": "button", "name": "Submit" }
+            }))
+        };
+        let mut f = fixture_with(&first, vec![with_file(), with_file(), with_file()]).await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        save_again(
+            &f.db,
+            &PLAYBOOK.replace("inputs:\n", &resume_named(&store, "cv-2025.pdf", b"new")),
+        )
+        .await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: vec![ScopeControl {
+                target: crate::automation::Target::new("button", "Resume"),
+                control: ControlKind::File,
+                value: "cv-2025.pdf".into(),
+                hidden: false,
+                read_only: false,
+                disabled: false,
+                prefilled: false,
+            }],
+        });
+        f.tabs.facts.lock().unwrap().text = "Applied. Thanks!".into();
+        drive(&f.run_loop).await;
+        let pending = approvals::pending(&f.db).await.unwrap();
+        assert_eq!(pending.len(), 3, "{:?}", items(&f.db, f.run_id).await);
+        approvals::respond(&f.db, pending[0].id, ApprovalAnswer::Approve, &[])
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+        let statuses = items(&f.db, f.run_id).await;
+        assert_eq!(statuses[0], ("done".to_string(), None), "{statuses:?}");
+    }
+
+    /// The run's playbook saved again as `source`: a later version than the
+    /// one the run pinned.
+    async fn save_again(db: &DatabaseConnection, source: &str) {
+        let store = PlaybookStore::new(db.clone());
+        let pb = crate::automation::entities::playbook::Entity::find()
+            .one(db)
+            .await
+            .unwrap()
+            .unwrap();
+        store.save_source(pb.id, "Apply", source).await.unwrap();
+    }
+
+    /// Inputs changed after the run started reach the items still to work;
+    /// the rest of the playbook stays as the run pinned it (recording
+    /// design §5).
+    #[tokio::test]
+    async fn waiting_items_use_a_file_replaced_mid_run() {
+        let data = tempfile::tempdir().unwrap();
+        let store = InputFileStore::new(data.path());
+        let first = PLAYBOOK.replace("inputs:\n", &resume_input(&store, b"old"));
+        let failed = || result(json!({ "status": "failed", "note": "x" }));
+        let mut f = fixture_with(&first, vec![failed(), failed(), failed()]).await;
+        f.run_loop = f.run_loop.with_files(store.clone());
+        let second = PLAYBOOK
+            .replace("inputs:\n", &resume_input(&store, b"new"))
+            .replace("Skip roles that need relocation", "Skip roles in Mars");
+        save_again(&f.db, &second).await;
+        drive(&f.run_loop).await;
+
+        let new_sha = match &crate::automation::validate_playbook(&second)
+            .unwrap()
+            .inputs[0]
+        {
+            crate::automation::playbook_format::Input::File { sha256, .. } => {
+                sha256.clone().unwrap()
+            }
+            _ => unreachable!(),
+        };
+        let new_path = store
+            .path_of(&new_sha, "resume.pdf")
+            .to_string_lossy()
+            .into_owned();
+        let prompted = item_prompts(&f.launcher);
+        assert_eq!(prompted.len(), 3);
+        for (_, prompt, scope) in prompted {
+            assert_eq!(
+                scope.unwrap().files,
+                vec![("Resume".to_string(), new_path.clone())]
+            );
+            // Rules stay pinned.
+            assert!(
+                prompt.contains("Skip roles that need relocation"),
+                "{prompt}"
+            );
+            assert!(!prompt.contains("Mars"), "{prompt}");
+            // A fact the latest version has reaches the agent too.
+            assert!(prompt.contains("notice_period: 30 days"), "{prompt}");
+        }
+    }
+
+    /// A pinned step that uses an input the latest version dropped waits on
+    /// the person; it never reaches an agent that would guess.
+    #[tokio::test]
+    async fn a_removed_input_a_step_needs_waits_on_the_person() {
+        let with_step = PLAYBOOK.replace(
+            "rules:\n",
+            "steps:\n  - Fill \"Notice\" with input notice_period\nrules:\n",
+        );
+        let f = fixture_with(&with_step, vec![]).await;
+        let dropped = PLAYBOOK.replace(
+            "  - type: fact\n    name: notice_period\n    value: 30 days\n",
+            "",
+        );
+        assert_ne!(dropped, PLAYBOOK);
+        save_again(&f.db, &dropped).await;
+        drive(&f.run_loop).await;
+        assert!(item_prompts(&f.launcher).is_empty());
+        for (status, reason) in items(&f.db, f.run_id).await {
+            assert_eq!(status, "waiting_person");
+            assert_eq!(reason.as_deref(), Some("input_missing"));
+        }
+    }
+
+    /// A recorded playbook's steps reach the item agent as a guide it adapts
+    /// to the page, and the send stays declared (recording, spec 16.2).
+    #[tokio::test]
+    async fn the_item_prompt_carries_the_steps_as_a_guide() {
+        let with_steps = PLAYBOOK.replace(
+            "rules:\n",
+            "steps:\n  - Click \"Apply\"\n  - Fill \"Notice\" with input notice_period\nrules:\n",
+        );
+        let f = fixture_with(
+            &with_steps,
+            vec![result(json!({ "status": "failed", "note": "x" }))],
+        )
+        .await;
+        drive(&f.run_loop).await;
+        let (_, prompt, _) = item_prompts(&f.launcher).remove(0);
+        let guide = prompt.find("How the person did this once").expect("guide");
+        let apply = prompt.find("- Click \"Apply\"").expect("step 1");
+        let fill = prompt
+            .find("- Fill \"Notice\" with input notice_period")
+            .expect("step 2");
+        assert!(guide < apply && apply < fill, "{prompt}");
+        assert!(prompt.contains("Never click the send yourself"), "{prompt}");
+
+        let f = fixture(vec![result(json!({ "status": "failed", "note": "x" }))]).await;
+        drive(&f.run_loop).await;
+        let (_, prompt, _) = item_prompts(&f.launcher).remove(0);
+        assert!(!prompt.contains("How the person did this once"), "{prompt}");
+    }
+
+    /// Every listed item was done before: the run ends at once and says
+    /// there was nothing new, so Run again does not look broken.
+    #[tokio::test]
+    async fn a_run_with_every_item_done_before_ends_with_nothing_new() {
+        use sea_orm::{ActiveModelTrait, Set};
+        let f = fixture(vec![]).await;
+        let now = chrono::Utc::now();
+        for key in ["jobs.test/j/1", "jobs.test/j/2", "jobs.test/j/3"] {
+            crate::automation::entities::never_twice_ledger::ActiveModel {
+                site: Set("jobs.test".into()),
+                account: Set("main".into()),
+                action_kind: Set("submit_application".into()),
+                item_key: Set(key.into()),
+                state: Set("done".into()),
+                round_id: Set(None),
+                item_id: Set(None),
+                created_at: Set(now),
+                updated_at: Set(now),
+            }
+            .insert(&f.db)
+            .await
+            .unwrap();
+        }
+        drive(&f.run_loop).await;
+
+        let run = run(&f.db, f.run_id).await;
+        assert_eq!(run.status, "done");
+        assert_eq!(run.outcome.as_deref(), Some("nothing_new"));
+        assert_eq!(run.items_total, 0);
+    }
+
+    /// A list with nothing on the playbook's sites is not "nothing new":
+    /// nothing was done before.
+    #[tokio::test]
+    async fn a_run_with_no_item_on_its_sites_ends_complete() {
+        let off = PLAYBOOK.replace("https://jobs.test/j/", "https://other.test/j/");
+        let f = fixture_with(&off, vec![]).await;
+        drive(&f.run_loop).await;
+
+        let run = run(&f.db, f.run_id).await;
+        assert_eq!(run.status, "done");
+        assert_eq!(run.outcome.as_deref(), Some("complete"));
     }
 
     /// A run of three listed items: each item gets a session on its lane
@@ -1785,6 +2140,17 @@ mod tests {
         let scope = by_input_name(vec![file("Ada CV.pdf"), file("other.pdf")], &doc);
         assert_eq!(scope[0].value, "resume");
         assert_eq!(scope[1].value, "other.pdf");
+
+        let stored = crate::automation::validate_playbook(&PLAYBOOK.replace(
+            "inputs:\n",
+            &format!(
+                "inputs:\n  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {}\n",
+                "a".repeat(64)
+            ),
+        ))
+        .unwrap();
+        let scope = by_input_name(vec![file("resume.pdf")], &stored);
+        assert_eq!(scope[0].value, "Resume");
     }
 
     /// A declared button the Host cannot find on the page fails the item.

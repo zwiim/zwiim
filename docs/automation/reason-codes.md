@@ -23,6 +23,7 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `timeout` | A step or session timed out. | yes | unknown | Nothing; the item retries. |
 | `host_restarted` | The Host restarted mid-item. | yes | unknown | Nothing; the item restarts from its first step. |
 | `page_needs_person` | The site's page asked something only a person can answer. | no | unknown | Answer it in the playbook tab on the Mac, then Resume. |
+| `input_missing` | A step uses an input the playbook no longer has. | no | none | Add the input back in the playbook's Inputs, or remove the step, then Try again. |
 | `skipped_by_rule` | A playbook rule says this item is not one to work. | no | none | Nothing; edit the rule if it skipped one you want. |
 
 ## Protocol error codes
@@ -43,3 +44,6 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `site_risk_not_accepted` | A site of the playbook has no risk step yet; `details.sites` lists them. |
 | `no_open_question` | The item is not waiting on a question. |
 | `item_not_waiting` | The item is not waiting on the person. |
+| `input_in_use` | A step still uses this input. |
+| `file_too_large` | The file is over 50 MB. |
+| `file_not_found` | That file is not on this computer. |

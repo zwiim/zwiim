@@ -353,18 +353,25 @@ export function PairDialog({
 }
 
 /**
- * A folder path on a remote host: its native picker would browse this
- * computer instead.
+ * A folder (or file) path on a remote host: its native picker would browse
+ * this computer instead.
  */
-export function HostPathDialog({ onDone }: { onDone(path: string | null): void }) {
+export function HostPathDialog({
+  onDone,
+  kind = "folder",
+}: {
+  onDone(path: string | null): void;
+  kind?: "folder" | "file";
+}) {
   const [path, setPath] = useState("");
+  const noun = kind === "file" ? "file" : "folder";
   return (
-    <Modal label="Add a folder on the host" onClose={() => onDone(null)}>
-      <p className="text-muted-foreground">The folder's absolute path on the host's computer.</p>
+    <Modal label={`Add a ${noun} on the host`} onClose={() => onDone(null)}>
+      <p className="text-muted-foreground">The {noun}'s absolute path on the host's computer.</p>
       <input
         className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs"
-        aria-label="Folder path on the host"
-        placeholder="/Users/me/project"
+        aria-label={`${kind === "file" ? "File" : "Folder"} path on the host`}
+        placeholder={kind === "file" ? "/Users/me/Documents/resume.pdf" : "/Users/me/project"}
         autoFocus
         value={path}
         onChange={(e) => setPath(e.target.value)}

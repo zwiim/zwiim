@@ -36,6 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
+  PlaybookDraft,
   RunResolveChoice,
   SessionEvent,
   SessionOptions,
@@ -810,6 +811,35 @@ export class HostController {
     return this.client.request("playbook.save", { playbook_id, source });
   }
 
+  /** A new playbook from a reviewed recording draft. */
+  createPlaybookFromDraft(draft: PlaybookDraft): Promise<OpResult<"playbook.create_from_draft">> {
+    return this.client.request("playbook.create_from_draft", { draft });
+  }
+
+  /** The playbook's file and fact inputs. */
+  listPlaybookInputs(playbook_id: string): Promise<OpResult<"playbook.inputs">> {
+    return this.client.request("playbook.inputs", { playbook_id });
+  }
+
+  /** Add or change fact input `input_name`. */
+  setPlaybookFact(playbook_id: string, input_name: string, value: string): Promise<OpResult<"playbook.input.set_fact">> {
+    return this.client.request("playbook.input.set_fact", { playbook_id, input_name, value });
+  }
+
+  /** The text that shows a send worked; null for the agent to judge. */
+  setPlaybookCheck(playbook_id: string, text: string | null): Promise<OpResult<"playbook.check.set">> {
+    return this.client.request("playbook.check.set", { playbook_id, text });
+  }
+
+  /** Copy the file at `path` in as input `input_name` (added or replaced). */
+  setPlaybookFile(playbook_id: string, input_name: string, path: string): Promise<OpResult<"playbook.file.set">> {
+    return this.client.request("playbook.file.set", { playbook_id, input_name, path });
+  }
+
+  removePlaybookFile(playbook_id: string, input_name: string): Promise<OpResult<"playbook.file.remove">> {
+    return this.client.request("playbook.file.remove", { playbook_id, input_name });
+  }
+
   /** Start a run; its `run_id`. Progress arrives on the feed (`run.changed`). */
   async startRun(playbook_id: string): Promise<string> {
     const { run_id } = await this.client.request("run.start", { playbook_id });
@@ -907,6 +937,16 @@ export class HostController {
   /** Let the person point at an element of the tab's page; the outcome arrives in the browser state's `picks`. */
   async pickInBrowserTab(tab_id: string): Promise<void> {
     await this.client.request("browser.tab.pick", { tab_id });
+  }
+
+  /** Record what the person does in their tab `tab_id`; steps arrive in the browser state's `recordings`. */
+  async startRecording(tab_id: string): Promise<void> {
+    await this.client.request("browser.record.start", { tab_id });
+  }
+
+  /** End the tab's recording and get it back. */
+  stopRecording(tab_id: string): Promise<OpResult<"browser.record.stop">> {
+    return this.client.request("browser.record.stop", { tab_id });
   }
 
   /** Call the tab's element pick off. */

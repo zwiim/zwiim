@@ -10,6 +10,7 @@ import {
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { AutomationsView, resetAutomationsView } from "@/panels/automations/AutomationsView";
+import { RecordingProvider } from "@/panels/automations/recording";
 import { FakeTransport, tick } from "./fakes";
 
 afterEach(() => {
@@ -158,6 +159,20 @@ describe("Automations canvas", () => {
     controller.dispose();
   });
 
+  it("a run that found only items done before says nothing was new", async () => {
+    const t = transport("done");
+    t.handlers["run.list"] = () => ({
+      runs: [{ ...run("r1", "pb1", "done"), outcome: "nothing_new" }],
+      next_cursor: null,
+    });
+    t.handlers["run.items"] = () => ({ items: [], next_cursor: null });
+    const { controller } = await mount(t);
+    expect(section("pb1").textContent).toContain("Nothing new");
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(section("pb1").textContent).toContain("Nothing new: every item was done before");
+    controller.dispose();
+  });
+
   it("a site paused for sign-in says so and resumes", async () => {
     const t = transport();
     let paused = true;
@@ -194,6 +209,68 @@ describe("Automations canvas", () => {
     expect(t.calls.filter((x) => x.op === "settings.update").map((x) => x.params)).toEqual([
       { values: { "playbooks.enabled": true } },
     ]);
+    controller.dispose();
+  });
+
+  it("with no playbooks, offers to record one or write one in chat", async () => {
+    const t = new FakeTransport();
+    t.handlers["playbook.list"] = () => [];
+    t.handlers["run.list"] = () => ({ runs: [], next_cursor: null });
+    t.handlers["browser.tab.open"] = () => ({
+      tab_id: "mine1",
+      owner: { kind: "personal" },
+      url: "about:blank",
+      title: "",
+      position: 0,
+      loading: false,
+      discarded: false,
+      crashed: false,
+    });
+    t.handlers["browser.record.start"] = () => ({});
+    const client = new HostClient({ transport: t, random: () => 0.5 });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    let chat = 0;
+    let shown = 0;
+    render(
+      <HostProvider value={controller}>
+        <RecordingProvider canShowBrowser onShowBrowser={() => (shown += 1)} onReview={() => {}}>
+          <AutomationsView onChat={() => (chat += 1)} />
+        </RecordingProvider>
+      </HostProvider>,
+    );
+    await tick();
+    expect(screen.getByText("No playbooks yet. Do a task once and Zwiim saves it.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Write one in chat" }));
+    expect(chat).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Record a playbook" }));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.record.start")).toHaveLength(1);
+    expect(shown).toBe(1);
+    controller.dispose();
+  });
+
+  it("records another playbook from the header", async () => {
+    const t = transport();
+    const client = new HostClient({ transport: t, random: () => 0.5 });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    let asked = 0;
+    render(
+      <HostProvider value={controller}>
+        <RecordingProvider canShowBrowser={false} onShowBrowser={() => {}} onReview={() => {}}>
+          <AutomationsView />
+        </RecordingProvider>
+      </HostProvider>,
+    );
+    await tick();
+    fireEvent.click(within(screen.getByTestId("automations-header")).getByRole("button", { name: "Record" }));
+    await tick();
+    asked += 1;
+    expect(screen.getByRole("alert").textContent).toContain("Add a project folder first");
+    expect(asked).toBe(1);
     controller.dispose();
   });
 });

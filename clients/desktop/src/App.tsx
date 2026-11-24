@@ -67,6 +67,8 @@ import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { AutomationsRow } from "@/panels/automations/AutomationsRow";
 import { AutomationsView } from "@/panels/automations/AutomationsView";
+import { RecordingProvider, useRecording } from "@/panels/automations/recording";
+import { AUTOMATIONS_SHOWN } from "@/panels/automations/shown";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
@@ -283,11 +285,12 @@ export function Workbench({
   useTurnAlerts(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
+  const [askFile, setAskFile] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   /** What the middle shows: the workspace's sessions and files, or the Automations canvas. */
   const [pane, setPane] = useState<"workspace" | "automations">("workspace");
-  const automations = useHost((s) => hasCapability(s.connection.compat, "playbooks"));
+  const automations = useHost((s) => AUTOMATIONS_SHOWN && hasCapability(s.connection.compat, "playbooks"));
   // The browser widened over the chat (Expand): the chat narrows to a column
   // and the sidebar folds, until the person shrinks it again.
   const [browserWide, setBrowserWide] = useState(false);
@@ -570,10 +573,26 @@ export function Workbench({
           }}
         />
       )}
+      {askFile && (
+        <HostPathDialog
+          kind="file"
+          onDone={(path) => {
+            askFile(path);
+            setAskFile(null);
+          }}
+        />
+      )}
       {pane === "automations" && (
         <main className="flex min-w-0 flex-1 flex-col">
           <OfflineBanner />
-          <AutomationsView />
+          <AutomationsView
+            onChat={() => setPane("workspace")}
+            pickFile={() =>
+              !remote && bridge.pickFile
+                ? bridge.pickFile()
+                : new Promise<string | null>((resolve) => setAskFile(() => resolve))
+            }
+          />
         </main>
       )}
       {/* Hidden, not unmounted, behind the canvas: open files keep typing not yet saved. */}
@@ -706,7 +725,15 @@ export function Workbench({
   );
   return (
     <VoiceContext.Provider value={bridge.voice}>
-      <OpenSettingsContext.Provider value={setSettings}>{view}</OpenSettingsContext.Provider>
+      <OpenSettingsContext.Provider value={setSettings}>
+        <RecordingProvider
+          canShowBrowser={!!workspace && !readOnly}
+          onShowBrowser={() => setPane("workspace")}
+          onReview={() => setPane("automations")}
+        >
+          {view}
+        </RecordingProvider>
+      </OpenSettingsContext.Provider>
     </VoiceContext.Provider>
   );
 }
@@ -1014,6 +1041,14 @@ function WorkspacePanel({
   const workspaceId = workspace.workspace_id;
 
   useEffect(() => rememberPanel(layout), [layout]);
+
+  // A recording brings the browser forward, open.
+  const showBrowser = useRecording()?.showBrowser ?? 0;
+  useEffect(() => {
+    if (!showBrowser) return;
+    setTab("browser");
+    setLayout((l) => (l.collapsed ? { ...l, collapsed: false } : l));
+  }, [showBrowser]);
 
   useEffect(() => {
     setVisited((v) => (v.has(tab) ? v : new Set([...v, tab])));

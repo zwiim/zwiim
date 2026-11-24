@@ -1,4 +1,4 @@
-import type { RunItemView, RunStatus, SitePauseCause } from "@zwiim/sdk";
+import type { RunItemView, RunOutcome, RunStatus, SitePauseCause } from "@zwiim/sdk";
 
 /** The status dot an item or a playbook shows (design §4). */
 export type Dot = "idle" | "work" | "need" | "done" | "off" | "err";
@@ -56,7 +56,10 @@ export function runCounts(items: RunItemView[]): RunCounts {
 }
 
 /** The one line a collapsed playbook shows (design §3.3.2). */
-export function sectionLine(run: { status: RunStatus } | null, counts: RunCounts): { text: string; need: boolean } {
+export function sectionLine(
+  run: { status: RunStatus; outcome?: RunOutcome | null } | null,
+  counts: RunCounts,
+): { text: string; need: boolean } {
   if (counts.need > 0) return { text: `${counts.need} need you`, need: true };
   if (!run) return { text: "Not run yet", need: false };
   switch (run.status) {
@@ -70,6 +73,7 @@ export function sectionLine(run: { status: RunStatus } | null, counts: RunCounts
     case "failed":
       return { text: "Failed", need: false };
     case "done":
+      if (run.outcome === "nothing_new") return { text: "Nothing new", need: false };
       return { text: `${counts.sent} sent`, need: false };
   }
 }
@@ -103,6 +107,8 @@ export function needsYouText(code: string | null | undefined): string {
       return "The site wants to check that a person is there.";
     case "blocked_by_site":
       return "The site blocked it.";
+    case "input_missing":
+      return "A step uses an input the playbook no longer has. Add it back in Inputs, then Try again.";
     default:
       return "The page needs you.";
   }

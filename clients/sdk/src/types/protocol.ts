@@ -130,6 +130,12 @@ export type HostErrorCode =
   | "no_open_question"
   /** `run.resolve`: the item is not waiting on the person. */
   | "item_not_waiting"
+  /** `playbook.file.remove`: a step still uses the input (revision 45). */
+  | "input_in_use"
+  /** `playbook.file.set`: the file is over 50 MB. */
+  | "file_too_large"
+  /** `playbook.file.set`: the path is not a file on the Host's computer. */
+  | "file_not_found"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -497,6 +503,77 @@ export type BrowserAgentAction = {
  */
 export type BrowserPick = { label: string; text: string; url: string };
 
+/** What a recorded step did (revision 45). */
+export type RecordedStepAction = "click" | "fill" | "choose" | "file" | "protected" | "navigate";
+
+/** One thing the person did while the tab recorded. A protected field's value is never kept. */
+export interface RecordedStep {
+  action: RecordedStepAction;
+  role: string;
+  name: string;
+  value?: string;
+  url: string;
+  /** A file step's files, on the Host's computer. */
+  paths?: string[];
+}
+
+/** The kinds of outward action a playbook sends (spec 8.1.1). */
+export type PlaybookActionKind =
+  | "submit_application"
+  | "submit_form"
+  | "publish_post"
+  | "send_message"
+  | "comment"
+  | "follow"
+  | "delete"
+  | "pay"
+  | "change_account";
+
+/** Where a drafted playbook's items come from. */
+export type PlaybookDraftSource = { type: "search"; url: string } | { type: "list"; urls: string[] };
+
+/** What a drafted step does with a value. */
+export type PlaybookDraftValue =
+  | { kind: "none" }
+  /** The person's info: input `input`. */
+  | { kind: "my_info"; input: string; value: string }
+  /** The same text every time, kept in the step. */
+  | { kind: "fixed"; text: string }
+  /** A file input; `path` is the file to copy in (chosen while recording, or in review). */
+  | { kind: "file"; input: string; path: string | null }
+  /** A protected field: the agent asks the person each time. */
+  | { kind: "needs_you" };
+
+export interface PlaybookDraftStep {
+  action: RecordedStepAction;
+  /** The control's name, as the person sees it. */
+  target: string;
+  role: string;
+  url: string;
+  value: PlaybookDraftValue;
+}
+
+/** A playbook drafted from a recording, for the person to review (revision 45). */
+export interface PlaybookDraft {
+  name: string;
+  goal: string;
+  source: PlaybookDraftSource;
+  sites: string[];
+  steps: PlaybookDraftStep[];
+  /** The step that sends, by index; required to save. */
+  send_step: number | null;
+  send_kind: PlaybookActionKind;
+  /** Text the page shows once the send worked; without it the agent judges. */
+  check_text: string | null;
+}
+
+/** A tab's recording (`browser.record.stop`). */
+export interface Recording {
+  tab_id: string;
+  start_url: string;
+  steps: RecordedStep[];
+}
+
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
   | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
@@ -511,6 +588,14 @@ export type BrowserFrame =
   /** The agent's browser tools are using this tab: reading, capturing, loading or acting on it (revision 35). */
   | { type: "browser.agent.working"; tab_id: string }
   | { type: "browser.ui.menu"; menu: BrowserMenu }
+  /** A recording tab kept a step: how many it has, and the latest one's action and name (never a typed value). */
+  | {
+      type: "browser.tab.recorded";
+      tab_id: string;
+      owner: BrowserTabOwner;
+      count: number;
+      last: { action: RecordedStepAction; name: string };
+    }
   /** A pick ended: the element, or `null` when it was called off, the page went, or nobody picked. */
   | { type: "browser.tab.picked"; tab_id: string; owner: BrowserTabOwner; pick: BrowserPick | null }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
@@ -2094,6 +2179,44 @@ export interface AgentAuthStatus {
  * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
  * ...). Ids are opaque strings. Wall-clock fields are RFC 3339.
  */
+/** One fact input of a playbook (`playbook.inputs`): the person's info a step fills in. */
+export interface PlaybookFact {
+  input_name: string;
+  value: string;
+  /** The steps, by index, that use it. */
+  used_by_steps: number[];
+}
+
+/** The text that shows a playbook's send worked (`playbook.inputs`). */
+export interface PlaybookCheck {
+  /** Null: the agent judges from the page. */
+  text: string | null;
+  /** False when its checks are more than one text or agent check: change them in its text. */
+  editable: boolean;
+}
+
+/** One file input of a playbook (`playbook.inputs`). */
+export interface PlaybookFile {
+  input_name: string;
+  /** The Host's copy; `null` for an older input that names a `path`. */
+  file: string | null;
+  path: string | null;
+  size: number | null;
+  sha256: string | null;
+  /** When this copy first went into the playbook (RFC 3339). */
+  added_at: string | null;
+  /** The steps, by index, that use it. */
+  used_by_steps: number[];
+}
+
+/** The copy `playbook.file.set` stored. */
+export interface StoredPlaybookFile {
+  input_name: string;
+  file: string;
+  size: number;
+  sha256: string;
+}
+
 export interface PlaybookSummary {
   playbook_id: string;
   name: string;
@@ -2133,7 +2256,7 @@ export type RunPauseReason =
 export type RunTrigger = "mac" | "phone" | "schedule" | "agent";
 
 /** How a finished run ended (spec 6.5.5). */
-export type RunOutcome = "complete" | "needs_person";
+export type RunOutcome = "complete" | "needs_person" | "nothing_new";
 
 /** A control the agent declared, as the approval sheet shows it. */
 export interface PlaybookTarget {
@@ -2273,6 +2396,7 @@ export type ItemReasonCode =
   | "captcha"
   | "blocked_by_site"
   | "form_field_unanswerable"
+  | "input_missing"
   | "daily_cap_hit"
   | "approval_rejected"
   | "undeclared_outward_action"
@@ -2605,6 +2729,31 @@ export interface Operations {
   "playbook.create": [{ source: string }, { playbook: PlaybookSummary }];
   /** Replace the text: one new version. A running run keeps the one it pinned. */
   "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
+  /** The playbook's file inputs: stored copies and older `path:` ones (revision 45). */
+  "playbook.inputs": [{ playbook_id: string }, { files: PlaybookFile[]; facts: PlaybookFact[]; check: PlaybookCheck }];
+  /** Set the text that shows a send worked; null for the agent to judge. A new version. */
+  "playbook.check.set": [{ playbook_id: string; text: string | null }, { playbook: PlaybookSummary }];
+  /** Add or change a fact input: a new version. `invalid_input` for a file input's name. */
+  "playbook.input.set_fact": [
+    { playbook_id: string; input_name: string; value: string },
+    { playbook: PlaybookSummary },
+  ];
+  /**
+   * Copy a file on the Host's computer in as input `input_name`, adding or
+   * replacing it: a new version. `file_too_large` over 50 MB, `file_not_found`.
+   */
+  "playbook.file.set": [
+    { playbook_id: string; input_name: string; path: string },
+    { playbook: PlaybookSummary; file: StoredPlaybookFile },
+  ];
+  /** Drop a file input: a new version. `input_in_use` while a step names it. */
+  "playbook.file.remove": [{ playbook_id: string; input_name: string }, { playbook: PlaybookSummary }];
+  /**
+   * A new playbook from a reviewed recording draft; its files are copied in.
+   * `invalid_input` ("Choose which step sends.", "Pick the file for X."),
+   * `file_too_large`, `file_not_found` (revision 45).
+   */
+  "playbook.create_from_draft": [{ draft: PlaybookDraft }, { playbook: PlaybookSummary }];
   /**
    * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
    * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
@@ -2766,6 +2915,13 @@ export interface Operations {
   /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */
   "browser.tab.pick_cancel": [{ tab_id: string }, Record<string, never>];
   /**
+   * Record what the person does in a tab of their own (revision 45); each
+   * step arrives as `browser.tab.recorded`. `not_personal`, `already_recording`.
+   */
+  "browser.record.start": [{ tab_id: string }, Record<string, never>];
+  /** End the tab's recording and return it. `not_recording`. */
+  "browser.record.stop": [{ tab_id: string }, { recording: Recording; draft: PlaybookDraft }];
+  /**
    * Drop files on the page at `(x, y)` in its CSS pixels, as the person
    * dragging them there: workspace files by relative path, or files uploaded
    * with `attachments.upload` by id. A session's tab takes files from its
@@ -2888,6 +3044,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.tab.find",
   "browser.tab.print",
   "browser.tab.drop",
+  "browser.record.start",
+  "browser.record.stop",
   "browser.engine.reset",
   "browser.view.open",
   "browser.ui.answer",
@@ -2919,6 +3077,11 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "github.cancel_sign_in",
   "playbook.create",
   "playbook.save",
+  "playbook.file.set",
+  "playbook.file.remove",
+  "playbook.input.set_fact",
+  "playbook.check.set",
+  "playbook.create_from_draft",
   "run.start",
   "run.try",
   "run.pause",

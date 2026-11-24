@@ -2,7 +2,9 @@
 // world in each tab's top document, so page scripts can neither see nor
 // change it, and reports what the engine does not paint into the stream:
 // the page's context menu, the popup of a <select>, the picker of a date or
-// time input, and a new title. It also searches the page for find in page.
+// time input, and a new title. It also searches the page for find in page,
+// and, while the Host records the tab, reports what the person does as
+// steps (a value typed into a password or one-time-code field never).
 //
 // The Host waits on `next()`, which resolves with the messages since the
 // last call. Everything here is page data: the Host caps and checks it.
@@ -134,6 +136,103 @@
     }
   }).observe(document, { subtree: true, childList: true, characterData: true });
 
+  // Recording: each click, entry, choice and file, named the way a person
+  // would name the control. Listens in the capture phase and never stops or
+  // changes an event.
+  let recording = false;
+  const PROTECTED = new Set(["current-password", "new-password", "one-time-code"]);
+  // A field that was a password once stays one when "show password" makes it text.
+  const wasPassword = new WeakSet();
+  addEventListener(
+    "focusin",
+    (e) => {
+      if (e.target instanceof HTMLInputElement && e.target.type === "password") wasPassword.add(e.target);
+    },
+    true,
+  );
+  // Any autocomplete token naming a password, a one-time code or a card.
+  const secretAutocomplete = (el) =>
+    (el.getAttribute("autocomplete") || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .some((token) => PROTECTED.has(token) || token.startsWith("cc-"));
+  const TEXT_LIKE = new Set(["", "text", "email", "tel", "url", "search", "number", "date", "time", "datetime-local", "month", "week"]);
+  const squash = (s) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "");
+  const nameOf = (el) => {
+    const label = el.getAttribute("aria-label");
+    if (squash(label)) return squash(label);
+    const by = el.getAttribute("aria-labelledby");
+    if (by) {
+      const text = by
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((n) => n.textContent)
+        .join(" ");
+      if (squash(text)) return squash(text);
+    }
+    if (el.labels && el.labels.length) {
+      const text = [...el.labels].map((l) => l.textContent).join(" ");
+      if (squash(text)) return squash(text);
+    }
+    for (const attr of ["placeholder", "title", "alt"]) {
+      if (squash(el.getAttribute(attr))) return squash(el.getAttribute(attr));
+    }
+    if (el instanceof HTMLInputElement && ["button", "submit", "reset"].includes(el.type)) return squash(el.value);
+    return squash(el.innerText || el.textContent || el.getAttribute("name") || "");
+  };
+  const roleOf = (el) => {
+    const role = el.getAttribute("role");
+    if (role) return role;
+    if (el instanceof HTMLAnchorElement) return "link";
+    if (el instanceof HTMLSelectElement) return "combobox";
+    if (el instanceof HTMLTextAreaElement) return "textbox";
+    if (el instanceof HTMLInputElement) {
+      if (el.type === "password") return "password";
+      if (el.type === "checkbox" || el.type === "radio") return el.type;
+      if (TEXT_LIKE.has(el.type)) return "textbox";
+      return "button";
+    }
+    return el.tagName.toLowerCase() === "summary" ? "button" : el.tagName.toLowerCase();
+  };
+  const recordStep = (action, el, value) =>
+    post({
+      kind: "step",
+      step: { action, role: roleOf(el), name: cut(nameOf(el), 200) || "", value, url: location.href },
+    });
+  const CLICKABLE =
+    "a[href],button,input[type=button],input[type=submit],input[type=reset],input[type=image]," +
+    "[role=button],[role=link],[role=tab],[role=menuitem],[role=option],summary";
+  addEventListener(
+    "click",
+    (e) => {
+      if (!recording || !e.isTrusted) return;
+      const t = e.target instanceof Element ? e.target.closest(CLICKABLE) : null;
+      if (t) recordStep("click", t);
+    },
+    true,
+  );
+  addEventListener(
+    "change",
+    (e) => {
+      if (!recording) return;
+      const t = e.target;
+      if (t instanceof HTMLInputElement && t.type === "file") {
+        recordStep("file", t, cut([...(t.files || [])].map((f) => f.name).join(", "), 2000));
+      } else if (t instanceof HTMLInputElement && (t.type === "checkbox" || t.type === "radio")) {
+        recordStep("choose", t, t.checked ? "checked" : "unchecked");
+      } else if (t instanceof HTMLSelectElement) {
+        recordStep("choose", t, cut([...t.selectedOptions].map((o) => squash(o.label)).join(", "), 2000));
+      } else if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
+        const protectedField =
+          (t instanceof HTMLInputElement && (t.type === "password" || wasPassword.has(t))) || secretAutocomplete(t);
+        if (protectedField) recordStep("protected", t);
+        else recordStep("fill", t, cut(t.value, 2000));
+      }
+    },
+    true,
+  );
+
   // Find in page.
   let found = { query: "", ranges: [], current: -1 };
   let sheet = null;
@@ -177,6 +276,12 @@
   };
 
   globalThis.__zwiimUiHelper = {
+    // Turn recording on or off in this document.
+    record(on) {
+      recording = !!on;
+      return recording;
+    },
+
     next() {
       if (queue.length) return Promise.resolve(JSON.stringify(queue.splice(0)));
       return new Promise((resolve) => {

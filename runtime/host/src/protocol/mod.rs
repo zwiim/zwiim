@@ -166,6 +166,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         )
         .route("/browser.tab.preview", post(browser::tab_preview))
         .route("/browser.tab.pick_cancel", post(browser::tab_pick_cancel))
+        .route("/browser.record.start", post(browser::record_start))
+        .route("/browser.record.stop", post(browser::record_stop))
         .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))
         .route("/host.update.status", post(http::host_update_status))
@@ -265,6 +267,18 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/playbook.get", post(playbook::playbook_get))
         .route("/playbook.create", post(playbook::playbook_create))
         .route("/playbook.save", post(playbook::playbook_save))
+        .route("/playbook.inputs", post(playbook::playbook_inputs))
+        .route(
+            "/playbook.input.set_fact",
+            post(playbook::playbook_input_set_fact),
+        )
+        .route("/playbook.check.set", post(playbook::playbook_check_set))
+        .route("/playbook.file.set", post(playbook::playbook_file_set))
+        .route("/playbook.file.remove", post(playbook::playbook_file_remove))
+        .route(
+            "/playbook.create_from_draft",
+            post(playbook::playbook_create_from_draft),
+        )
         .route("/run.start", post(playbook::run_start))
         .route("/run.try", post(playbook::run_try))
         .route("/run.get", post(playbook::run_get))

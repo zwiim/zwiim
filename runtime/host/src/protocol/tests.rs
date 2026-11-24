@@ -132,6 +132,8 @@ const OPS: &[&str] = &[
     "browser.tab.print",
     "browser.tab.drop",
     "browser.tab.pick",
+    "browser.record.start",
+    "browser.record.stop",
     "browser.tab.pick_cancel",
     "browser.tab.reload_on_save",
     "browser.tab.preview",
@@ -152,6 +154,12 @@ const OPS: &[&str] = &[
     "playbook.get",
     "playbook.create",
     "playbook.save",
+    "playbook.inputs",
+    "playbook.input.set_fact",
+    "playbook.check.set",
+    "playbook.file.set",
+    "playbook.file.remove",
+    "playbook.create_from_draft",
     "run.start",
     "run.try",
     "run.get",
@@ -9428,4 +9436,428 @@ async fn playbooks_runs_items_and_approvals_have_public_ids() {
     // A row id is not an id a client can use.
     let (status, _) = h.call("run.get", json!({ "run_id": 1 })).await;
     assert!(status.is_client_error(), "{status}");
+}
+
+// ── playbook.file.* (recording design §4) ────────────────────────────────
+
+const FILE_PLAYBOOK: &str = "format: 1\nname: Apply\ngoal: Apply to jobs\n\
+    main_kind: submit_application\nsites:\n  - jobs.test\n\
+    sources:\n  - type: list\n    items:\n      - https://jobs.test/j/1\n\
+    inputs:\n  - type: fact\n    name: Email\n    value: me@example.com\n\
+    steps:\n  - Fill \"Email\" with input Email\n\
+    checks:\n  - kind: text_present\n    text: Sent\n";
+
+/// A playbook from `source`, with Playbooks on.
+async fn file_playbook(h: &Host, source: &str) -> String {
+    seed_playbook(h).await;
+    let (status, body) = h.call("playbook.create", json!({ "source": source })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["playbook"]["playbook_id"].as_str().unwrap().to_string()
+}
+
+fn a_file(dir: &std::path::Path, name: &str, bytes: &[u8]) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+async fn source_of(h: &Host, id: &str) -> crate::automation::PlaybookDoc {
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    crate::automation::validate_playbook(body["source"].as_str().unwrap()).unwrap()
+}
+
+fn stored(doc: &crate::automation::PlaybookDoc, name: &str) -> (Option<String>, Option<String>, Option<String>) {
+    doc.inputs
+        .iter()
+        .find_map(|i| match i {
+            crate::automation::playbook_format::Input::File { name: n, path, file, sha256 } if n == name => {
+                Some((path.clone(), file.clone(), sha256.clone()))
+            }
+            _ => None,
+        })
+        .expect("file input")
+}
+
+#[tokio::test]
+async fn setting_a_file_stores_it_and_saves_a_version() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let path = a_file(src.path(), "resume.pdf", b"v1");
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    assert_eq!(body["file"]["file"], "resume.pdf");
+    assert_eq!(body["file"]["size"], 2);
+    let sha = body["file"]["sha256"].as_str().unwrap().to_string();
+    let doc = source_of(&h, &id).await;
+    assert_eq!(stored(&doc, "Resume"), (None, Some("resume.pdf".into()), Some(sha.clone())));
+    // Everything else is as it was.
+    let before = crate::automation::validate_playbook(FILE_PLAYBOOK).unwrap();
+    assert_eq!(doc.steps, before.steps);
+    assert_eq!(doc.goal, before.goal);
+    assert_eq!(doc.inputs[0], before.inputs[0]);
+    // The Host keeps the bytes, so the original may go.
+    std::fs::remove_file(&path).unwrap();
+    let store = crate::automation::input_files::InputFileStore::new(&h.state.data_dir);
+    assert_eq!(std::fs::read(store.path_of(&sha, "resume.pdf")).unwrap(), b"v1");
+
+    let (status, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["files"][0]["input_name"], "Resume");
+    assert_eq!(body["files"][0]["file"], "resume.pdf");
+    assert_eq!(body["files"][0]["size"], 2);
+    assert!(body["files"][0]["added_at"].is_string());
+    assert_eq!(body["files"][0]["used_by_steps"], json!([]));
+}
+
+#[tokio::test]
+async fn replacing_a_file_changes_its_sha() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let set = |bytes: &'static [u8]| {
+        let path = a_file(src.path(), "resume.pdf", bytes);
+        let id = id.clone();
+        let h = &h;
+        async move {
+            let (status, body) = h
+                .call(
+                    "playbook.file.set",
+                    json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    };
+    let one = set(b"one").await;
+    let two = set(b"two").await;
+    assert_ne!(one["file"]["sha256"], two["file"]["sha256"]);
+    assert_eq!(two["playbook"]["version"], 3);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.inputs.len(), 2, "replaced, not added again");
+}
+
+#[tokio::test]
+async fn a_path_input_becomes_a_stored_file_on_set() {
+    let h = host(false).await;
+    let with_path = FILE_PLAYBOOK.replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/old/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_path).await;
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"][0]["path"], "~/old/resume.pdf");
+    assert!(body["files"][0]["sha256"].is_null());
+    let src = tempfile::tempdir().unwrap();
+    let path = a_file(src.path(), "cv.pdf", b"cv");
+    let (status, _) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Resume", "path": path }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (path, file, sha) = stored(&source_of(&h, &id).await, "Resume");
+    assert_eq!((path, file), (None, Some("cv.pdf".into())));
+    assert!(sha.is_some());
+}
+
+#[tokio::test]
+async fn a_file_a_step_uses_cannot_be_removed() {
+    let h = host(false).await;
+    let with_step = FILE_PLAYBOOK.replace(
+        "steps:\n",
+        "steps:\n  - Attach input Resume to \"CV\"\n",
+    ).replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_step).await;
+    let (status, body) = h
+        .call(
+            "playbook.file.remove",
+            json!({ "playbook_id": id, "input_name": "Resume" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "input_in_use");
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"][0]["used_by_steps"], json!([0]));
+}
+
+#[tokio::test]
+async fn an_unused_file_is_removed() {
+    let h = host(false).await;
+    let with_file = FILE_PLAYBOOK.replace(
+        "steps:",
+        "  - type: file\n    name: Resume\n    path: ~/resume.pdf\nsteps:",
+    );
+    let id = file_playbook(&h, &with_file).await;
+    let (status, body) = h
+        .call(
+            "playbook.file.remove",
+            json!({ "playbook_id": id, "input_name": "Resume" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.inputs.len(), 1);
+    let (_, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(body["files"], json!([]));
+}
+
+#[tokio::test]
+async fn a_file_over_the_limit_or_missing_is_refused() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let src = tempfile::tempdir().unwrap();
+    let big = src.path().join("big.zip");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(crate::automation::input_files::MAX_FILE_BYTES + 1)
+        .unwrap();
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Big", "path": big }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["error"]["code"], "file_too_large");
+    let (status, body) = h
+        .call(
+            "playbook.file.set",
+            json!({ "playbook_id": id, "input_name": "Gone", "path": src.path().join("gone.pdf") }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "file_not_found");
+    assert_eq!(source_of(&h, &id).await.inputs.len(), 1, "nothing saved");
+}
+
+// ── browser.record.* (recording design §1) ───────────────────────────────
+
+#[tokio::test]
+async fn a_tab_of_ones_own_records_and_stops() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let mine = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://jobs.example/search"}),
+        )
+        .await;
+    let tab_id = mine["tab_id"].as_str().unwrap().to_string();
+    h.ok("browser.record.start", json!({ "tab_id": tab_id })).await;
+    let (status, body) = h.call("browser.record.start", json!({ "tab_id": tab_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "already_recording");
+    let stopped = h.ok("browser.record.stop", json!({ "tab_id": tab_id })).await;
+    assert_eq!(stopped["recording"]["tab_id"], tab_id.as_str());
+    assert_eq!(stopped["recording"]["steps"], json!([]));
+    assert_eq!(stopped["draft"]["source"], json!({ "type": "list", "urls": ["https://jobs.example/search"] }));
+    assert!(stopped["draft"]["send_step"].is_null());
+    let (status, body) = h.call("browser.record.stop", json!({ "tab_id": tab_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "not_recording");
+}
+
+#[tokio::test]
+async fn a_session_tab_does_not_record() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}}),
+        )
+        .await;
+    let (status, body) = h
+        .call("browser.record.start", json!({ "tab_id": tab["tab_id"] }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "not_personal");
+}
+
+/// A reviewed draft: the job form the person recorded, the file chosen in
+/// review at `cv`.
+fn reviewed_draft(cv: &str) -> serde_json::Value {
+    json!({
+        "name": "Apply on jobs.test",
+        "goal": "Do what I did on jobs.test: Submit.",
+        "source": { "type": "list", "urls": ["https://jobs.test/j/1"] },
+        "sites": ["jobs.test"],
+        "steps": [
+            { "action": "fill", "target": "Email", "role": "textbox", "url": "https://jobs.test/j/1",
+              "value": { "kind": "my_info", "input": "Email", "value": "ada@example.com" } },
+            { "action": "file", "target": "CV", "role": "button", "url": "https://jobs.test/j/1",
+              "value": { "kind": "file", "input": "CV", "path": cv } },
+            { "action": "click", "target": "Submit", "role": "button", "url": "https://jobs.test/j/1",
+              "value": { "kind": "none" } }
+        ],
+        "send_step": 2,
+        "send_kind": "submit_application",
+        "check_text": "Application sent"
+    })
+}
+
+#[tokio::test]
+async fn a_draft_becomes_a_playbook_with_stored_files() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let src = tempfile::tempdir().unwrap();
+    let cv = a_file(src.path(), "cv.pdf", b"my cv");
+    let (status, body) = h
+        .call("playbook.create_from_draft", json!({ "draft": reviewed_draft(&cv) }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["name"], "Apply on jobs.test");
+    assert_eq!(body["playbook"]["version"], 1);
+    let id = body["playbook"]["playbook_id"].as_str().unwrap().to_string();
+    let doc = source_of(&h, &id).await;
+    assert_eq!(doc.steps[2], "Click \"Submit\" (the send)");
+    let (path, file, sha) = stored(&doc, "CV");
+    assert_eq!((path, file.as_deref()), (None, Some("cv.pdf")));
+    std::fs::remove_file(&cv).unwrap();
+    let store = crate::automation::input_files::InputFileStore::new(&h.state.data_dir);
+    assert_eq!(std::fs::read(store.path_of(&sha.unwrap(), "cv.pdf")).unwrap(), b"my cv");
+}
+
+#[tokio::test]
+async fn a_draft_without_a_send_or_a_file_is_refused() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let src = tempfile::tempdir().unwrap();
+    let mut draft = reviewed_draft(&a_file(src.path(), "cv.pdf", b"cv"));
+    draft["send_step"] = json!(null);
+    let (status, body) = h.call("playbook.create_from_draft", json!({ "draft": draft })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(body["error"]["message"], "Choose which step sends.");
+    let mut draft = reviewed_draft("");
+    draft["steps"][1]["value"]["path"] = json!(null);
+    let (status, body) = h.call("playbook.create_from_draft", json!({ "draft": draft })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["message"], "Pick the file for CV.");
+    let (_, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "nothing created");
+}
+
+/// The text that shows a send worked is listed with the inputs and can be
+/// changed or cleared (the agent then judges); checks written by hand that
+/// are more than that one line are left to the playbook text.
+#[tokio::test]
+async fn a_playbooks_success_check_is_listed_and_set() {
+    use crate::automation::playbook_format::CheckSpec;
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": "Sent", "editable": true }));
+
+    let (status, body) = h
+        .call(
+            "playbook.check.set",
+            json!({ "playbook_id": id, "text": "  Order placed " }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    assert_eq!(
+        source_of(&h, &id).await.checks,
+        vec![CheckSpec::TextPresent {
+            text: "Order placed".into()
+        }]
+    );
+
+    h.ok(
+        "playbook.check.set",
+        json!({ "playbook_id": id, "text": null }),
+    )
+    .await;
+    assert!(matches!(
+        &source_of(&h, &id).await.checks[..],
+        [CheckSpec::AgentJudged { .. }]
+    ));
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": null, "editable": true }));
+
+    let two = FILE_PLAYBOOK.replace(
+        "checks:\n  - kind: text_present\n    text: Sent\n",
+        "checks:\n  - kind: text_present\n    text: Sent\n  - kind: url_matches\n    pattern: /done\n",
+    );
+    let other = file_playbook(&h, &two.replace("name: Apply", "name: Apply two")).await;
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": other }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": "Sent", "editable": false }));
+    let (status, body) = h
+        .call(
+            "playbook.check.set",
+            json!({ "playbook_id": other, "text": "x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn a_playbooks_facts_are_listed_and_set() {
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let (status, body) = h.call("playbook.inputs", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["facts"],
+        json!([{ "input_name": "Email", "value": "me@example.com", "used_by_steps": [0] }])
+    );
+    let (status, body) = h
+        .call(
+            "playbook.input.set_fact",
+            json!({ "playbook_id": id, "input_name": "Email", "value": "new@example.com" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    let doc = source_of(&h, &id).await;
+    assert_eq!(
+        doc.inputs,
+        vec![crate::automation::playbook_format::Input::Fact {
+            name: "Email".into(),
+            value: "new@example.com".into()
+        }]
+    );
+    // A new fact is added; a file input is not a fact.
+    h.ok(
+        "playbook.input.set_fact",
+        json!({ "playbook_id": id, "input_name": "Phone", "value": "123" }),
+    )
+    .await;
+    assert_eq!(source_of(&h, &id).await.inputs.len(), 2);
+    let src = tempfile::tempdir().unwrap();
+    let cv = a_file(src.path(), "cv.pdf", b"cv");
+    h.ok(
+        "playbook.file.set",
+        json!({ "playbook_id": id, "input_name": "CV", "path": cv }),
+    )
+    .await;
+    let (status, body) = h
+        .call(
+            "playbook.input.set_fact",
+            json!({ "playbook_id": id, "input_name": "CV", "value": "x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

@@ -554,7 +554,28 @@ use serde::{Deserialize, Serialize};
 /// for an item nothing went out for is `invalid_input`; an item not waiting is
 /// `item_not_waiting`. Items (`run.items`, `run.item_changed`) carry
 /// `may_have_sent`. Older clients ignore the field and never call it.
-pub const PROTOCOL_REVISION: u32 = 44;
+///
+/// 45 (playbook recording): a file input may be a copy the Host keeps
+/// (`file` and `sha256`) instead of a `path`. `playbook.inputs {playbook_id}`
+/// lists a playbook's `files`, `facts` and `check {text, editable}`;
+/// `playbook.check.set {playbook_id, text}` sets the text that shows a send
+/// worked, or none for the agent to judge; `playbook.input.set_fact
+/// {playbook_id, input_name, value}` adds or changes a fact; `playbook.file.set {playbook_id,
+/// input_name, path}` copies a file in (at most 50 MB, `file_too_large`;
+/// `file_not_found`) and adds or replaces that input; `playbook.file.remove
+/// {playbook_id, input_name}` drops it unless a step uses it
+/// (`input_in_use`). Each change is a new playbook version. Playbooks may
+/// carry `steps:`. `browser.record.start {tab_id}` records what the person
+/// does in a tab of their own (`not_personal` otherwise, `already_recording`),
+/// one `browser.tab.recorded {tab_id, owner, count, last: {action, name}}` per
+/// step; `browser.record.stop {tab_id}` returns `{recording: {tab_id,
+/// start_url, steps}, draft}` (`not_recording`), `draft` a playbook drafted from
+/// it; `playbook.create_from_draft {draft}` saves a reviewed draft as a new
+/// playbook, its files copied in (`invalid_input` without a send step or a
+/// file). A typed value never reaches an
+/// event, and one typed into a protected field never reaches a recording.
+/// Older clients never call the new operations.
+pub const PROTOCOL_REVISION: u32 = 45;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -841,7 +862,12 @@ mod tests {
 
     #[test]
     fn settling_an_item_waiting_on_the_person_is_revision_44() {
-        assert_eq!(PROTOCOL_REVISION, 44);
+        assert!(PROTOCOL_REVISION >= 44);
+    }
+
+    #[test]
+    fn playbook_files_are_revision_45() {
+        assert_eq!(PROTOCOL_REVISION, 45);
     }
 
     #[test]

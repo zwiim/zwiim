@@ -33,6 +33,10 @@ pub struct PlaybookDoc {
     pub inputs: Vec<Input>,
     #[serde(default)]
     pub rules: Vec<String>,
+    /// How the person did one item, as a guide the item agent adapts to the
+    /// page (recording, spec 16.2). Inputs are named `input <name>`.
+    #[serde(default)]
+    pub steps: Vec<String>,
     /// Approval rules per kind; a kind absent is ask.
     #[serde(default)]
     pub approval: Vec<ApprovalEntry>,
@@ -67,12 +71,33 @@ pub enum Source {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
-    /// A file the Host attaches (e.g. the resume).
-    File { name: String, path: String },
+    /// A file the Host attaches (e.g. the resume): a copy the Host keeps
+    /// (`file` and its `sha256`), or, in older playbooks, a `path` on this
+    /// computer.
+    File {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
     /// A fact known about the person (a profile answer).
     Fact { name: String, value: String },
     /// A keychain secret, referenced by handle.
     Secret { name: String, handle: String },
+}
+
+impl Input {
+    /// The name steps and declarations use for it.
+    pub fn name(&self) -> &str {
+        match self {
+            Input::File { name, .. } | Input::Fact { name, .. } | Input::Secret { name, .. } => {
+                name
+            }
+        }
+    }
 }
 
 /// One approval rule (spec 8.1.2).
@@ -235,6 +260,47 @@ fn yaml_error(e: &serde_yaml::Error, source: &str) -> ValidationError {
     }
 }
 
+/// The input names a step uses: each `input <name>` outside quoted text,
+/// the name quoted or running to ` to `, ` into `, ` in ` or the end.
+pub fn step_inputs(step: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut at = 0;
+    while at < step.len() {
+        let rest = &step[at..];
+        // Quoted text (a field's name, fixed text) is never a reference.
+        if let Some(quoted) = rest.strip_prefix('"') {
+            at += 1 + quoted.find('"').map_or(quoted.len(), |end| end + 1);
+            continue;
+        }
+        let starts_word = at == 0 || step[..at].ends_with(' ');
+        let Some(after) = rest.strip_prefix("input ").filter(|_| starts_word) else {
+            at += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        let after_at = at + "input ".len();
+        let (name, used) = match after.strip_prefix('"') {
+            Some(quoted) => match quoted.find('"') {
+                Some(end) => (&quoted[..end], end + 2),
+                None => (quoted, after.len()),
+            },
+            None => {
+                let end = [" to ", " into ", " in "]
+                    .iter()
+                    .filter_map(|w| after.find(w))
+                    .min()
+                    .unwrap_or(after.len());
+                (&after[..end], end)
+            }
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            names.push(name);
+        }
+        at = after_at + used;
+    }
+    names
+}
+
 /// The 1-based line a top-level `key:` sits on, for semantic errors.
 fn find_line(source: &str, key: &str) -> Option<usize> {
     let needle = format!("{key}:");
@@ -293,6 +359,38 @@ fn check_doc(doc: &PlaybookDoc, source: &str, errors: &mut Vec<ValidationError>)
             });
         }
     }
+    // A file input is a stored copy or a path, never both or neither.
+    for input in &doc.inputs {
+        if let Input::File {
+            name,
+            path,
+            file,
+            sha256,
+        } = input
+        {
+            let problem = match (path, file, sha256) {
+                (Some(_), None, None) => None,
+                (None, Some(f), Some(h))
+                    if !f.trim().is_empty() && crate::automation::input_files::is_sha256(h) =>
+                {
+                    None
+                }
+                (None, Some(_), Some(_)) => {
+                    Some("a stored file needs its `sha256`, 64 hex characters")
+                }
+                (None, None, None) => Some("a file input needs a file"),
+                _ => Some("a file input is either a stored `file` with its `sha256`, or a `path`"),
+            };
+            if let Some(problem) = problem {
+                errors.push(ValidationError {
+                    line: line_of("inputs"),
+                    field: format!("inputs.{name}"),
+                    problem: problem.into(),
+                    fix: "pick the file again in the playbook's Inputs".into(),
+                });
+            }
+        }
+    }
     // A secret input must give a handle, never a value (spec 10.11.1).
     for input in &doc.inputs {
         if let Input::Secret { name, handle } = input {
@@ -305,6 +403,49 @@ fn check_doc(doc: &PlaybookDoc, source: &str, errors: &mut Vec<ValidationError>)
                         .into(),
                 });
             }
+        }
+    }
+    // Each input has its own name: steps and declarations name them.
+    let mut seen: Vec<&str> = Vec::new();
+    for input in &doc.inputs {
+        if seen.contains(&input.name()) {
+            errors.push(ValidationError {
+                line: line_of("inputs"),
+                field: format!("inputs.{}", input.name()),
+                problem: format!("two inputs are named `{}`", input.name()),
+                fix: "give each input its own name".into(),
+            });
+        }
+        seen.push(input.name());
+    }
+    // A step may only use an input the playbook has.
+    let known: Vec<&str> = doc.inputs.iter().map(Input::name).collect();
+    let steps_from = line_of("steps");
+    for step in &doc.steps {
+        for name in step_inputs(step) {
+            if known.contains(&name) {
+                continue;
+            }
+            let line = source
+                .lines()
+                .enumerate()
+                .skip(steps_from)
+                .find(|(_, l)| l.contains(step.as_str()))
+                .map(|(i, _)| i + 1)
+                .unwrap_or(steps_from);
+            errors.push(ValidationError {
+                line,
+                field: "steps".into(),
+                problem: format!("the step uses input `{name}`, which the playbook does not have"),
+                fix: if known.is_empty() {
+                    format!("add `{name}` under `inputs:`")
+                } else {
+                    format!(
+                        "add `{name}` under `inputs:` or use one of: {}",
+                        known.join(", ")
+                    )
+                },
+            });
         }
     }
     // Caps can only lower (spec 10.1.4).
@@ -567,5 +708,169 @@ mod review_checks {
             .unwrap_err()
             .iter()
             .any(|e| e.field == "inputs.password"));
+    }
+}
+
+#[cfg(test)]
+mod steps {
+    use super::*;
+
+    const WITH_STEPS: &str = r#"format: 1
+name: Apply
+goal: Apply to each job
+main_kind: submit_application
+sources:
+  - type: list
+    items: ["https://jobs.example/1"]
+inputs:
+  - type: fact
+    name: Email
+    value: me@example.com
+steps:
+  - Click "Apply"
+  - Fill "Email" with input Email
+checks:
+  - kind: text_present
+    text: Application sent
+"#;
+
+    #[test]
+    fn steps_are_optional_and_kept_in_order() {
+        let doc = validate(WITH_STEPS).expect("valid");
+        assert_eq!(
+            doc.steps,
+            vec![
+                "Click \"Apply\"".to_string(),
+                "Fill \"Email\" with input Email".to_string()
+            ]
+        );
+        let without = WITH_STEPS.replace(
+            "steps:\n  - Click \"Apply\"\n  - Fill \"Email\" with input Email\n",
+            "",
+        );
+        assert!(validate(&without).expect("valid").steps.is_empty());
+    }
+
+    #[test]
+    fn a_step_naming_an_unknown_input_is_line_anchored() {
+        let text = WITH_STEPS.replace(
+            "  - Fill \"Email\" with input Email\n",
+            "  - Fill \"Email\" with input Email\n  - Attach input Resume to \"CV\"\n",
+        );
+        let errs = validate(&text).unwrap_err();
+        let err = errs
+            .iter()
+            .find(|e| e.field == "steps")
+            .expect("steps error");
+        let line = text
+            .lines()
+            .position(|l| l.contains("Attach input Resume"))
+            .unwrap()
+            + 1;
+        assert_eq!(err.line, line);
+        assert!(err.problem.contains("Resume"), "{}", err.problem);
+        assert!(err.fix.contains("Email"), "{}", err.fix);
+    }
+
+    #[test]
+    fn step_inputs_reads_plain_and_quoted_names() {
+        assert_eq!(
+            step_inputs("Fill \"Full name\" with input \"Full name\""),
+            vec!["Full name"]
+        );
+        assert_eq!(step_inputs("Attach input Resume to \"CV\""), vec!["Resume"]);
+        assert_eq!(
+            step_inputs("Fill \"Email\" with input Email"),
+            vec!["Email"]
+        );
+        assert!(step_inputs("Click \"Apply\"").is_empty());
+    }
+
+    #[test]
+    fn quoted_text_is_never_an_input_name() {
+        assert!(step_inputs("Click \"Your input here\"").is_empty());
+        assert!(step_inputs("Type \"I'd like to input data\" into \"Notes\"").is_empty());
+        assert_eq!(
+            step_inputs("Fill \"Say input here\" with input \"Say input here\""),
+            vec!["Say input here"]
+        );
+    }
+
+    #[test]
+    fn two_inputs_with_one_name_are_refused() {
+        let text = WITH_STEPS.replace(
+            "steps:",
+            "  - type: fact\n    name: Email\n    value: other@example.com\nsteps:",
+        );
+        let errs = validate(&text).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "inputs.Email"), "{errs:?}");
+    }
+}
+
+#[cfg(test)]
+mod stored_files {
+    use super::*;
+
+    const SHA: &str = "9f3a000000000000000000000000000000000000000000000000000000000001";
+
+    fn with_input(input: &str) -> String {
+        format!(
+            "format: 1\nname: Apply\ngoal: Apply\nmain_kind: submit_application\n\
+             sources:\n  - type: list\n    items: [\"https://jobs.example/1\"]\n\
+             inputs:\n{input}\
+             checks:\n  - kind: text_present\n    text: Sent\n"
+        )
+    }
+
+    #[test]
+    fn a_stored_file_input_validates() {
+        let doc = validate(&with_input(&format!(
+            "  - type: file\n    name: Resume\n    file: resume.pdf\n    sha256: {SHA}\n"
+        )))
+        .expect("valid");
+        assert_eq!(
+            doc.inputs,
+            vec![Input::File {
+                name: "Resume".into(),
+                path: None,
+                file: Some("resume.pdf".into()),
+                sha256: Some(SHA.into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_old_path_form_still_validates() {
+        let doc = validate(&with_input(
+            "  - type: file\n    name: Resume\n    path: ~/resume.pdf\n",
+        ))
+        .expect("valid");
+        assert!(
+            matches!(&doc.inputs[0], Input::File { path: Some(p), file: None, .. } if p == "~/resume.pdf")
+        );
+    }
+
+    #[test]
+    fn a_file_input_needs_a_path_or_a_stored_file() {
+        for input in [
+            "  - type: file\n    name: Resume\n".to_string(),
+            format!("  - type: file\n    name: Resume\n    path: ~/r.pdf\n    file: r.pdf\n    sha256: {SHA}\n"),
+            "  - type: file\n    name: Resume\n    file: r.pdf\n".to_string(),
+        ] {
+            let errs = validate(&with_input(&input)).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.field == "inputs.Resume"),
+                "{input:?}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_file_needs_a_hex_sha256() {
+        let errs = validate(&with_input(
+            "  - type: file\n    name: Resume\n    file: r.pdf\n    sha256: not-a-hash\n",
+        ))
+        .unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "inputs.Resume"), "{errs:?}");
     }
 }
