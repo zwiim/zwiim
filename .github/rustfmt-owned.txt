@@ -128,3 +128,5 @@ runtime/host/src/connectors/mcp/mod.rs
 runtime/host/src/connectors/mcp/convert.rs
 runtime/host/src/connectors/mcp/http_client.rs
 runtime/host/src/connectors/mcp/tests.rs
+runtime/host/src/connectors/mcp/stdio.rs
+runtime/host/src/connectors/mcp/stdio/tests.rs

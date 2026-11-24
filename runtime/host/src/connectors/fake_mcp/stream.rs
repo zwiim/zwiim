@@ -21,6 +21,11 @@ impl StreamServer {
     pub fn close(&self) {
         self.task.abort();
     }
+
+    /// Whether the stream ended, from either side.
+    pub fn is_closed(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 impl Drop for StreamServer {

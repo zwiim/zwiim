@@ -6,6 +6,8 @@
 
 mod convert;
 mod http_client;
+#[cfg(any(test, feature = "test-utils"))]
+mod stdio;
 
 use std::sync::Arc;
 
