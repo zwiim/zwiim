@@ -120,3 +120,4 @@ runtime/power-helper/src/server.rs
 runtime/host/src/connectors/mod.rs
 runtime/host/src/connectors/fake_mcp/mod.rs
 runtime/host/src/connectors/fake_mcp/stream.rs
+runtime/host/src/connectors/fake_mcp/http.rs

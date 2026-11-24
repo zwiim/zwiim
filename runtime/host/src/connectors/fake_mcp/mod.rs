@@ -18,6 +18,7 @@
 //! a 2026-aware SDK but limited to one legacy version, which some clients fail
 //! to fall back from.
 
+mod http;
 mod stream;
 
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
+pub use http::HttpServer;
 pub use stream::StreamServer;
 
 /// The 2026-07-28 revision: no `initialize`, no `ping`, per-request metadata.
@@ -174,6 +176,16 @@ impl FakeMcp {
     /// The method of everything received so far, in order.
     pub fn received_methods(&self) -> Vec<String> {
         self.received().into_iter().map(|r| r.method).collect()
+    }
+
+    /// Records a transport-level event (an HTTP method with no JSON-RPC body).
+    pub(crate) fn record(&self, method: &str, headers: Vec<(String, String)>) {
+        self.state.received.lock().unwrap().push(Received {
+            method: method.to_owned(),
+            id: None,
+            params: Value::Null,
+            headers,
+        });
     }
 
     pub(crate) fn tool_changes(&self) -> broadcast::Receiver<()> {
