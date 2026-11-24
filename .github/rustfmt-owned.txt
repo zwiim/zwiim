@@ -117,3 +117,6 @@ runtime/power-helper/src/core.rs
 runtime/power-helper/src/main.rs
 runtime/power-helper/src/probe.rs
 runtime/power-helper/src/server.rs
+runtime/host/src/connectors/mod.rs
+runtime/host/src/connectors/fake_mcp/mod.rs
+runtime/host/src/connectors/fake_mcp/stream.rs
