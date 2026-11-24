@@ -2187,6 +2187,14 @@ export interface PlaybookFact {
   used_by_steps: number[];
 }
 
+/** The text that shows a playbook's send worked (`playbook.inputs`). */
+export interface PlaybookCheck {
+  /** Null: the agent judges from the page. */
+  text: string | null;
+  /** False when its checks are more than one text or agent check: change them in its text. */
+  editable: boolean;
+}
+
 /** One file input of a playbook (`playbook.inputs`). */
 export interface PlaybookFile {
   input_name: string;
@@ -2722,7 +2730,9 @@ export interface Operations {
   /** Replace the text: one new version. A running run keeps the one it pinned. */
   "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
   /** The playbook's file inputs: stored copies and older `path:` ones (revision 45). */
-  "playbook.inputs": [{ playbook_id: string }, { files: PlaybookFile[]; facts: PlaybookFact[] }];
+  "playbook.inputs": [{ playbook_id: string }, { files: PlaybookFile[]; facts: PlaybookFact[]; check: PlaybookCheck }];
+  /** Set the text that shows a send worked; null for the agent to judge. A new version. */
+  "playbook.check.set": [{ playbook_id: string; text: string | null }, { playbook: PlaybookSummary }];
   /** Add or change a fact input: a new version. `invalid_input` for a file input's name. */
   "playbook.input.set_fact": [
     { playbook_id: string; input_name: string; value: string },
@@ -3070,6 +3080,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "playbook.file.set",
   "playbook.file.remove",
   "playbook.input.set_fact",
+  "playbook.check.set",
   "playbook.create_from_draft",
   "run.start",
   "run.try",

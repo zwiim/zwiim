@@ -80,6 +80,16 @@ describe("playbook and run methods", () => {
       options: { mutating: true },
     });
 
+    t.transport.handlers["playbook.check.set"] = () => ({ playbook: { playbook_id: "pb1" } });
+    await t.controller.setPlaybookCheck("pb1", "Order placed");
+    expect(sent()).toMatchObject({
+      op: "playbook.check.set",
+      params: { playbook_id: "pb1", text: "Order placed" },
+      options: { mutating: true },
+    });
+    await t.controller.setPlaybookCheck("pb1", null);
+    expect(sent()).toMatchObject({ op: "playbook.check.set", params: { playbook_id: "pb1", text: null } });
+
     const file = { input_name: "Resume", file: "cv.pdf", size: 2, sha256: "a".repeat(64) };
     t.transport.handlers["playbook.file.set"] = () => ({ playbook: { playbook_id: "pb1" }, file });
     expect((await t.controller.setPlaybookFile("pb1", "Resume", "/Users/me/cv.pdf")).file).toEqual(file);

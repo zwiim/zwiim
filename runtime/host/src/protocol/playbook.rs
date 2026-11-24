@@ -363,6 +363,31 @@ pub struct PlaybookFactView {
 pub struct PlaybookInputsResult {
     pub files: Vec<PlaybookFileView>,
     pub facts: Vec<PlaybookFactView>,
+    pub check: PlaybookCheckView,
+}
+
+/// The text that shows a send worked, as the person sets it.
+#[derive(Debug, Serialize)]
+pub struct PlaybookCheckView {
+    /// `None`: the agent judges from the page.
+    pub text: Option<String>,
+    /// False when the checks are more than one text or agent check: they
+    /// are changed in the playbook text.
+    pub editable: bool,
+}
+
+fn check_view(checks: &[crate::automation::playbook_format::CheckSpec]) -> PlaybookCheckView {
+    use crate::automation::playbook_format::CheckSpec;
+    PlaybookCheckView {
+        text: checks.iter().find_map(|c| match c {
+            CheckSpec::TextPresent { text } => Some(text.clone()),
+            _ => None,
+        }),
+        editable: matches!(
+            checks,
+            [] | [CheckSpec::TextPresent { .. }] | [CheckSpec::AgentJudged { .. }]
+        ),
+    }
 }
 
 fn input_store(state: &AppState) -> crate::automation::input_files::InputFileStore {
@@ -440,7 +465,11 @@ pub async fn playbook_inputs(
             _ => None,
         })
         .collect();
-    Ok(Json(PlaybookInputsResult { files, facts }))
+    Ok(Json(PlaybookInputsResult {
+        files,
+        facts,
+        check: check_view(&doc.checks),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -486,6 +515,42 @@ pub async fn playbook_input_set_fact(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlaybookCheckSetParams {
+    pub playbook_id: String,
+    /// `None` or blank: the agent judges from the page.
+    pub text: Option<String>,
+}
+
+/// `playbook.check.set {playbook_id, text}`: the text that shows a send
+/// worked, or none for the agent to judge (a new version).
+pub async fn playbook_check_set(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<PlaybookCheckSetParams>,
+) -> ZResult<PlaybookSaveResult> {
+    use crate::automation::playbook_format::CheckSpec;
+    require_enabled(&state.db.conn).await?;
+    let book = playbook_row(&state, &p.playbook_id).await?;
+    let check = match p.text.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => CheckSpec::TextPresent { text: text.into() },
+        _ => CheckSpec::AgentJudged {
+            note: "the page shows that the send went through".into(),
+        },
+    };
+    let playbook = save_doc(&state, &book, |doc| {
+        if !check_view(&doc.checks).editable {
+            return Err(ZwiimError::invalid_input(
+                "This playbook's checks are in its text: change them there",
+            ));
+        }
+        doc.checks = vec![check];
+        Ok(())
+    })
+    .await?;
+    Ok(Json(PlaybookSaveResult { playbook }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlaybookFileSetParams {
     pub playbook_id: String,
     pub input_name: String,
@@ -514,8 +579,17 @@ async fn save_inputs(
     book: &playbook::Model,
     change: impl FnOnce(&mut Vec<crate::automation::playbook_format::Input>) -> Result<(), ZwiimError>,
 ) -> Result<PlaybookSummary, ZwiimError> {
+    save_doc(state, book, |doc| change(&mut doc.inputs)).await
+}
+
+/// Change the playbook's document and save it as a new version.
+async fn save_doc(
+    state: &AppState,
+    book: &playbook::Model,
+    change: impl FnOnce(&mut crate::automation::PlaybookDoc) -> Result<(), ZwiimError>,
+) -> Result<PlaybookSummary, ZwiimError> {
     let mut doc = validated(&book.source)?;
-    change(&mut doc.inputs)?;
+    change(&mut doc)?;
     let source = serde_yaml::to_string(&doc).map_err(engine_err)?;
     let doc = validated(&source)?;
     let store = PlaybookStore::new(state.db.conn.clone());

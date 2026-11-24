@@ -156,6 +156,7 @@ const OPS: &[&str] = &[
     "playbook.save",
     "playbook.inputs",
     "playbook.input.set_fact",
+    "playbook.check.set",
     "playbook.file.set",
     "playbook.file.remove",
     "playbook.create_from_draft",
@@ -9750,6 +9751,66 @@ async fn a_draft_without_a_send_or_a_file_is_refused() {
     assert_eq!(body["error"]["message"], "Pick the file for CV.");
     let (_, list) = h.call("playbook.list", json!({})).await;
     assert_eq!(list.as_array().unwrap().len(), 1, "nothing created");
+}
+
+/// The text that shows a send worked is listed with the inputs and can be
+/// changed or cleared (the agent then judges); checks written by hand that
+/// are more than that one line are left to the playbook text.
+#[tokio::test]
+async fn a_playbooks_success_check_is_listed_and_set() {
+    use crate::automation::playbook_format::CheckSpec;
+    let h = host(false).await;
+    let id = file_playbook(&h, FILE_PLAYBOOK).await;
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": "Sent", "editable": true }));
+
+    let (status, body) = h
+        .call(
+            "playbook.check.set",
+            json!({ "playbook_id": id, "text": "  Order placed " }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["playbook"]["version"], 2);
+    assert_eq!(
+        source_of(&h, &id).await.checks,
+        vec![CheckSpec::TextPresent {
+            text: "Order placed".into()
+        }]
+    );
+
+    h.ok(
+        "playbook.check.set",
+        json!({ "playbook_id": id, "text": null }),
+    )
+    .await;
+    assert!(matches!(
+        &source_of(&h, &id).await.checks[..],
+        [CheckSpec::AgentJudged { .. }]
+    ));
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": null, "editable": true }));
+
+    let two = FILE_PLAYBOOK.replace(
+        "checks:\n  - kind: text_present\n    text: Sent\n",
+        "checks:\n  - kind: text_present\n    text: Sent\n  - kind: url_matches\n    pattern: /done\n",
+    );
+    let other = file_playbook(&h, &two.replace("name: Apply", "name: Apply two")).await;
+    let (_, body) = h
+        .call("playbook.inputs", json!({ "playbook_id": other }))
+        .await;
+    assert_eq!(body["check"], json!({ "text": "Sent", "editable": false }));
+    let (status, body) = h
+        .call(
+            "playbook.check.set",
+            json!({ "playbook_id": other, "text": "x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]

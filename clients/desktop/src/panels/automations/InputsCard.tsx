@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import type { PlaybookFact, PlaybookFile } from "@zwiim/sdk";
+import type { PlaybookCheck, PlaybookFact, PlaybookFile } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController } from "@/lib/host-context";
 
 const IN_USE = "A step still uses this file. Remove that step or replace the file.";
+const CHECK = "Shows it worked";
+const field =
+  "border-border bg-input/30 text-ui focus-visible:ring-ring min-w-0 flex-1 rounded-[10px] border px-2 py-1 outline-none focus-visible:ring-2";
 
 /** `240 KB`, `3.1 MB`. */
 function sizeText(bytes: number): string {
@@ -47,7 +50,10 @@ export function InputsCard({
   const controller = useController();
   const [files, setFiles] = useState<PlaybookFile[] | null>(null);
   const [facts, setFacts] = useState<PlaybookFact[]>([]);
+  const [check, setCheck] = useState<PlaybookCheck | null>(null);
   const [editing, setEditing] = useState<{ name: string; value: string } | null>(null);
+  /** The check text being edited, if it is. */
+  const [checking, setChecking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +62,7 @@ export function InputsCard({
       (r) => {
         setFiles(r.files);
         setFacts(r.facts);
+        setCheck(r.check ?? null);
       },
       (e) => setError(errorMessage(e)),
     );
@@ -128,7 +135,7 @@ export function InputsCard({
               }}
             >
               <input
-                className="border-border bg-input/30 text-ui focus-visible:ring-ring min-w-0 flex-1 rounded-[10px] border px-2 py-1 outline-none focus-visible:ring-2"
+                className={field}
                 aria-label={f.input_name}
                 autoFocus
                 value={editing.value}
@@ -155,6 +162,52 @@ export function InputsCard({
           )}
         </div>
       ))}
+      {check && (
+        <div className="flex items-center gap-2" data-testid="input-check">
+          <span className="text-ui shrink-0">{CHECK}</span>
+          {checking !== null ? (
+            <form
+              className="flex min-w-0 flex-1 items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const text = checking.trim() || null;
+                setChecking(null);
+                void act(() => controller.setPlaybookCheck(playbookId, text));
+              }}
+            >
+              <input
+                className={field}
+                aria-label={CHECK}
+                placeholder="Text the page shows after it sends"
+                autoFocus
+                value={checking}
+                onChange={(e) => setChecking(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && setChecking(null)}
+              />
+              <Button type="submit" variant="secondary" size="xs" disabled={busy}>
+                Save
+              </Button>
+            </form>
+          ) : (
+            <>
+              <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+                {check.text ?? "The agent judges from the page"}
+              </span>
+              {check.editable && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy}
+                  aria-label={`Edit ${CHECK}`}
+                  onClick={() => setChecking(check.text ?? "")}
+                >
+                  Edit
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      )}
       <div>
         <Button variant="secondary" size="xs" disabled={busy} onClick={() => void putFile(null)}>
           Add file

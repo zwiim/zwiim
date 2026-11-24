@@ -272,6 +272,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/playbook.input.set_fact",
             post(playbook::playbook_input_set_fact),
         )
+        .route("/playbook.check.set", post(playbook::playbook_check_set))
         .route("/playbook.file.set", post(playbook::playbook_file_set))
         .route("/playbook.file.remove", post(playbook::playbook_file_remove))
         .route(

@@ -557,7 +557,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// 45 (playbook recording): a file input may be a copy the Host keeps
 /// (`file` and `sha256`) instead of a `path`. `playbook.inputs {playbook_id}`
-/// lists a playbook's `files` and `facts`; `playbook.input.set_fact
+/// lists a playbook's `files`, `facts` and `check {text, editable}`;
+/// `playbook.check.set {playbook_id, text}` sets the text that shows a send
+/// worked, or none for the agent to judge; `playbook.input.set_fact
 /// {playbook_id, input_name, value}` adds or changes a fact; `playbook.file.set {playbook_id,
 /// input_name, path}` copies a file in (at most 50 MB, `file_too_large`;
 /// `file_not_found`) and adds or replaces that input; `playbook.file.remove

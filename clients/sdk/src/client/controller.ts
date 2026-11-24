@@ -826,6 +826,11 @@ export class HostController {
     return this.client.request("playbook.input.set_fact", { playbook_id, input_name, value });
   }
 
+  /** The text that shows a send worked; null for the agent to judge. */
+  setPlaybookCheck(playbook_id: string, text: string | null): Promise<OpResult<"playbook.check.set">> {
+    return this.client.request("playbook.check.set", { playbook_id, text });
+  }
+
   /** Copy the file at `path` in as input `input_name` (added or replaced). */
   setPlaybookFile(playbook_id: string, input_name: string, path: string): Promise<OpResult<"playbook.file.set">> {
     return this.client.request("playbook.file.set", { playbook_id, input_name, path });
