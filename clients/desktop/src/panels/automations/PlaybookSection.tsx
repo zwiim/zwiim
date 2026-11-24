@@ -97,45 +97,28 @@ export function PlaybookSection({
             <ChevronRight className="text-muted-foreground size-3.5 shrink-0 opacity-0 transition-opacity duration-120 group-focus-within:opacity-100 group-hover:opacity-100" />
           )}
           <StatusDot dot={dot} />
-          <span className="text-ui truncate font-medium">
-            {row.playbook.name}
-          </span>
+          <span className="text-ui truncate font-medium">{row.playbook.name}</span>
           {open ? (
             row.run && (
               <span className="text-muted-foreground font-mono text-xs tabular-nums">
                 {counts.sent}/{counts.total} sent
-                {counts.need > 0 && (
-                  <span className="text-brand"> · {counts.need} need you</span>
-                )}
+                {counts.need > 0 && <span className="text-brand"> · {counts.need} need you</span>}
                 {row.run.outcome === "nothing_new" && (
-                  <span className="font-sans">
-                    {" "}
-                    · Nothing new: every item was done before
-                  </span>
+                  <span className="font-sans"> · Nothing new: every item was done before</span>
                 )}
                 {row.run.status === "failed" && (
-                  <span className="text-destructive font-sans">
-                    {" "}
-                    · Failed · {failureText(row.run.error)}
-                  </span>
+                  <span className="text-destructive font-sans"> · Failed · {failureText(row.run.error)}</span>
                 )}
               </span>
             )
           ) : (
-            <span
-              className={cn(
-                "truncate text-xs",
-                line.need ? "text-brand" : "text-muted-foreground",
-              )}
-            >
+            <span className={cn("truncate text-xs", line.need ? "text-brand" : "text-muted-foreground")}>
               {line.text}
             </span>
           )}
         </button>
         <Button
-          variant={
-            action === "start" || action === "again" ? "secondary" : "ghost"
-          }
+          variant={action === "start" || action === "again" ? "secondary" : "ghost"}
           size="xs"
           disabled={busy}
           className={cn(
@@ -154,29 +137,17 @@ export function PlaybookSection({
       )}
       {open &&
         (row.run ? (
-          <div
-            className="flex gap-3 overflow-x-auto pb-1 pl-5.5"
-            data-testid="tile-strip"
-          >
+          <div className="flex gap-3 overflow-x-auto pb-1 pl-5.5" data-testid="tile-strip">
             {row.items.map((item) => (
-              <ItemTile
-                key={item.item_id}
-                item={item}
-                onOpen={() => onOpen(item.item_id)}
-              />
+              <ItemTile key={item.item_id} item={item} onOpen={() => onOpen(item.item_id)} />
             ))}
           </div>
         ) : (
-          <p className="text-muted-foreground pl-5.5 text-xs">
-            Start it to watch each item here as it runs.
-          </p>
+          <p className="text-muted-foreground pl-5.5 text-xs">Start it to watch each item here as it runs.</p>
         ))}
       {open && (
         <div className="pl-5.5">
-          <InputsCard
-            playbookId={row.playbook.playbook_id}
-            pickFile={pickFile}
-          />
+          <InputsCard playbookId={row.playbook.playbook_id} pickFile={pickFile} />
         </div>
       )}
     </section>

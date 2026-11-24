@@ -1,10 +1,4 @@
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  within,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   HostClient,
@@ -15,10 +9,7 @@ import {
   type RunSummary,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import {
-  AutomationsView,
-  resetAutomationsView,
-} from "@/panels/automations/AutomationsView";
+import { AutomationsView, resetAutomationsView } from "@/panels/automations/AutomationsView";
 import { RecordingProvider } from "@/panels/automations/recording";
 import { FakeTransport, tick } from "./fakes";
 
@@ -41,25 +32,11 @@ async function mount(t: FakeTransport) {
   return { controller, view };
 }
 
-function playbook(
-  id: string,
-  sites: PlaybookSummary["sites"] = [],
-): PlaybookSummary {
-  return {
-    playbook_id: id,
-    name: `Playbook ${id}`,
-    version: 1,
-    show_me: true,
-    freeze_learning: false,
-    sites,
-  };
+function playbook(id: string, sites: PlaybookSummary["sites"] = []): PlaybookSummary {
+  return { playbook_id: id, name: `Playbook ${id}`, version: 1, show_me: true, freeze_learning: false, sites };
 }
 
-function run(
-  id: string,
-  playbook_id: string,
-  status: RunSummary["status"],
-): RunSummary {
+function run(id: string, playbook_id: string, status: RunSummary["status"]): RunSummary {
   return {
     run_id: id,
     playbook_id,
@@ -95,10 +72,7 @@ function transport(r1: RunSummary["status"] = "running") {
     playbook("pb1", [{ site: "jobs.example", risk_accepted: true }]),
     playbook("pb2", [{ site: "forum.example", risk_accepted: false }]),
   ];
-  t.handlers["run.list"] = () => ({
-    runs: [run("r1", "pb1", r1)],
-    next_cursor: null,
-  });
+  t.handlers["run.list"] = () => ({ runs: [run("r1", "pb1", r1)], next_cursor: null });
   t.handlers["run.items"] = () => ({
     items: [item("a", "done"), item("b", "working"), item("c", "queued")],
     next_cursor: null,
@@ -111,14 +85,10 @@ const section = (id: string) => screen.getByTestId(`playbook-${id}`);
 describe("Automations canvas", () => {
   it("a running playbook opens, an idle one is one quiet line", async () => {
     const { controller } = await mount(transport());
-    expect(screen.getByTestId("automations-header").textContent).toContain(
-      "1 running · 2 playbooks",
-    );
+    expect(screen.getByTestId("automations-header").textContent).toContain("1 running · 2 playbooks");
     expect(section("pb1").textContent).toContain("1/3 sent");
     expect(within(section("pb1")).getByText("Job b")).toBeTruthy();
-    expect(
-      within(section("pb1")).getByRole("button", { name: "Pause" }),
-    ).toBeTruthy();
+    expect(within(section("pb1")).getByRole("button", { name: "Pause" })).toBeTruthy();
     expect(section("pb2").textContent).toContain("Not run yet");
     expect(within(section("pb2")).queryByTestId("tile-strip")).toBeNull();
     controller.dispose();
@@ -126,9 +96,7 @@ describe("Automations canvas", () => {
 
   it("the person's toggle wins", async () => {
     const first = await mount(transport());
-    fireEvent.click(
-      within(section("pb1")).getByRole("button", { name: /Playbook pb1/ }),
-    );
+    fireEvent.click(within(section("pb1")).getByRole("button", { name: /Playbook pb1/ }));
     expect(within(section("pb1")).queryByText("Job b")).toBeNull();
     first.view.unmount();
     first.controller.dispose();
@@ -138,9 +106,7 @@ describe("Automations canvas", () => {
     expect(section("pb1").textContent).toContain("Running · 1 of 3 sent");
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
     expect(within(section("pb1")).getByText("Job b")).toBeTruthy();
-    expect(section("pb2").textContent).toContain(
-      "Start it to watch each item here as it runs.",
-    );
+    expect(section("pb2").textContent).toContain("Start it to watch each item here as it runs.");
     expect(screen.getByRole("button", { name: "Collapse all" })).toBeTruthy();
     again.controller.dispose();
   });
@@ -151,20 +117,14 @@ describe("Automations canvas", () => {
     t.handlers["run.start"] = () => ({ run_id: "r9" });
     const { controller } = await mount(t);
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
-    fireEvent.click(
-      within(section("pb2")).getByRole("button", { name: "Start" }),
-    );
+    fireEvent.click(within(section("pb2")).getByRole("button", { name: "Start" }));
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toContain("Start Playbook pb2?");
     expect(dialog.textContent).toContain("forum.example");
     expect(t.calls.some((x) => x.op === "run.start")).toBe(false);
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "I accept the risk, start" }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "I accept the risk, start" }));
     await tick();
-    const ops = t.calls.filter(
-      (x) => x.op === "site.risk_accept" || x.op === "run.start",
-    );
+    const ops = t.calls.filter((x) => x.op === "site.risk_accept" || x.op === "run.start");
     expect(ops).toEqual([
       { op: "site.risk_accept", params: { site: "forum.example" } },
       { op: "run.start", params: { playbook_id: "pb2" } },
@@ -175,21 +135,13 @@ describe("Automations canvas", () => {
   it("a refused start says why", async () => {
     const t = transport("done");
     t.handlers["run.start"] = () => {
-      throw new ZwiimClientError(
-        "run_active",
-        "A run of this playbook is already going.",
-        409,
-      );
+      throw new ZwiimClientError("run_active", "A run of this playbook is already going.", 409);
     };
     const { controller } = await mount(t);
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
-    fireEvent.click(
-      within(section("pb1")).getByRole("button", { name: "Run again" }),
-    );
+    fireEvent.click(within(section("pb1")).getByRole("button", { name: "Run again" }));
     await tick();
-    expect(within(section("pb1")).getByRole("alert").textContent).toContain(
-      "A run of this playbook is already going.",
-    );
+    expect(within(section("pb1")).getByRole("alert").textContent).toContain("A run of this playbook is already going.");
     controller.dispose();
   });
 
@@ -203,9 +155,7 @@ describe("Automations canvas", () => {
     const { controller } = await mount(t);
     expect(section("pb1").textContent).toContain("Failed");
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
-    expect(section("pb1").textContent).toContain(
-      "Failed · The agent could not start",
-    );
+    expect(section("pb1").textContent).toContain("Failed · The agent could not start");
     controller.dispose();
   });
 
@@ -219,9 +169,7 @@ describe("Automations canvas", () => {
     const { controller } = await mount(t);
     expect(section("pb1").textContent).toContain("Nothing new");
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
-    expect(section("pb1").textContent).toContain(
-      "Nothing new: every item was done before",
-    );
+    expect(section("pb1").textContent).toContain("Nothing new: every item was done before");
     controller.dispose();
   });
 
@@ -229,18 +177,8 @@ describe("Automations canvas", () => {
     const t = transport();
     let paused = true;
     t.handlers["site.list"] = () => [
-      {
-        site: "jobs.example",
-        account: "main",
-        paused_cause: paused ? "login" : null,
-        risk_accepted: true,
-      },
-      {
-        site: "elsewhere.example",
-        account: "main",
-        paused_cause: "captcha",
-        risk_accepted: true,
-      },
+      { site: "jobs.example", account: "main", paused_cause: paused ? "login" : null, risk_accepted: true },
+      { site: "elsewhere.example", account: "main", paused_cause: "captcha", risk_accepted: true },
     ];
     t.handlers["site.resume"] = () => {
       paused = false;
@@ -253,9 +191,7 @@ describe("Automations canvas", () => {
     expect(banner.textContent).not.toContain("elsewhere.example");
     fireEvent.click(within(banner).getByRole("button", { name: "Resume" }));
     await tick();
-    expect(
-      t.calls.filter((x) => x.op === "site.resume").map((x) => x.params),
-    ).toEqual([{ site: "jobs.example" }]);
+    expect(t.calls.filter((x) => x.op === "site.resume").map((x) => x.params)).toEqual([{ site: "jobs.example" }]);
     expect(screen.queryByTestId("paused-sites")).toBeNull();
     controller.dispose();
   });
@@ -270,9 +206,9 @@ describe("Automations canvas", () => {
     expect(screen.getByText("Automations are off")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Turn them on" }));
     await tick();
-    expect(
-      t.calls.filter((x) => x.op === "settings.update").map((x) => x.params),
-    ).toEqual([{ values: { "playbooks.enabled": true } }]);
+    expect(t.calls.filter((x) => x.op === "settings.update").map((x) => x.params)).toEqual([
+      { values: { "playbooks.enabled": true } },
+    ]);
     controller.dispose();
   });
 
@@ -299,26 +235,18 @@ describe("Automations canvas", () => {
     let shown = 0;
     render(
       <HostProvider value={controller}>
-        <RecordingProvider
-          canShowBrowser
-          onShowBrowser={() => (shown += 1)}
-          onReview={() => {}}
-        >
+        <RecordingProvider canShowBrowser onShowBrowser={() => (shown += 1)} onReview={() => {}}>
           <AutomationsView onChat={() => (chat += 1)} />
         </RecordingProvider>
       </HostProvider>,
     );
     await tick();
-    expect(
-      screen.getByText("No playbooks yet. Do a task once and Zwiim saves it."),
-    ).toBeTruthy();
+    expect(screen.getByText("No playbooks yet. Do a task once and Zwiim saves it.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Write one in chat" }));
     expect(chat).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Record a playbook" }));
     await tick();
-    expect(t.calls.filter((c) => c.op === "browser.record.start")).toHaveLength(
-      1,
-    );
+    expect(t.calls.filter((c) => c.op === "browser.record.start")).toHaveLength(1);
     expect(shown).toBe(1);
     controller.dispose();
   });
@@ -332,26 +260,16 @@ describe("Automations canvas", () => {
     let asked = 0;
     render(
       <HostProvider value={controller}>
-        <RecordingProvider
-          canShowBrowser={false}
-          onShowBrowser={() => {}}
-          onReview={() => {}}
-        >
+        <RecordingProvider canShowBrowser={false} onShowBrowser={() => {}} onReview={() => {}}>
           <AutomationsView />
         </RecordingProvider>
       </HostProvider>,
     );
     await tick();
-    fireEvent.click(
-      within(screen.getByTestId("automations-header")).getByRole("button", {
-        name: "Record",
-      }),
-    );
+    fireEvent.click(within(screen.getByTestId("automations-header")).getByRole("button", { name: "Record" }));
     await tick();
     asked += 1;
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Add a project folder first",
-    );
+    expect(screen.getByRole("alert").textContent).toContain("Add a project folder first");
     expect(asked).toBe(1);
     controller.dispose();
   });
