@@ -11,6 +11,7 @@ pub mod chat_channel_sender_context;
 pub mod chat_channel_thread_binding;
 pub mod connection;
 pub mod connection_endpoint;
+pub mod connection_tool;
 pub mod connector_definition;
 pub mod conversation;
 pub mod custom_agent;

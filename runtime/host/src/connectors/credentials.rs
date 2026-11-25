@@ -6,6 +6,8 @@
 //! store.
 
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use http::HeaderName;
 
@@ -36,6 +38,54 @@ impl SecretStore for Keychain {
 
     fn delete(&self, name: &str) -> Result<(), String> {
         crate::keyring_store::delete_secret(name)
+    }
+}
+
+/// Secrets in memory, for tests. `broken` makes every call fail like a
+/// locked keychain.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MemorySecrets {
+    pub(crate) values: Mutex<HashMap<String, String>>,
+    pub(crate) broken: bool,
+}
+
+#[cfg(test)]
+impl MemorySecrets {
+    pub(crate) fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.values.lock().unwrap().keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    fn fail(&self) -> Result<(), String> {
+        if self.broken {
+            return Err("keychain locked".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for MemorySecrets {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        self.fail()?;
+        Ok(self.values.lock().unwrap().get(name).cloned())
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        self.fail()?;
+        self.values
+            .lock()
+            .unwrap()
+            .insert(name.into(), value.into());
+        Ok(())
+    }
+
+    fn delete(&self, name: &str) -> Result<(), String> {
+        self.fail()?;
+        self.values.lock().unwrap().remove(name);
+        Ok(())
     }
 }
 
@@ -143,6 +193,21 @@ pub fn delete_secrets(
             .map_err(CredentialError::StoreUnavailable)?;
     }
     Ok(())
+}
+
+/// `text` with this connection's own secret values replaced, for errors and
+/// logs that may echo what a service was sent. Best effort: a store that
+/// won't open leaves the text as it is.
+pub fn redact(store: &dyn SecretStore, connection_id: &str, auth: &Auth, text: &str) -> String {
+    let mut text = text.to_string();
+    for field in fields(auth) {
+        if let Ok(Some(value)) = store.get(&secret_name(connection_id, &field.name)) {
+            if !value.is_empty() {
+                text = text.replace(&value, "[redacted]");
+            }
+        }
+    }
+    text
 }
 
 #[cfg(test)]

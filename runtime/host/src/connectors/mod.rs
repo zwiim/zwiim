@@ -14,6 +14,7 @@ pub mod egress;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake_mcp;
 pub mod mcp;
+pub mod runtime;
 pub mod store;
 pub mod upstream;
 
