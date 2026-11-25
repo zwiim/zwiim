@@ -152,3 +152,5 @@ runtime/host/src/db/migration/m20261125_000003_connection_tools.rs
 runtime/host/src/db/entities/connection_tool.rs
 runtime/host/src/connectors/runtime.rs
 runtime/host/src/connectors/runtime/tests.rs
+runtime/host/src/connectors/runtime/gateway.rs
+runtime/host/src/connectors/runtime/gateway/tests.rs

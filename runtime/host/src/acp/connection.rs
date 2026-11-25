@@ -5485,6 +5485,7 @@ where
                 parent_connection_id: parent_connection_id.to_string(),
                 working_dir: working_dir.to_path_buf(),
                 engine,
+                connector: None,
             },
         )
         .await;

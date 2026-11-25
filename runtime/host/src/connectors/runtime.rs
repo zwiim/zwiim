@@ -80,9 +80,30 @@ pub struct ConnectionRuntime {
     shared: tokio::sync::Mutex<Option<Arc<dyn Upstream>>>,
     /// Set by revocation and Host exit: nothing new starts from here on.
     blocked: AtomicBool,
+    /// Bumped whenever what agents see of the connection may have changed:
+    /// its tools or whether it is usable. Proxies wait on it.
+    revision: tokio::sync::watch::Sender<u64>,
 }
 
 impl ConnectionRuntime {
+    /// Tells waiting proxies to list the connection's tools again.
+    fn changed(&self) {
+        self.revision.send_modify(|r| *r += 1);
+    }
+
+    pub fn revision(&self) -> u64 {
+        *self.revision.borrow()
+    }
+
+    /// The current revision once it differs from `seen`.
+    pub async fn changed_since(&self, seen: u64) -> u64 {
+        let mut rx = self.revision.subscribe();
+        // The sender lives as long as `self`, so this never fails.
+        let _ = rx.wait_for(|r| *r != seen).await;
+        let r = *rx.borrow();
+        r
+    }
+
     /// Replaces the shared upstream, closing the one it had. Once blocked,
     /// a new upstream is closed instead of kept.
     async fn replace(&self, upstream: Option<Arc<dyn Upstream>>, reason: ShutdownReason) {
@@ -251,49 +272,139 @@ impl Connectors {
         {
             return Err(ValidateError::Unavailable(connection.status));
         }
+        let upstream = match self.open(&connection).await {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                // A credential store that won't open may only be locked.
+                let recorded = match &e {
+                    ValidateError::Credential(CredentialError::StoreUnavailable(_)) => None,
+                    ValidateError::Credential(c) => Some(c.to_string()),
+                    ValidateError::Failed(message) => Some(message.clone()),
+                    _ => None,
+                };
+                if let Some(message) = recorded {
+                    self.set_status(&connection, ConnectionStatus::Error, Some(&message))
+                        .await?;
+                }
+                return Err(e);
+            }
+        };
+        let listing = match timeout(upstream.list_tools()).await {
+            Ok(listing) => listing,
+            Err(e) => {
+                let _ = upstream.shutdown(ShutdownReason::Idle).await;
+                let message = self.redact(&connection, &e.to_string()).await?;
+                self.set_status(&connection, ConnectionStatus::Error, Some(&message))
+                    .await?;
+                return Err(ValidateError::Failed(message));
+            }
+        };
+        let changes = store::save_tool_snapshot(&self.db, id, &listing.tools).await?;
+        self.set_status(&connection, ConnectionStatus::Active, None)
+            .await?;
+        runtime
+            .replace(Some(upstream.clone()), ShutdownReason::Idle)
+            .await;
+        self.follow(id, &upstream);
+        if !changes.is_empty() {
+            runtime.changed();
+        }
+        Ok(changes)
+    }
+
+    /// Keeps connection `id`'s snapshot in step with what `upstream`'s
+    /// service reports (`list_changed`), while it is the shared upstream:
+    /// each report lists the tools again, and a changed list moves the
+    /// revision. A listing that fails keeps the snapshot as it was.
+    fn follow(&self, id: &str, upstream: &Arc<dyn Upstream>) {
+        let db = self.db.clone();
+        let id = id.to_string();
+        let runtime = self.runtime(&id);
+        let mut reports = upstream.tool_changes();
+        let upstream = Arc::downgrade(upstream);
+        tokio::spawn(async move {
+            while reports.changed().await.is_ok() {
+                let Some(current) = upstream.upgrade() else {
+                    return;
+                };
+                let shared = runtime.shared.lock().await.clone();
+                if runtime.is_blocked() || !shared.is_some_and(|s| Arc::ptr_eq(&s, &current)) {
+                    return;
+                }
+                let listing = match timeout(current.list_tools()).await {
+                    Ok(listing) => listing,
+                    Err(e) => {
+                        tracing::warn!("[connectors] couldn't list {id}'s changed tools: {e}");
+                        continue;
+                    }
+                };
+                drop(current);
+                match store::save_tool_snapshot(&db, &id, &listing.tools).await {
+                    Ok(changes) if !changes.is_empty() => runtime.changed(),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("[connectors] couldn't record {id}'s tools: {e}"),
+                }
+            }
+        });
+    }
+
+    /// Opens a new upstream for `connection` as the user confirmed it: its
+    /// definition unchanged, its credential, its endpoints. Changes nothing.
+    async fn open(
+        &self,
+        connection: &store::Connection,
+    ) -> Result<Arc<dyn Upstream>, ValidateError> {
         let definition = store::definition(&self.db, &connection.definition_id)
             .await?
             .ok_or_else(|| ValidateError::Failed("the connector's definition is gone".into()))?;
         if definition.hash() != connection.definition_hash {
             return Err(ValidateError::DefinitionChanged);
         }
-        let credential = match credentials::credential(&*self.secrets, id, &definition.auth) {
-            Ok(credential) => credential,
-            Err(e @ CredentialError::StoreUnavailable(_)) => {
-                return Err(ValidateError::Credential(e))
-            }
-            Err(e) => {
-                store::set_status(&self.db, id, ConnectionStatus::Error, Some(&e.to_string()))
-                    .await?;
-                return Err(ValidateError::Credential(e));
-            }
-        };
-        let endpoints = store::endpoint_rules(&self.db, id).await?;
+        let credential = credentials::credential(&*self.secrets, &connection.id, &definition.auth)
+            .map_err(ValidateError::Credential)?;
+        let endpoints = store::endpoint_rules(&self.db, &connection.id).await?;
+        timeout(self.factory.open(&definition, endpoints, credential))
+            .await
+            .map_err(|e| {
+                ValidateError::Failed(credentials::redact(
+                    &*self.secrets,
+                    &connection.id,
+                    &definition.auth,
+                    &e.to_string(),
+                ))
+            })
+    }
 
-        let listed = async {
-            let upstream = self.factory.open(&definition, endpoints, credential);
-            let upstream = timeout(upstream).await?;
-            match timeout(upstream.list_tools()).await {
-                Ok(listing) => Ok((upstream, listing)),
-                Err(e) => {
-                    let _ = upstream.shutdown(ShutdownReason::Idle).await;
-                    Err(e)
-                }
-            }
-        };
-        let (upstream, listing) = match listed.await {
-            Ok(listed) => listed,
-            Err(e) => {
-                let message =
-                    credentials::redact(&*self.secrets, id, &definition.auth, &e.to_string());
-                store::set_status(&self.db, id, ConnectionStatus::Error, Some(&message)).await?;
-                return Err(ValidateError::Failed(message));
-            }
-        };
-        let changes = store::save_tool_snapshot(&self.db, id, &listing.tools).await?;
-        store::set_status(&self.db, id, ConnectionStatus::Active, None).await?;
-        runtime.replace(Some(upstream), ShutdownReason::Idle).await;
-        Ok(changes)
+    /// `text` without `connection`'s secrets.
+    async fn redact(
+        &self,
+        connection: &store::Connection,
+        text: &str,
+    ) -> Result<String, StoreError> {
+        let auth = store::definition_auth(&self.db, &connection.definition_id)
+            .await?
+            .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+        Ok(credentials::redact(
+            &*self.secrets,
+            &connection.id,
+            &auth,
+            text,
+        ))
+    }
+
+    /// Moves `connection` to `status`, telling proxies when that changes
+    /// whether it is usable.
+    async fn set_status(
+        &self,
+        connection: &store::Connection,
+        status: ConnectionStatus,
+        last_error: Option<&str>,
+    ) -> Result<(), StoreError> {
+        store::set_status(&self.db, &connection.id, status, last_error).await?;
+        if (connection.status == ConnectionStatus::Active) != (status == ConnectionStatus::Active) {
+            self.runtime(&connection.id).changed();
+        }
+        Ok(())
     }
 }
 
@@ -398,6 +509,7 @@ impl Connectors {
         let runtime = self.runtime(id);
         // In memory first, so nothing in flight can start using it again.
         runtime.block();
+        runtime.changed();
         let mut done = connection.revocation;
         if !done.contains(&RevocationStep::Blocked) {
             if connection.status != ConnectionStatus::Revoking {
@@ -464,6 +576,8 @@ async fn timeout<T>(
         .await
         .map_err(|_| ConnectorError::Transport("the service didn't answer in time".into()))?
 }
+
+mod gateway;
 
 #[cfg(test)]
 mod tests;

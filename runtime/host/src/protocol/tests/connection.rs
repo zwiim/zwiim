@@ -58,7 +58,9 @@ async fn created(h: &Host, server: &HttpServer) -> String {
 
 #[tokio::test]
 async fn a_server_added_by_url_is_connected_listed_and_its_tools_shown() {
-    let fake = FakeMcp::new(Era::Modern);
+    // Legacy over HTTP reports no tool changes of its own, so the
+    // validation below is what sees the new list.
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let server = fake.serve_http().await;
     let (h, secrets) = connected_host().await;
     let body = ok(&h, "connection.create", create_body(&server.url())).await;

@@ -18,16 +18,16 @@ use crate::db::test_helpers::fresh_in_memory_db;
 use crate::db::AppDatabase;
 use sea_orm::EntityTrait;
 
-struct Setup {
-    db: AppDatabase,
-    secrets: Arc<MemorySecrets>,
-    connectors: Connectors,
-    connection: String,
+pub(super) struct Setup {
+    pub(super) db: AppDatabase,
+    pub(super) secrets: Arc<MemorySecrets>,
+    pub(super) connectors: Connectors,
+    pub(super) connection: String,
     _server: Option<HttpServer>,
 }
 
 /// A stored connection to `url` with bearer key `key` saved, if any.
-async fn setup_at(url: &str, key: Option<&str>) -> Setup {
+pub(super) async fn setup_at(url: &str, key: Option<&str>) -> Setup {
     let db = fresh_in_memory_db().await;
     let input = UserConnector {
         name: "Fake".into(),
@@ -60,7 +60,7 @@ async fn setup_at(url: &str, key: Option<&str>) -> Setup {
     }
 }
 
-async fn setup(fake: &FakeMcp) -> Setup {
+pub(super) async fn setup(fake: &FakeMcp) -> Setup {
     let server = fake.serve_http().await;
     let mut setup = setup_at(&server.url(), Some("k3y")).await;
     setup._server = Some(server);
@@ -97,19 +97,21 @@ async fn validating_lists_and_records_the_tools_and_activates_the_connection() {
 
 #[tokio::test]
 async fn validating_again_reconnects_and_reports_changes() {
-    let fake = FakeMcp::new(Era::DualEra);
+    // Legacy over HTTP without a GET stream: nothing reports the change but
+    // the validation.
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let setup = setup(&fake).await;
     setup.connectors.validate(&setup.connection).await.unwrap();
     fake.set_tools(vec![tool("search", "Searches")]);
     let changes = setup.connectors.validate(&setup.connection).await.unwrap();
     assert_eq!(changes.added, ["search"]);
     assert_eq!(changes.removed, ["echo"]);
-    let discovers = fake
+    let handshakes = fake
         .received_methods()
         .iter()
-        .filter(|m| *m == "server/discover")
+        .filter(|m| *m == "initialize")
         .count();
-    assert!(discovers >= 2, "one connection per validation");
+    assert!(handshakes >= 2, "one connection per validation");
 }
 
 #[tokio::test]
@@ -369,7 +371,7 @@ fn user_server(url: &str, auth: UserAuth) -> UserConnector {
     }
 }
 
-fn service(db: &AppDatabase, secrets: &Arc<MemorySecrets>) -> Connectors {
+pub(super) fn service(db: &AppDatabase, secrets: &Arc<MemorySecrets>) -> Connectors {
     Connectors::new(
         db.conn.clone(),
         Arc::new(McpFactory::new(Arc::new(SystemResolver))),
