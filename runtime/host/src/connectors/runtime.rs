@@ -302,11 +302,50 @@ impl Connectors {
         let changes = store::save_tool_snapshot(&self.db, id, &listing.tools).await?;
         self.set_status(&connection, ConnectionStatus::Active, None)
             .await?;
-        runtime.replace(Some(upstream), ShutdownReason::Idle).await;
+        runtime
+            .replace(Some(upstream.clone()), ShutdownReason::Idle)
+            .await;
+        self.follow(id, &upstream);
         if !changes.is_empty() {
             runtime.changed();
         }
         Ok(changes)
+    }
+
+    /// Keeps connection `id`'s snapshot in step with what `upstream`'s
+    /// service reports (`list_changed`), while it is the shared upstream:
+    /// each report lists the tools again, and a changed list moves the
+    /// revision. A listing that fails keeps the snapshot as it was.
+    fn follow(&self, id: &str, upstream: &Arc<dyn Upstream>) {
+        let db = self.db.clone();
+        let id = id.to_string();
+        let runtime = self.runtime(&id);
+        let mut reports = upstream.tool_changes();
+        let upstream = Arc::downgrade(upstream);
+        tokio::spawn(async move {
+            while reports.changed().await.is_ok() {
+                let Some(current) = upstream.upgrade() else {
+                    return;
+                };
+                let shared = runtime.shared.lock().await.clone();
+                if runtime.is_blocked() || !shared.is_some_and(|s| Arc::ptr_eq(&s, &current)) {
+                    return;
+                }
+                let listing = match timeout(current.list_tools()).await {
+                    Ok(listing) => listing,
+                    Err(e) => {
+                        tracing::warn!("[connectors] couldn't list {id}'s changed tools: {e}");
+                        continue;
+                    }
+                };
+                drop(current);
+                match store::save_tool_snapshot(&db, &id, &listing.tools).await {
+                    Ok(changes) if !changes.is_empty() => runtime.changed(),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("[connectors] couldn't record {id}'s tools: {e}"),
+                }
+            }
+        });
     }
 
     /// Opens a new upstream for `connection` as the user confirmed it: its

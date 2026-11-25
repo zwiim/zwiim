@@ -121,6 +121,8 @@ impl Connectors {
             return Err(format!("The {} connection was revoked.", connection.slug));
         }
         *shared = Some(upstream.clone());
+        drop(shared);
+        self.follow(&connection.id, &upstream);
         Ok(upstream)
     }
 

@@ -161,3 +161,42 @@ async fn proxies_are_told_only_when_what_agents_see_changes() {
     let (revision, tools) = setup.connectors.exposed_tools(id).await.unwrap();
     assert_eq!((revision, tools[0].name.as_str()), (next, "search"));
 }
+
+#[tokio::test]
+async fn a_service_reporting_new_tools_updates_what_agents_see() {
+    // Legacy HTTP servers report changes only on a GET stream, which the
+    // fake doesn't offer; the legacy notification itself is covered over
+    // stdio.
+    for era in [Era::Modern, Era::DualEra] {
+        let fake = FakeMcp::new(era);
+        let setup = active(&fake).await;
+        let id = &setup.connection;
+        let runtime = setup.connectors.runtime(id);
+        let seen = runtime.revision();
+        fake.set_tools(vec![tool("search", "Searches")]);
+        let next = tokio::time::timeout(Duration::from_secs(5), runtime.changed_since(seen))
+            .await
+            .unwrap_or_else(|_| panic!("{era:?}: the change was never followed"));
+        assert!(next > seen);
+        let (_, tools) = setup.connectors.exposed_tools(id).await.unwrap();
+        assert_eq!(tools[0].name, "search", "{era:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_connection_stops_following_its_service() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = active(&fake).await;
+    let id = &setup.connection;
+    setup.connectors.revoke(id).await.unwrap();
+    let lists = |fake: &FakeMcp| {
+        fake.received_methods()
+            .iter()
+            .filter(|m| *m == "tools/list")
+            .count()
+    };
+    let before = lists(&fake);
+    fake.set_tools(vec![tool("search", "Searches")]);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(lists(&fake), before, "nothing listed after revocation");
+}

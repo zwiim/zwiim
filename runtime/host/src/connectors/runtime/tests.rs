@@ -97,19 +97,21 @@ async fn validating_lists_and_records_the_tools_and_activates_the_connection() {
 
 #[tokio::test]
 async fn validating_again_reconnects_and_reports_changes() {
-    let fake = FakeMcp::new(Era::DualEra);
+    // Legacy over HTTP without a GET stream: nothing reports the change but
+    // the validation.
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let setup = setup(&fake).await;
     setup.connectors.validate(&setup.connection).await.unwrap();
     fake.set_tools(vec![tool("search", "Searches")]);
     let changes = setup.connectors.validate(&setup.connection).await.unwrap();
     assert_eq!(changes.added, ["search"]);
     assert_eq!(changes.removed, ["echo"]);
-    let discovers = fake
+    let handshakes = fake
         .received_methods()
         .iter()
-        .filter(|m| *m == "server/discover")
+        .filter(|m| *m == "initialize")
         .count();
-    assert!(discovers >= 2, "one connection per validation");
+    assert!(handshakes >= 2, "one connection per validation");
 }
 
 #[tokio::test]
