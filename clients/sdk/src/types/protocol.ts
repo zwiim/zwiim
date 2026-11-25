@@ -136,6 +136,12 @@ export type HostErrorCode =
   | "file_too_large"
   /** `playbook.file.set`: the path is not a file on the Host's computer. */
   | "file_not_found"
+  /** `connection.create` / `connection.validate`: the server could not be reached or listed (revision 46). */
+  | "connection_failed"
+  /** `connection.validate`: the connection is revoking or revoked. */
+  | "connection_unavailable"
+  /** `connection.validate`: the connector changed since it was connected; connect it again. */
+  | "definition_changed"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2217,6 +2223,62 @@ export interface StoredPlaybookFile {
   sha256: string;
 }
 
+/**
+ * A connection to an outside MCP server (revision 46). Named by
+ * `service_connection_id`; keys never come back from the Host.
+ */
+export interface ServiceConnection {
+  service_connection_id: string;
+  /** The connector's name, e.g. `Linear`. */
+  name: string;
+  /** The user's name for this connection, e.g. `Work`. */
+  label: string;
+  /** The server name agents see, e.g. `linear_work`. */
+  slug: string;
+  url: string;
+  status: "validating" | "active" | "needs_reauth" | "error" | "revoking" | "revoked";
+  /** Why it is `error`, or what its revocation waits for. */
+  error: string | null;
+  last_validated_at: string | null;
+  created_at: string;
+  /** Where its key is kept; `file` is unencrypted on disk. `null` without a key. */
+  credentials: "keychain" | "file" | null;
+  /** The origins it may reach and whether its key goes to each. */
+  endpoints: { origin: string; credentials: boolean }[];
+  /** Tools its server listed at the last validation. */
+  tool_count: number;
+}
+
+/** What `connection.create` takes: a remote server added by URL. */
+export interface NewServiceConnection {
+  name: string;
+  url: string;
+  auth: { kind: "none" } | { kind: "bearer" } | { kind: "header"; header: string };
+  /** `public` (default, https only) or `local`, a server on this machine or network. */
+  network?: "public" | "local";
+  label: string;
+  /** The server's key, for `bearer` or `header` auth. */
+  secret?: string;
+}
+
+/** A tool a connection's server listed. */
+export interface ServiceTool {
+  name: string;
+  title: string | null;
+  description: string | null;
+  input_schema: unknown;
+  output_schema: unknown | null;
+  /** The server's own hints (`readOnlyHint`, ...), as it sent them. */
+  annotations: Record<string, unknown> | null;
+}
+
+/** What a validation changed in a connection's tools, by name. */
+export interface ServiceToolChanges {
+  added: string[];
+  changed: string[];
+  removed: string[];
+}
+
 export interface PlaybookSummary {
   playbook_id: string;
   name: string;
@@ -2715,6 +2777,31 @@ export interface Operations {
   "session.follow_up_remove": [{ session_id: string; follow_up_id: string }, Record<string, never>];
   /** Send a queued follow-up now when idle (resuming a held queue), else move it first. */
   "session.follow_up_send": [{ session_id: string; follow_up_id: string }, { outcome: FollowUpOutcome }];
+  /** Connections to outside MCP servers, oldest first (revision 46). */
+  "connection.list": [Record<string, never>, { connections: ServiceConnection[] }];
+  /**
+   * Add a remote server, keep its key in the keychain, and connect at once.
+   * A first validation that fails keeps the connection as `error`, with
+   * `validation_error`. Only on the Host itself (`permission_denied`).
+   */
+  "connection.create": [
+    NewServiceConnection,
+    { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
+  ];
+  /** Connect afresh and list the server's tools. */
+  "connection.validate": [{ service_connection_id: string }, { connection: ServiceConnection; changes: ServiceToolChanges }];
+  /**
+   * Replace a wrong, expired or rotated key on the same connection and
+   * connect again; answers like `connection.create`. Only on the Host itself.
+   */
+  "connection.set_secret": [
+    { service_connection_id: string; secret: string },
+    { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
+  ];
+  /** Unusable at once; still `revoking` while the keychain is locked, and calling again retries. */
+  "connection.revoke": [{ service_connection_id: string }, { connection: ServiceConnection }];
+  /** What the server listed at the last validation, by name. */
+  "connection.tools": [{ service_connection_id: string }, { tools: ServiceTool[] }];
   /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
@@ -3075,6 +3162,10 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.clone_cancel",
   "github.sign_in",
   "github.cancel_sign_in",
+  "connection.create",
+  "connection.validate",
+  "connection.set_secret",
+  "connection.revoke",
   "playbook.create",
   "playbook.save",
   "playbook.file.set",

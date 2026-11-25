@@ -12,6 +12,7 @@
 
 pub mod browser;
 pub mod compat;
+pub mod connection;
 pub mod error;
 pub mod events;
 pub mod http;
@@ -296,6 +297,15 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/site.resume", post(playbook::site_resume))
         .route("/site.risk_accept", post(playbook::site_risk_accept))
         .route("/site.usage", post(playbook::site_usage))
+        .route("/connection.list", post(connection::connection_list))
+        .route("/connection.create", post(connection::connection_create))
+        .route("/connection.validate", post(connection::connection_validate))
+        .route(
+            "/connection.set_secret",
+            post(connection::connection_set_secret),
+        )
+        .route("/connection.revoke", post(connection::connection_revoke))
+        .route("/connection.tools", post(connection::connection_tools))
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(

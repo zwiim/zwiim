@@ -193,6 +193,18 @@ fn uses_keychain() -> bool {
     !cfg!(test) && selected.as_deref().map(str::trim) != Some("file")
 }
 
+/// Whether secrets go to the plaintext `tokens.json` rather than the keychain.
+#[cfg(not(feature = "tauri-runtime"))]
+pub fn uses_file_store() -> bool {
+    !uses_keychain()
+}
+
+/// The desktop app always keeps secrets in the keychain.
+#[cfg(feature = "tauri-runtime")]
+pub fn uses_file_store() -> bool {
+    false
+}
+
 #[cfg(not(feature = "tauri-runtime"))]
 fn keychain_entry(key: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE_NAME, key).map_err(|e| format!("keyring init error: {e}"))

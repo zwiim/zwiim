@@ -20,6 +20,8 @@ use crate::web::event_bridge::emit_with_state;
 use crate::web::router::build_router;
 use crate::web::shutdown::ShutdownSignal;
 
+mod connection;
+
 pub(crate) const HOST_TOKEN: &str = "host-token";
 pub(crate) const CONN: &str = "conn-secret-7f3a";
 
@@ -177,6 +179,12 @@ const OPS: &[&str] = &[
     "site.resume",
     "site.risk_accept",
     "site.usage",
+    "connection.list",
+    "connection.create",
+    "connection.validate",
+    "connection.set_secret",
+    "connection.revoke",
+    "connection.tools",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {

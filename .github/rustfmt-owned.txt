@@ -99,6 +99,8 @@ runtime/host/src/power/supervisor.rs
 runtime/host/src/power/wake.rs
 runtime/host/src/pr_watch.rs
 runtime/host/src/protocol/compat.rs
+runtime/host/src/protocol/connection.rs
+runtime/host/src/protocol/tests/connection.rs
 runtime/host/src/protocol/playbook.rs
 runtime/host/src/redact.rs
 runtime/host/src/session_checkpoints.rs

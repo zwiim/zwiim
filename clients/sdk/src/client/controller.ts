@@ -36,6 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
+  NewServiceConnection,
   PlaybookDraft,
   RunResolveChoice,
   SessionEvent,
@@ -791,6 +792,34 @@ export class HostController {
 
   async closeBrowserView(stream_id: string): Promise<void> {
     await this.client.request("browser.view.close", { stream_id });
+  }
+
+  // ── Connections to outside services (revision 46) ───────────────────────
+
+  listConnections(): Promise<OpResult<"connection.list">> {
+    return this.client.request("connection.list", {});
+  }
+
+  /** Add a remote server by URL and connect it; only on the Host itself. */
+  createConnection(connection: NewServiceConnection): Promise<OpResult<"connection.create">> {
+    return this.client.request("connection.create", connection);
+  }
+
+  validateConnection(service_connection_id: string): Promise<OpResult<"connection.validate">> {
+    return this.client.request("connection.validate", { service_connection_id });
+  }
+
+  /** Replace the connection's key and connect again; only on the Host itself. */
+  setConnectionSecret(service_connection_id: string, secret: string): Promise<OpResult<"connection.set_secret">> {
+    return this.client.request("connection.set_secret", { service_connection_id, secret });
+  }
+
+  revokeConnection(service_connection_id: string): Promise<OpResult<"connection.revoke">> {
+    return this.client.request("connection.revoke", { service_connection_id });
+  }
+
+  connectionTools(service_connection_id: string): Promise<OpResult<"connection.tools">> {
+    return this.client.request("connection.tools", { service_connection_id });
   }
 
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────

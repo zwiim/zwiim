@@ -122,6 +122,9 @@ pub struct AppState {
     pub browser: Arc<tokio::sync::OnceCell<Arc<crate::browser::service::BrowserService>>>,
     /// The browser's tab streams, made with their first view.
     pub browser_streams: Arc<tokio::sync::OnceCell<Arc<crate::browser::stream::StreamHub>>>,
+    /// The Host's connections to outside services, made on first use (see
+    /// [`AppState::connectors`]).
+    pub connectors: Arc<tokio::sync::OnceCell<Arc<crate::connectors::runtime::Connectors>>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -324,6 +327,26 @@ impl AppState {
             .clone())
     }
 
+    /// The Host's connections to outside services, made on first use.
+    /// Making it finishes the revocations a Host exit interrupted.
+    pub async fn connectors(&self) -> Arc<crate::connectors::runtime::Connectors> {
+        use crate::connectors::{credentials::Keychain, egress::SystemResolver, runtime};
+        self.connectors
+            .get_or_init(|| async {
+                let service = Arc::new(runtime::Connectors::new(
+                    self.db.conn.clone(),
+                    Arc::new(runtime::McpFactory::new(Arc::new(SystemResolver))),
+                    Arc::new(Keychain),
+                ));
+                if let Err(e) = service.resume_revocations().await {
+                    tracing::warn!("[connectors] couldn't resume revocations: {e}");
+                }
+                service
+            })
+            .await
+            .clone()
+    }
+
     /// What a clone job needs, from this Host's state.
     pub fn clone_env(&self) -> crate::workspace::clone::CloneEnv {
         crate::workspace::clone::CloneEnv {
@@ -414,6 +437,7 @@ impl AppState {
             github_auth: Default::default(),
             browser: Default::default(),
             browser_streams: Default::default(),
+            connectors: Default::default(),
         }
     }
 }
