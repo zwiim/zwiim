@@ -1,5 +1,5 @@
-//! Connector records in the Host database: definitions, connections and the
-//! endpoints each connection may reach. Credentials are never here; they
+//! Connector records in the Host database: definitions, connections, the
+//! endpoints each connection may reach and each connection's tool snapshot. Credentials are never here; they
 //! live in the OS keychain.
 
 use chrono::{DateTime, Utc};
@@ -12,7 +12,8 @@ use url::Url;
 
 use super::definition::{ConnectorDefinition, DefinitionError, Purpose, Runtime, Trust};
 use super::egress::{EndpointRule, NetworkClass};
-use crate::db::entities::{connection, connection_endpoint, connector_definition};
+use super::upstream::ToolDefinition;
+use crate::db::entities::{connection, connection_endpoint, connection_tool, connector_definition};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -317,6 +318,118 @@ pub async fn endpoint_rules(
             let _: Purpose = parse_name(&row.purpose)?;
             EndpointRule::new(&row.origin, row.credentials, class)
                 .map_err(|e| StoreError::Corrupt(e.to_string()))
+        })
+        .collect()
+}
+
+/// What a new listing changed in a connection's snapshot, by tool name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotChanges {
+    /// New, or listed again after being removed.
+    pub added: Vec<String>,
+    /// Listed with a different hash.
+    pub changed: Vec<String>,
+    /// No longer listed.
+    pub removed: Vec<String>,
+}
+
+impl SnapshotChanges {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
+    }
+}
+
+const TOOL_ACTIVE: &str = "active";
+const TOOL_REMOVED: &str = "removed";
+
+/// Records `tools` as connection `id`'s current listing, in one
+/// transaction. A tool no longer listed stays as `removed`, so a grant
+/// pinned to it isn't silently lost.
+pub async fn save_tool_snapshot(
+    conn: &DatabaseConnection,
+    id: &str,
+    tools: &[ToolDefinition],
+) -> Result<SnapshotChanges, StoreError> {
+    let txn = conn.begin().await?;
+    let existing = connection_tool::Entity::find()
+        .filter(connection_tool::Column::ConnectionId.eq(id))
+        .all(&txn)
+        .await?;
+    let now = Utc::now();
+    let mut changes = SnapshotChanges::default();
+    for tool in tools {
+        let hash = tool.hash();
+        let mut row = connection_tool::ActiveModel {
+            connection_id: Set(id.into()),
+            name: Set(tool.name.clone()),
+            title: Set(tool.title.clone()),
+            description: Set(tool.description.clone()),
+            input_schema_json: Set(tool.input_schema.to_string()),
+            output_schema_json: Set(tool.output_schema.as_ref().map(|v| v.to_string())),
+            annotations_json: Set(tool.annotations.as_ref().map(|v| v.to_string())),
+            schema_hash: Set(hash.clone()),
+            status: Set(TOOL_ACTIVE.into()),
+            last_seen_at: Set(now),
+            ..Default::default()
+        };
+        match existing.iter().find(|r| r.name == tool.name) {
+            None => {
+                row.first_seen_at = Set(now);
+                row.insert(&txn).await?;
+                changes.added.push(tool.name.clone());
+            }
+            Some(old) => {
+                if old.status == TOOL_REMOVED {
+                    changes.added.push(tool.name.clone());
+                }
+                if old.schema_hash != hash {
+                    row.changed_at = Set(Some(now));
+                    if old.status != TOOL_REMOVED {
+                        changes.changed.push(tool.name.clone());
+                    }
+                }
+                row.id = Set(old.id);
+                row.update(&txn).await?;
+            }
+        }
+    }
+    for old in &existing {
+        if old.status != TOOL_REMOVED && !tools.iter().any(|t| t.name == old.name) {
+            connection_tool::ActiveModel {
+                id: Set(old.id),
+                status: Set(TOOL_REMOVED.into()),
+                ..Default::default()
+            }
+            .update(&txn)
+            .await?;
+            changes.removed.push(old.name.clone());
+        }
+    }
+    txn.commit().await?;
+    Ok(changes)
+}
+
+/// Connection `id`'s currently listed tools, by name.
+pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefinition>, StoreError> {
+    let rows = connection_tool::Entity::find()
+        .filter(connection_tool::Column::ConnectionId.eq(id))
+        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
+        .order_by_asc(connection_tool::Column::Name)
+        .all(conn)
+        .await?;
+    let json = |text: &str| {
+        serde_json::from_str(text).map_err(|e| StoreError::Corrupt(format!("tool schema: {e}")))
+    };
+    rows.into_iter()
+        .map(|row| {
+            Ok(ToolDefinition {
+                input_schema: json(&row.input_schema_json)?,
+                output_schema: row.output_schema_json.as_deref().map(json).transpose()?,
+                annotations: row.annotations_json.as_deref().map(json).transpose()?,
+                name: row.name,
+                title: row.title,
+                description: row.description,
+            })
         })
         .collect()
 }

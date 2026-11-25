@@ -2,10 +2,12 @@ use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 
 use super::{
     connection, connections, create_connection, definition, endpoint_rules, save_definition,
-    set_status, ConnectionStatus, CredentialStore, StoreError,
+    save_tool_snapshot, set_status, tools, ConnectionStatus, CredentialStore, SnapshotChanges,
+    StoreError,
 };
 use crate::connectors::definition::{from_user, Runtime, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
+use crate::connectors::upstream::ToolDefinition;
 use crate::db::entities::connector_definition;
 use crate::db::test_helpers::fresh_in_memory_db;
 
@@ -274,4 +276,97 @@ async fn a_connection_keeps_the_hash_it_was_confirmed_with() {
     let kept = connection(&db.conn, &made.id).await.unwrap().unwrap();
     assert_eq!(kept.definition_hash, made.definition_hash);
     assert_ne!(kept.definition_hash, def.hash());
+}
+
+fn tool(name: &str, description: &str) -> ToolDefinition {
+    ToolDefinition {
+        name: name.into(),
+        title: None,
+        description: Some(description.into()),
+        input_schema: serde_json::json!({ "type": "object" }),
+        output_schema: Some(serde_json::json!({ "type": "object" })),
+        annotations: Some(serde_json::json!({ "readOnlyHint": true })),
+    }
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+async fn connected(db: &crate::db::AppDatabase) -> String {
+    let def = stored(db, "Linear").await;
+    create_connection(&db.conn, &def, "Work", CredentialStore::Keychain)
+        .await
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn a_snapshot_reports_what_each_listing_changed() {
+    let db = fresh_in_memory_db().await;
+    let id = connected(&db).await;
+
+    let first = save_tool_snapshot(&db.conn, &id, &[tool("a", "A"), tool("b", "B")])
+        .await
+        .unwrap();
+    assert_eq!(first.added, names(&["a", "b"]));
+    assert!(first.changed.is_empty() && first.removed.is_empty());
+    assert_eq!(
+        tools(&db.conn, &id).await.unwrap(),
+        [tool("a", "A"), tool("b", "B")]
+    );
+
+    let same = save_tool_snapshot(&db.conn, &id, &[tool("b", "B"), tool("a", "A")])
+        .await
+        .unwrap();
+    assert!(same.is_empty(), "{same:?}");
+
+    let next = save_tool_snapshot(&db.conn, &id, &[tool("a", "Deletes A"), tool("c", "C")])
+        .await
+        .unwrap();
+    assert_eq!(
+        next,
+        SnapshotChanges {
+            added: names(&["c"]),
+            changed: names(&["a"]),
+            removed: names(&["b"]),
+        }
+    );
+    assert_eq!(
+        tools(&db.conn, &id).await.unwrap(),
+        [tool("a", "Deletes A"), tool("c", "C")]
+    );
+
+    // A removed tool that comes back is new again, whatever its hash.
+    let back = save_tool_snapshot(&db.conn, &id, &[tool("a", "Deletes A"), tool("b", "B2")])
+        .await
+        .unwrap();
+    assert_eq!(back.added, names(&["b"]));
+    assert_eq!(back.removed, names(&["c"]));
+    assert!(back.changed.is_empty());
+}
+
+#[tokio::test]
+async fn snapshots_are_per_connection_and_go_with_it() {
+    let db = fresh_in_memory_db().await;
+    let one = connected(&db).await;
+    let def = stored(&db, "Other").await;
+    let two = create_connection(&db.conn, &def, "Work", CredentialStore::Keychain)
+        .await
+        .unwrap()
+        .id;
+    save_tool_snapshot(&db.conn, &one, &[tool("a", "A")])
+        .await
+        .unwrap();
+    save_tool_snapshot(&db.conn, &two, &[tool("a", "Other A")])
+        .await
+        .unwrap();
+    assert_eq!(tools(&db.conn, &one).await.unwrap(), [tool("a", "A")]);
+
+    crate::db::entities::connection::Entity::delete_by_id(one.clone())
+        .exec(&db.conn)
+        .await
+        .unwrap();
+    assert!(tools(&db.conn, &one).await.unwrap().is_empty());
+    assert_eq!(tools(&db.conn, &two).await.unwrap(), [tool("a", "Other A")]);
 }
