@@ -259,6 +259,7 @@ async fn unknown_connections_are_not_found() {
         "connection.validate",
         "connection.revoke",
         "connection.tools",
+        "connection.executions",
     ] {
         let (status, code) = h.err(op, json!({ "service_connection_id": "nope" })).await;
         assert_eq!(
@@ -461,4 +462,75 @@ async fn grant_changes_that_cannot_hold_are_refused() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "a paired device may look");
+}
+
+#[tokio::test]
+async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let connectors = h.state.connectors().await;
+    let secret = json!({ "text": "ship the token sk-live-42" });
+    let arguments = secret.as_object().unwrap().clone();
+    for _ in 0..3 {
+        assert!(
+            !connectors
+                .call(&id, "echo", arguments.clone())
+                .await
+                .is_error
+        );
+    }
+    assert!(connectors.call(&id, "missing", arguments).await.is_error);
+
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, body) = h
+        .call_as(
+            &device,
+            "connection.executions",
+            json!({ "service_connection_id": id, "limit": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.to_string().contains("sk-live-42"), "{body}");
+    let first = body["executions"].as_array().unwrap();
+    assert_eq!(first.len(), 2);
+    let newest = &first[0];
+    assert_eq!(newest["tool"], "missing");
+    assert_eq!(newest["state"], "rejected");
+    assert_eq!(newest["reason"], "not_exposed");
+    assert_eq!(newest["dispatched_at"], Value::Null);
+    assert!(newest["detail"]
+        .as_str()
+        .unwrap()
+        .contains("nothing was sent"));
+    let cursor = body["next_cursor"].clone();
+    assert!(cursor.is_string());
+
+    let body = ok(
+        &h,
+        "connection.executions",
+        json!({ "service_connection_id": id, "cursor": cursor }),
+    )
+    .await;
+    let rest = body["executions"].as_array().unwrap();
+    assert_eq!(rest.len(), 2);
+    assert_eq!(body["next_cursor"], Value::Null);
+    let oldest = &rest[1];
+    assert_eq!(oldest["state"], "succeeded");
+    assert_eq!(oldest["arg_keys"], json!(["text"]));
+    assert!(oldest["dispatched_at"].is_string());
+    assert!(oldest["upstream_ms"].is_i64() && oldest["overhead_ms"].is_i64());
+    assert_eq!(oldest["detail"], Value::Null);
+
+    let (status, code) = h
+        .err(
+            "connection.executions",
+            json!({ "service_connection_id": id, "cursor": "nope" }),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_input")
+    );
 }

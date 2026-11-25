@@ -847,6 +847,13 @@ export class HostController {
     return this.client.request("connection.tools", { service_connection_id });
   }
 
+  /** A connection's tool calls, newest first; pass `next_cursor` for the next page. */
+  listConnectionExecutions(
+    params: OpParams<"connection.executions">,
+  ): Promise<OpResult<"connection.executions">> {
+    return this.client.request("connection.executions", params);
+  }
+
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────
 
   listPlaybooks(): Promise<OpResult<"playbook.list">> {

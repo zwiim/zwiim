@@ -626,7 +626,24 @@ use serde::{Deserialize, Serialize};
 /// keeping denied ones; both return `{grant}`. Only the Host itself may
 /// change grants (`permission_denied`). Unknown grants and tools are
 /// `not_found`. Older clients never call them.
-pub const PROTOCOL_REVISION: u32 = 47;
+///
+/// 48 (`connection.executions`): the audit trail of a connection's tool
+/// calls (connector design r3 §4.3). An execution is `{execution_id, tool,
+/// state, reason, detail, arg_keys, received_at, dispatched_at,
+/// finished_at, upstream_ms, overhead_ms}`. `state` is `received`,
+/// `rejected`, `cancelled_before_dispatch`, `dispatched`, `succeeded`,
+/// `tool_error`, `failed` or `outcome_unknown` (the approval states are
+/// reserved); `reason` says why a call was rejected (`unavailable`,
+/// `not_exposed`, `not_sent`) or why its outcome is unknown (`timeout`,
+/// `cancelled_after_dispatch`, `connection_lost`, `host_shutdown`).
+/// `dispatched_at` is set only for a call that reached the service.
+/// Arguments are never kept: only their top-level keys. `upstream_ms` is
+/// the service's round trip and `overhead_ms` the rest of the Host's time.
+/// `connection.executions {service_connection_id, cursor?, limit?}` returns
+/// `{executions, next_cursor}`, newest first, 50 a page by default and 200
+/// at most; an unknown cursor is `invalid_input`. Older clients never call
+/// it.
+pub const PROTOCOL_REVISION: u32 = 48;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -928,7 +945,12 @@ mod tests {
 
     #[test]
     fn grants_are_revision_47() {
-        assert_eq!(PROTOCOL_REVISION, 47);
+        assert!(PROTOCOL_REVISION >= 47);
+    }
+
+    #[test]
+    fn executions_are_revision_48() {
+        assert_eq!(PROTOCOL_REVISION, 48);
     }
 
     #[test]

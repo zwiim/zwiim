@@ -95,5 +95,14 @@ describe("connection methods", () => {
     await t.controller.connectionTools("c1");
     expect(sent()).toMatchObject({ op: "connection.tools", params: { service_connection_id: "c1" } });
     expect(sent()?.options?.mutating).toBeFalsy();
+
+    t.transport.handlers["connection.executions"] = () => ({ executions: [], next_cursor: null });
+    const page = await t.controller.listConnectionExecutions({ service_connection_id: "c1", cursor: "e9", limit: 20 });
+    expect(page.next_cursor).toBeNull();
+    expect(sent()).toMatchObject({
+      op: "connection.executions",
+      params: { service_connection_id: "c1", cursor: "e9", limit: 20 },
+    });
+    expect(sent()?.options?.mutating).toBeFalsy();
   });
 });

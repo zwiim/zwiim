@@ -323,6 +323,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/connection.grant.allow_all",
             post(connection::connection_grant_allow_all),
         )
+        .route(
+            "/connection.executions",
+            post(connection::connection_executions),
+        )
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(
