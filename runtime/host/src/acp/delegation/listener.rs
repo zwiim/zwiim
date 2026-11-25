@@ -31,7 +31,7 @@ use crate::acp::delegation::transport::{
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerGitRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerPlaybookAttachRequest, BrokerPlaybookResultRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
-    BrokerUpdateProgressRequest,
+    BrokerUpdateProgressRequest, ConnectorRevision, ConnectorTools,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -93,6 +93,10 @@ pub struct TokenEntry {
     /// from its own launch state. `Some` limits the token to that kind's
     /// tool profile (automation spec 10.8).
     pub engine: Option<crate::automation::lockdown::EngineLaunch>,
+    /// The connection a connector proxy launch serves (`zwiim-mcp
+    /// --connector`). Only such a token is answered the connector frames,
+    /// and only for that connection.
+    pub connector: Option<String>,
 }
 
 #[derive(Default)]
@@ -192,6 +196,9 @@ pub struct DelegationListener {
     /// The live engine sessions: where `playbook_item_result` goes and where
     /// each engine call is counted. Set once at startup; unset refuses.
     engine_sessions: std::sync::OnceLock<Arc<crate::automation::sessions::EngineSessions>>,
+    /// The Host's connections, which answer connector proxies. Set once at
+    /// startup; unset refuses every connector frame.
+    connectors: std::sync::OnceLock<Arc<crate::connectors::runtime::Connectors>>,
 }
 
 impl DelegationListener {
@@ -223,6 +230,7 @@ impl DelegationListener {
             progress,
             attempts: std::sync::OnceLock::new(),
             engine_sessions: std::sync::OnceLock::new(),
+            connectors: std::sync::OnceLock::new(),
         })
     }
 
@@ -239,6 +247,21 @@ impl DelegationListener {
         sessions: Arc<crate::automation::sessions::EngineSessions>,
     ) {
         let _ = self.engine_sessions.set(sessions);
+    }
+
+    /// Give the listener the Host's connections. A second call is ignored.
+    pub fn set_connectors(&self, connectors: Arc<crate::connectors::runtime::Connectors>) {
+        let _ = self.connectors.set(connectors);
+    }
+
+    /// The connections and the one `token` was minted for, if it is a
+    /// connector proxy's.
+    async fn connector_of(
+        &self,
+        token: &str,
+    ) -> Option<(Arc<crate::connectors::runtime::Connectors>, String)> {
+        let id = self.tokens.lookup(token).await?.connector?;
+        Some((self.connectors.get()?.clone(), id))
     }
 
     /// Bind the socket, then serve it forever. Kept as the one-call entry
@@ -691,16 +714,54 @@ impl DelegationListener {
                     Err(note) => serde_json::json!({ "error": "refused", "note": note }),
                 },
             },
-            // No token is bound to a connection yet: the Host gateway that
-            // mints connector-proxy tokens comes with the connection records.
-            BrokerMessage::ConnectorTools(_)
-            | BrokerMessage::ConnectorWatch(_)
-            | BrokerMessage::ConnectorCall(_) => BrokerResponse {
-                outcome: serde_json::json!({
-                    "error": "no_connector",
-                    "note": NO_CONNECTOR_REFUSAL,
-                }),
-            },
+            // Only a connector proxy's token names a connection, and the
+            // connection comes from the token, never from the proxy.
+            BrokerMessage::ConnectorTools(req) => {
+                let Some((connectors, id)) = self.connector_of(&req.token).await else {
+                    write_frame(conn, &no_connector_response()).await?;
+                    return Ok(());
+                };
+                match connectors.exposed_tools(&id).await {
+                    Ok((revision, tools)) => encode(&ConnectorTools { revision, tools })?,
+                    Err(note) => BrokerResponse {
+                        outcome: serde_json::json!({ "error": "unavailable", "note": note }),
+                    },
+                }
+            }
+            BrokerMessage::ConnectorWatch(req) => {
+                let Some((connectors, id)) = self.connector_of(&req.token).await else {
+                    write_frame(conn, &no_connector_response()).await?;
+                    return Ok(());
+                };
+                let runtime = connectors.runtime(&id);
+                // Held until the tools change; the proxy closes the socket
+                // to stop waiting.
+                let mut probe = [0u8; 1];
+                let revision = tokio::select! {
+                    biased;
+                    revision = runtime.changed_since(req.revision) => revision,
+                    _ = conn.read(&mut probe) => return Ok(()),
+                };
+                encode(&ConnectorRevision { revision })?
+            }
+            BrokerMessage::ConnectorCall(req) => {
+                let Some((connectors, id)) = self.connector_of(&req.token).await else {
+                    write_frame(conn, &no_connector_response()).await?;
+                    return Ok(());
+                };
+                // The proxy closing the socket cancels the call: the future
+                // is dropped mid-flight.
+                let mut probe = [0u8; 1];
+                let output = tokio::select! {
+                    biased;
+                    output = connectors.call(&id, &req.tool, req.arguments) => output,
+                    _ = conn.read(&mut probe) => {
+                        tracing::info!("[connectors] a call on {id} was cancelled by its proxy");
+                        return Ok(());
+                    }
+                };
+                encode(&output)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1428,6 +1489,23 @@ fn feedback_response(items: &[PendingFeedback]) -> std::io::Result<BrokerRespons
 
 /// Serialize a resolved [`QuestionOutcome`] into a [`BrokerResponse`] for the
 /// `Ask` arm — the `{ answers, declined }` envelope the companion renders.
+fn no_connector_response() -> BrokerResponse {
+    BrokerResponse {
+        outcome: serde_json::json!({
+            "error": "no_connector",
+            "note": NO_CONNECTOR_REFUSAL,
+        }),
+    }
+}
+
+fn encode(value: &impl serde::Serialize) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(value).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
 fn ask_response(outcome: &QuestionOutcome) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(outcome).map_err(|e| {
@@ -2318,6 +2396,7 @@ mod tests {
                     parent_connection_id: "other-parent".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2343,6 +2422,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2369,6 +2449,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2401,6 +2482,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2476,6 +2558,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2627,6 +2710,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2732,6 +2816,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2780,6 +2865,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2892,6 +2978,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2960,6 +3047,7 @@ mod tests {
                     parent_connection_id: "p1".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2970,6 +3058,7 @@ mod tests {
                     parent_connection_id: "p1".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -2980,6 +3069,7 @@ mod tests {
                     parent_connection_id: "p2".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3019,6 +3109,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3097,6 +3188,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3146,6 +3238,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3188,6 +3281,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3257,6 +3351,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/repo/app"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3305,6 +3400,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/repo/app"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3383,6 +3479,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3497,6 +3594,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3555,6 +3653,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3608,6 +3707,7 @@ mod tests {
                     parent_connection_id: "conn-1".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3718,6 +3818,7 @@ mod tests {
                         parent_connection_id: format!("conn-{token}"),
                         working_dir: PathBuf::from("/tmp"),
                         engine: Some(EngineLaunch { kind, attempt: None }),
+                        connector: None,
                     },
                 )
                 .await;
@@ -3792,6 +3893,7 @@ mod tests {
                         kind: SessionKind::Discovery,
                         attempt: None,
                     }),
+                    connector: None,
                 },
             )
             .await;
@@ -3802,6 +3904,7 @@ mod tests {
                     parent_connection_id: "conn-person".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -3845,10 +3948,10 @@ mod tests {
         ));
     }
 
-    /// No token is bound to a connection yet, so a connector proxy is told
-    /// there is none; an engine session is refused by its lockdown first.
+    /// A token that names no connection is told there is none; an engine
+    /// session is refused by its lockdown first.
     #[tokio::test]
-    async fn connector_frames_are_refused_until_a_token_names_a_connection() {
+    async fn connector_frames_are_refused_unless_the_token_names_a_connection() {
         use crate::acp::delegation::transport::{
             BrokerConnectorCallRequest, BrokerConnectorToolsRequest, BrokerConnectorWatchRequest,
         };
@@ -3858,6 +3961,7 @@ mod tests {
             parent_connection_id: "conn".into(),
             working_dir: PathBuf::from("/tmp"),
             engine,
+            connector: None,
         };
         tokens.register("person".into(), entry(None)).await;
         let engine = EngineLaunch {
@@ -3893,6 +3997,141 @@ mod tests {
         }
     }
 
+    /// A connected fake MCP server and the Host's connections, with the
+    /// listener answering a proxy token minted for that connection.
+    async fn connector_listener(
+        fake: &crate::connectors::fake_mcp::FakeMcp,
+    ) -> (
+        Arc<DelegationListener>,
+        Arc<crate::connectors::runtime::Connectors>,
+        String,
+        crate::connectors::fake_mcp::HttpServer,
+    ) {
+        use crate::connectors::credentials::MemorySecrets;
+        use crate::connectors::egress::SystemResolver;
+        use crate::connectors::runtime::{Connectors, McpFactory};
+        use crate::connectors::definition::{UserAuth, UserConnector};
+        use crate::connectors::egress::NetworkClass;
+        let server = fake.serve_http().await;
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let connectors = Arc::new(Connectors::new(
+            db.conn.clone(),
+            Arc::new(McpFactory::new(Arc::new(SystemResolver))),
+            Arc::new(MemorySecrets::default()),
+        ));
+        let server_entry = UserConnector {
+            name: "Fake".into(),
+            url: server.url(),
+            auth: UserAuth::Bearer,
+            network: NetworkClass::Local,
+        };
+        let created = connectors
+            .create(server_entry, "Work", Some("k3y"))
+            .await
+            .unwrap();
+        created.validation.unwrap();
+        let tokens = Arc::new(TokenRegistry::default());
+        let entry = |connector| TokenEntry {
+            parent_connection_id: "conn".into(),
+            working_dir: PathBuf::from("/tmp"),
+            engine: None,
+            connector,
+        };
+        tokens
+            .register("proxy".into(), entry(Some(created.id.clone())))
+            .await;
+        tokens.register("person".into(), entry(None)).await;
+        let listener = make_browser_listener(tokens, Arc::new(StubBrowser::default()));
+        listener.set_connectors(connectors.clone());
+        (listener, connectors, created.id, server)
+    }
+
+    fn connector_call(tool: &str) -> BrokerMessage {
+        BrokerMessage::ConnectorCall(crate::acp::delegation::transport::BrokerConnectorCallRequest {
+            token: "proxy".into(),
+            tool: tool.into(),
+            arguments: serde_json::json!({ "text": "hi" })
+                .as_object()
+                .unwrap()
+                .clone(),
+        })
+    }
+
+    /// A proxy's token is answered for its own connection: its tools, a
+    /// wait that ends when they change, and calls through to the service.
+    #[tokio::test]
+    async fn a_connector_token_is_answered_for_its_connection() {
+        use crate::acp::delegation::transport::{
+            BrokerConnectorToolsRequest, BrokerConnectorWatchRequest,
+        };
+        use crate::connectors::fake_mcp::{tool, Era, FakeMcp};
+        let fake = FakeMcp::new(Era::Modern);
+        let (listener, connectors, id, _server) = connector_listener(&fake).await;
+        let tools = |token: &str| {
+            BrokerMessage::ConnectorTools(BrokerConnectorToolsRequest {
+                token: token.into(),
+            })
+        };
+
+        let listed = browser_round_trip(listener.clone(), tools("proxy")).await;
+        assert_eq!(listed.outcome["tools"][0]["name"], "echo");
+        let revision = listed.outcome["revision"].as_u64().unwrap();
+        let other = browser_round_trip(listener.clone(), tools("person")).await;
+        assert_eq!(other.outcome["error"], "no_connector");
+
+        let called = browser_round_trip(listener.clone(), connector_call("echo")).await;
+        assert_eq!(called.outcome["content"][0]["text"], "hi", "{:?}", called.outcome);
+        assert_eq!(called.outcome["isError"], false);
+
+        let watch = tokio::spawn(browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ConnectorWatch(BrokerConnectorWatchRequest {
+                token: "proxy".into(),
+                revision,
+            }),
+        ));
+        fake.set_tools(vec![tool("search", "Searches")]);
+        connectors.validate(&id).await.unwrap();
+        let changed = tokio::time::timeout(Duration::from_secs(5), watch)
+            .await
+            .expect("the wait ends once the tools change")
+            .unwrap();
+        assert!(changed.outcome["revision"].as_u64().unwrap() > revision);
+
+        connectors.revoke(&id).await.unwrap();
+        let listed = browser_round_trip(listener.clone(), tools("proxy")).await;
+        assert_eq!(listed.outcome["tools"], serde_json::json!([]));
+        let refused = browser_round_trip(listener, connector_call("search")).await;
+        assert_eq!(refused.outcome["isError"], true);
+    }
+
+    /// The proxy hanging up ends the Host's side of a call still waiting on
+    /// the service.
+    #[tokio::test]
+    async fn a_proxy_hanging_up_cancels_its_call() {
+        use crate::connectors::fake_mcp::{CallBehaviour, Era, FakeMcp};
+        let fake = FakeMcp::new(Era::Modern);
+        fake.on_call("echo", CallBehaviour::Hang);
+        let (listener, _connectors, _id, _server) = connector_listener(&fake).await;
+        let (mut client, mut server) = duplex(64 * 1024);
+        let served = tokio::spawn(async move { listener.serve_one(&mut server).await });
+        write_frame(&mut client, &connector_call("echo")).await.unwrap();
+        // Wait for the call to reach the service, then hang up.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !fake.received_methods().iter().any(|m| m == "tools/call") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(5), served)
+            .await
+            .expect("the Host stops waiting on the service")
+            .unwrap()
+            .unwrap();
+    }
+
     /// A call carrying an attempt the item has moved past is refused before
     /// it runs (automation spec 6.6.7): a zombie agent of an earlier attempt
     /// cannot touch the lane. With no way to ask, the Host refuses too.
@@ -3917,6 +4156,7 @@ mod tests {
                         kind: SessionKind::Item,
                         attempt: Some(ItemAttempt { item_id: 7, epoch: 2 }),
                     }),
+                    connector: None,
                 },
             )
             .await;
@@ -4255,6 +4495,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -4327,6 +4568,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -4388,6 +4630,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;
@@ -4468,6 +4711,7 @@ mod tests {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/elsewhere"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;

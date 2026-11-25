@@ -801,6 +801,7 @@ mod tests {
                         parent_connection_id: "conn-a".into(),
                         working_dir: std::path::PathBuf::from("/tmp"),
                         engine: None,
+                        connector: None,
                     },
                 )
                 .await;
@@ -812,6 +813,7 @@ mod tests {
                     parent_connection_id: "conn-b".into(),
                     working_dir: std::path::PathBuf::from("/tmp"),
                     engine: None,
+                    connector: None,
                 },
             )
             .await;

@@ -471,15 +471,6 @@ async fn async_main() -> Exit {
         connectors: Default::default(),
     });
 
-    // Finish connection revocations a Host exit interrupted (connector design
-    // r3 §4.4), off the startup path.
-    {
-        let state = state.clone();
-        tokio::spawn(async move {
-            state.connectors().await;
-        });
-    }
-
     // Load (first boot: mint) the host's identity keys off the startup path.
     if let Some(host_id) = host_id.clone() {
         let state = state.clone();
@@ -626,6 +617,15 @@ async fn async_main() -> Exit {
         ));
         // Their one result and their call count go to the engine.
         listener.set_engine_sessions(state.engine_sessions.clone());
+        // Connector proxies are answered once the Host's connections are
+        // made (finishing revocations a Host exit interrupted, r3 §4.4).
+        {
+            let listener = listener.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                listener.set_connectors(state.connectors().await);
+            });
+        }
         // Runs move along on their own from here (automation spec 6.1).
         zwiim_host::automation::run_loop::spawn(state.clone());
         // Bind through the service handle rather than a bare `listener.run`
