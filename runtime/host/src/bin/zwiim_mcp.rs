@@ -22,6 +22,8 @@
 //! in the parent, so `delegate_to_agent`'s schema can offer them as targets;
 //! `--disabled-agents` optionally names the built-ins to drop from that
 //! schema so only agents enabled in settings are advertised.
+//! `--connector` makes the launch a connector proxy instead: it serves the
+//! tools of the one connection its token is bound to, and none of its own.
 //! Everything heavyweight lives in the library so it's unit-testable without
 //! spawning a process: the MCP protocol (both eras, on rmcp) in
 //! `zwiim_host::acp::delegation::mcp_server`, and the tools (schemas, UDS
@@ -66,6 +68,8 @@ struct Args {
     /// Comma-joined exact tool names, passed only for automation engine
     /// sessions; narrows the groups to that list.
     tools: Option<String>,
+    /// Serve the token's connection as a connector proxy.
+    connector: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -77,6 +81,7 @@ fn parse_args() -> Result<Args, String> {
     let mut custom_agents = None;
     let mut disabled_agents = None;
     let mut tools = None;
+    let mut connector = false;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -132,9 +137,10 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| "--tools requires a value".to_string())?,
                 );
             }
+            "--connector" => connector = true,
             "--help" | "-h" => {
                 println!(
-                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks,progress] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...] [--tools <tool>,...]"
+                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks,progress] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...] [--tools <tool>,...] [--connector]"
                 );
                 std::process::exit(0);
             }
@@ -151,6 +157,7 @@ fn parse_args() -> Result<Args, String> {
         custom_agents,
         disabled_agents,
         tools,
+        connector,
     })
 }
 
@@ -201,12 +208,22 @@ async fn main() -> ExitCode {
             None => Box::pin(std::future::pending()),
         };
 
-    let server = mcp_server::serve(
-        ctx.clone(),
-        inflight.clone(),
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-    );
+    let server: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>>>> =
+        if args.connector {
+            Box::pin(mcp_server::serve_connector(
+                ctx.socket_path.clone(),
+                ctx.token.clone(),
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+            ))
+        } else {
+            Box::pin(mcp_server::serve(
+                ctx.clone(),
+                inflight.clone(),
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+            ))
+        };
     tokio::select! {
         // Bias toward parent-exit detection: if the watchdog fires while a
         // call is in flight we want to bail rather than finish a round-trip

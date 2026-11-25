@@ -691,6 +691,16 @@ impl DelegationListener {
                     Err(note) => serde_json::json!({ "error": "refused", "note": note }),
                 },
             },
+            // No token is bound to a connection yet: the Host gateway that
+            // mints connector-proxy tokens comes with the connection records.
+            BrokerMessage::ConnectorTools(_)
+            | BrokerMessage::ConnectorWatch(_)
+            | BrokerMessage::ConnectorCall(_) => BrokerResponse {
+                outcome: serde_json::json!({
+                    "error": "no_connector",
+                    "note": NO_CONNECTOR_REFUSAL,
+                }),
+            },
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1302,6 +1312,9 @@ impl DelegationListener {
     }
 }
 
+/// What a connector proxy is told when its token names no connection.
+const NO_CONNECTOR_REFUSAL: &str = "No connector is available to this session.";
+
 /// Serialize a [`DelegationTaskReport`] into a [`BrokerResponse`] for the wire.
 /// Used by the `Call` / `CancelTask` arms, which each resolve to one report.
 /// The token a broker message carries; `None` only for the untokened ping.
@@ -1332,6 +1345,9 @@ fn broker_token(msg: &BrokerMessage) -> Option<&str> {
         BrokerMessage::Git(r) => &r.token,
         BrokerMessage::PlaybookResult(r) => &r.token,
         BrokerMessage::PlaybookAttach(r) => &r.token,
+        BrokerMessage::ConnectorTools(r) => &r.token,
+        BrokerMessage::ConnectorWatch(r) => &r.token,
+        BrokerMessage::ConnectorCall(r) => &r.token,
     })
 }
 
@@ -3827,6 +3843,54 @@ mod tests {
             watch.report.await.unwrap(),
             SessionReport::Discovery(c) if c.len() == 1
         ));
+    }
+
+    /// No token is bound to a connection yet, so a connector proxy is told
+    /// there is none; an engine session is refused by its lockdown first.
+    #[tokio::test]
+    async fn connector_frames_are_refused_until_a_token_names_a_connection() {
+        use crate::acp::delegation::transport::{
+            BrokerConnectorCallRequest, BrokerConnectorToolsRequest, BrokerConnectorWatchRequest,
+        };
+        use crate::automation::lockdown::{EngineLaunch, SessionKind};
+        let tokens = Arc::new(TokenRegistry::default());
+        let entry = |engine| TokenEntry {
+            parent_connection_id: "conn".into(),
+            working_dir: PathBuf::from("/tmp"),
+            engine,
+        };
+        tokens.register("person".into(), entry(None)).await;
+        let engine = EngineLaunch {
+            kind: SessionKind::Discovery,
+            attempt: None,
+        };
+        tokens.register("engine".into(), entry(Some(engine))).await;
+        let listener = make_browser_listener(tokens, Arc::new(StubBrowser::default()));
+        let frames = |token: &str| {
+            [
+                BrokerMessage::ConnectorTools(BrokerConnectorToolsRequest {
+                    token: token.into(),
+                }),
+                BrokerMessage::ConnectorWatch(BrokerConnectorWatchRequest {
+                    token: token.into(),
+                    revision: 0,
+                }),
+                BrokerMessage::ConnectorCall(BrokerConnectorCallRequest {
+                    token: token.into(),
+                    tool: "create_issue".into(),
+                    arguments: serde_json::Map::new(),
+                }),
+            ]
+        };
+        for frame in frames("person") {
+            let resp = browser_round_trip(listener.clone(), frame).await;
+            assert_eq!(resp.outcome["error"], "no_connector");
+            assert_eq!(resp.outcome["note"], NO_CONNECTOR_REFUSAL);
+        }
+        for frame in frames("engine") {
+            let resp = browser_round_trip(listener.clone(), frame).await;
+            assert_eq!(resp.outcome["error"], "lockdown_refused");
+        }
     }
 
     /// A call carrying an attempt the item has moved past is refused before

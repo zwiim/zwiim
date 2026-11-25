@@ -5,7 +5,8 @@
 //! gating, schemas, argument checks, the broker round trips and the rendered
 //! results are the hand-written companion's, unchanged.
 //!
-//! rmcp types stay in this module: the binary only calls [`serve`].
+//! rmcp types stay in this module: the binary only calls [`serve`], or
+//! [`serve_connector`] for a connector proxy launch.
 //!
 //! ```text
 //! agent stdin ──▶ rmcp ──▶ McpServer::call_tool ──▶ dispatch_line("tools/call")
@@ -34,6 +35,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::companion::{
     dispatch_line, CompanionContext, InflightCalls, JsonRpcResponse, LineAction,
 };
+
+mod connector;
+
+pub use connector::serve_connector;
 
 /// Serves MCP on `read` / `write` until the agent closes the stream or the
 /// handshake fails. In-flight calls are left to the caller's

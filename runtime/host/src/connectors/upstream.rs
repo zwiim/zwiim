@@ -10,21 +10,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 /// A tool as a service offers it, after the adapter dropped anything the
-/// protocol carries that Zwiim doesn't forward.
-#[derive(Clone, Debug, PartialEq)]
+/// protocol carries that Zwiim doesn't forward. Serialized with MCP's field
+/// names for the Host-to-proxy frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolDefinition {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
     /// The server's own hints (`readOnlyHint`, `destructiveHint`, …). Shown to
     /// the user and forwarded to agents; never used to grant anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Value>,
 }
 
@@ -99,13 +106,17 @@ pub struct UpstreamCall {
     pub arguments: Map<String, Value>,
 }
 
-/// What a service answered to a call that completed.
-#[derive(Clone, Debug, PartialEq)]
+/// What a service answered to a call that completed. Serialized with MCP's
+/// field names for the Host-to-proxy frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallOutput {
     /// MCP content blocks as sent, passed on to the agent.
     pub content: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
     /// The service ran the tool and reports that it failed (`isError`).
+    #[serde(default)]
     pub is_error: bool,
 }
 

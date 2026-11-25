@@ -247,6 +247,46 @@ pub struct BrokerPlaybookAttachRequest {
     pub element_ref: String,
 }
 
+/// The tools of the connection a connector proxy's token is bound to
+/// (`zwiim-mcp --connector`). Answered with a [`ConnectorTools`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerConnectorToolsRequest {
+    pub token: String,
+}
+
+/// Wait until the exposed tools of the proxy's connection differ from
+/// `revision`. Answered with a [`ConnectorRevision`]; the proxy holds the
+/// socket for the whole wait and closes it to stop waiting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerConnectorWatchRequest {
+    pub token: String,
+    pub revision: u64,
+}
+
+/// Run one tool of the proxy's connection. Answered with a
+/// [`crate::connectors::upstream::CallOutput`]; anything the Host refuses
+/// comes back as one with `is_error`. The proxy closes the socket to cancel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerConnectorCallRequest {
+    pub token: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: serde_json::Map<String, Value>,
+}
+
+/// The exposed tools of one connection at `revision`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorTools {
+    pub revision: u64,
+    pub tools: Vec<crate::connectors::upstream::ToolDefinition>,
+}
+
+/// The answer to a [`BrokerConnectorWatchRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorRevision {
+    pub revision: u64,
+}
+
 /// Report the final verdict (+ optional summary) for the work task driving the
 /// parent session. Backs the `task_complete` MCP tool; the verdict decides how
 /// the task settles when the turn ends.
@@ -408,6 +448,9 @@ pub enum BrokerMessage {
     Git(BrokerGitRequest),
     PlaybookResult(BrokerPlaybookResultRequest),
     PlaybookAttach(BrokerPlaybookAttachRequest),
+    ConnectorTools(BrokerConnectorToolsRequest),
+    ConnectorWatch(BrokerConnectorWatchRequest),
+    ConnectorCall(BrokerConnectorCallRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from Zwiim's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -622,6 +665,32 @@ pub async fn client_playbook_attach_round_trip(
     req: &BrokerPlaybookAttachRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::PlaybookAttach(req.clone())).await
+}
+
+/// Read the tools of the proxy's connection.
+pub async fn client_connector_tools_round_trip(
+    socket_path: &str,
+    req: &BrokerConnectorToolsRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ConnectorTools(req.clone())).await
+}
+
+/// Block until the proxy's tools differ from `req.revision`. Drop the future
+/// to stop waiting.
+pub async fn client_connector_watch_round_trip(
+    socket_path: &str,
+    req: &BrokerConnectorWatchRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ConnectorWatch(req.clone())).await
+}
+
+/// Run one connector tool. Dropping the future closes the socket, which
+/// cancels the call on the Host.
+pub async fn client_connector_call_round_trip(
+    socket_path: &str,
+    req: &BrokerConnectorCallRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ConnectorCall(req.clone())).await
 }
 
 /// Dispatch a `create_automation` request and read back the serialized
