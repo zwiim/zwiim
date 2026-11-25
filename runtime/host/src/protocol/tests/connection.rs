@@ -11,7 +11,7 @@ use super::{bearer_device, event_is, host, Host};
 use crate::connectors::credentials::MemorySecrets;
 use crate::connectors::egress::SystemResolver;
 use crate::connectors::fake_mcp::{tool, Era, FakeMcp, HttpServer};
-use crate::connectors::runtime::{Connectors, McpFactory};
+use crate::connectors::runtime::{CallSession, Connectors, McpFactory, NoCards};
 
 const KEY: &str = "k3y-9d1e";
 
@@ -51,6 +51,29 @@ async fn ok(h: &Host, op: &str, body: Value) -> Value {
     let value = h.ok(op, body).await;
     assert!(!value.to_string().contains(KEY), "{op} echoed the key");
     value
+}
+
+/// A session that may run every tool the connection lists now.
+async fn allowed(h: &Host, id: &str) -> CallSession {
+    let grant = ok(
+        h,
+        "connection.grant.set",
+        json!({ "service_connection_id": id, "default_policy": "ask", "new_tools": "ask" }),
+    )
+    .await;
+    ok(
+        h,
+        "connection.grant.allow_all",
+        json!({ "grant_id": grant["grant"]["grant_id"] }),
+    )
+    .await;
+    CallSession {
+        session_id: "s1".into(),
+        workspace_id: None,
+        agent: "codex".into(),
+        engine: false,
+        cards: Arc::new(NoCards),
+    }
 }
 
 async fn created(h: &Host, server: &HttpServer) -> String {
@@ -476,17 +499,23 @@ async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
     let (h, _) = connected_host().await;
     let id = created(&h, &server).await;
     let connectors = h.state.connectors().await;
+    let session = allowed(&h, &id).await;
     let secret = json!({ "text": "ship the token sk-live-42" });
     let arguments = secret.as_object().unwrap().clone();
     for _ in 0..3 {
         assert!(
             !connectors
-                .call(&id, "echo", arguments.clone())
+                .call(&session, &id, "echo", arguments.clone())
                 .await
                 .is_error
         );
     }
-    assert!(connectors.call(&id, "missing", arguments).await.is_error);
+    assert!(
+        connectors
+            .call(&session, &id, "missing", arguments)
+            .await
+            .is_error
+    );
 
     let device = bearer_device(&h, "dev-1").await;
     let (status, body) = h
@@ -555,7 +584,13 @@ async fn each_call_is_published_as_it_starts_and_as_it_ends() {
     let connectors = h.state.connectors().await;
     let secret = json!({ "text": "ship the token sk-live-42" });
     let arguments = secret.as_object().unwrap().clone();
-    assert!(!connectors.call(&id, "echo", arguments).await.is_error);
+    let session = allowed(&h, &id).await;
+    assert!(
+        !connectors
+            .call(&session, &id, "echo", arguments)
+            .await
+            .is_error
+    );
 
     let started = h
         .host_event(

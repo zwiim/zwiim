@@ -13,10 +13,13 @@ use sea_orm::DatabaseConnection;
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 
+use super::ask::{store_failed, CallSession, Refusal};
 use super::{Connectors, ValidateError};
 use crate::connectors::executions::{
     self, Execution, ExecutionError, NewCall, Outcome, RejectReason, Timings,
 };
+use crate::connectors::grants;
+use crate::connectors::policy::{self, AllowedBy, Decision, DenyReason, Facts, ToolState};
 use crate::connectors::store::{self, ConnectionStatus};
 use crate::connectors::upstream::{
     CallFailure, CallOutput, DispatchMark, ToolDefinition, UnknownCause, Upstream, UpstreamCall,
@@ -46,7 +49,13 @@ impl Connectors {
     /// Anything that keeps it from running, or leaves its outcome unknown,
     /// comes back as a tool error that says so. A call whose request left
     /// the Host is never retried.
-    pub async fn call(&self, id: &str, tool: &str, arguments: Map<String, Value>) -> CallOutput {
+    pub async fn call(
+        &self,
+        session: &CallSession,
+        id: &str,
+        tool: &str,
+        arguments: Map<String, Value>,
+    ) -> CallOutput {
         let started = Instant::now();
         let connection = match store::connection(&self.db, id).await {
             Ok(Some(connection)) => connection,
@@ -63,7 +72,7 @@ impl Connectors {
             &self.db,
             NewCall {
                 connection_id: id,
-                session_id: None,
+                session_id: Some(&session.session_id),
                 tool_name: tool,
                 schema_hash: hash.as_deref(),
                 arguments: &arguments,
@@ -79,7 +88,7 @@ impl Connectors {
             Err(e) => return refusal(&unrecorded(e)),
         };
         let (outcome, upstream_ms, output) = self
-            .run(&connection, listed.is_some(), tool, arguments, &record)
+            .run(session, &connection, listed, tool, arguments, &record)
             .await;
         let detail = output.is_error.then(|| first_text(&output));
         record.end(outcome, detail.as_deref(), upstream_ms).await;
@@ -90,8 +99,9 @@ impl Connectors {
     /// the service's round trip, and what the agent is given.
     async fn run(
         &self,
+        session: &CallSession,
         connection: &store::Connection,
-        listed: bool,
+        listed: Option<&ToolDefinition>,
         tool: &str,
         arguments: Map<String, Value>,
         record: &Record,
@@ -108,7 +118,7 @@ impl Connectors {
                 ),
             );
         }
-        if !listed {
+        let Some(listed) = listed else {
             return rejected(
                 RejectReason::NotExposed,
                 format!(
@@ -116,6 +126,16 @@ impl Connectors {
                     connection.slug
                 ),
             );
+        };
+        let decided_by = match self
+            .permit(session, connection, listed, &arguments, &record.id)
+            .await
+        {
+            Ok(by) => by,
+            Err((outcome, line)) => return (outcome, None, refusal(&line)),
+        };
+        if let Err(e) = executions::decided(&self.db, &record.id, &decided_by).await {
+            return rejected(RejectReason::NotSent, unrecorded(e));
         }
         let upstream = match self.shared_upstream(connection).await {
             Ok(upstream) => upstream,
@@ -170,8 +190,76 @@ impl Connectors {
         (outcome, upstream_ms, output)
     }
 
-    /// At boot, before any call: ends the calls the last Host left open.
+    /// Whether the call may run (r3 §5.1), asking the user if policy says
+    /// to. Returns who let it run.
+    async fn permit(
+        &self,
+        session: &CallSession,
+        connection: &store::Connection,
+        tool: &ToolDefinition,
+        arguments: &Map<String, Value>,
+        execution_id: &str,
+    ) -> Result<String, Refusal> {
+        let hash = tool.hash();
+        let first_seen = store::first_seen(&self.db, &connection.id, &tool.name)
+            .await
+            .map_err(store_failed)?;
+        let grant = grants::grant_for(
+            &self.db,
+            &connection.id,
+            session.workspace_id.as_deref(),
+            &session.agent,
+        )
+        .await
+        .map_err(store_failed)?;
+        let allowed = self
+            .asking
+            .session_allowed(&session.session_id, &connection.id, &tool.name);
+        let decision = policy::decide(Facts {
+            connection_active: true,
+            engine_session: session.engine,
+            tool: first_seen.map(|first_seen_at| ToolState {
+                name: &tool.name,
+                hash: &hash,
+                first_seen_at,
+            }),
+            grant: grant.as_ref(),
+            session_allowed: allowed.as_deref(),
+        });
+        match decision {
+            Decision::Allow(AllowedBy::ToolRow) => Ok("policy".into()),
+            Decision::Allow(AllowedBy::Session) => Ok("session_grant".into()),
+            Decision::Deny(reason) => {
+                let _ = executions::decided(&self.db, execution_id, "policy").await;
+                let rejected = match reason {
+                    DenyReason::Unavailable => RejectReason::Unavailable,
+                    DenyReason::NotExposed => RejectReason::NotExposed,
+                    _ => RejectReason::Denied,
+                };
+                Err((Outcome::Rejected(rejected), reason.line().into()))
+            }
+            Decision::Ask(_) => {
+                let grant = grant.expect("asking needs a grant");
+                self.ask(
+                    session,
+                    connection,
+                    tool,
+                    &hash,
+                    grant.id,
+                    arguments,
+                    execution_id,
+                )
+                .await
+            }
+        }
+    }
+
+    /// At boot, before any call: ends the calls the last Host left open,
+    /// and leaves none of its approvals usable.
     pub async fn end_unfinished_calls(&self) {
+        if let Err(e) = crate::connectors::approvals::sweep(&self.db, chrono::Utc::now()).await {
+            tracing::warn!("[connectors] couldn't end unfinished approvals: {e}");
+        }
         match executions::sweep(&self.db).await {
             Ok(0) => {}
             Ok(n) => tracing::info!("[connectors] ended {n} calls the last Host left open"),

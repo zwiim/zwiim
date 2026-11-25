@@ -5,6 +5,9 @@
 //! ```text
 //! received ──┬─> rejected                   nothing sent
 //!            ├─> cancelled_before_dispatch  nothing sent
+//!            ├─> awaiting_approval ──┬─> approval_denied / _expired / _void
+//!            │                       ├─> rejected or cancelled_before_dispatch
+//!            │                       └─> dispatched
 //!            └─> dispatched ──┬─> succeeded
 //!                             ├─> tool_error
 //!                             ├─> failed
@@ -29,6 +32,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::approvals::VoidReason;
 use super::upstream::{sha256_of, UnknownCause};
 use crate::db::entities::connector_execution;
 
@@ -65,17 +69,18 @@ impl ExecutionState {
     /// The states a record may move to this one from.
     fn follows(self) -> &'static [ExecutionState] {
         match self {
-            Self::Rejected | Self::CancelledBeforeDispatch => &[Self::Received, Self::Dispatched],
-            Self::Dispatched => &[Self::Received],
+            Self::Rejected | Self::CancelledBeforeDispatch => {
+                &[Self::Received, Self::AwaitingApproval, Self::Dispatched]
+            }
+            Self::AwaitingApproval => &[Self::Received],
+            Self::ApprovalDenied | Self::ApprovalExpired | Self::ApprovalVoid => {
+                &[Self::AwaitingApproval]
+            }
+            Self::Dispatched => &[Self::Received, Self::AwaitingApproval],
             Self::Succeeded | Self::ToolError | Self::Failed | Self::OutcomeUnknown => {
                 &[Self::Dispatched]
             }
-            // Written once approvals land.
-            Self::Received
-            | Self::AwaitingApproval
-            | Self::ApprovalDenied
-            | Self::ApprovalExpired
-            | Self::ApprovalVoid => &[],
+            Self::Received => &[],
         }
     }
 }
@@ -90,6 +95,9 @@ pub enum RejectReason {
     NotExposed,
     /// The service couldn't be reached; nothing left the Host.
     NotSent,
+    /// Policy said no: no grant, a `deny` row or a `deny` fallback, or an
+    /// engine session.
+    Denied,
 }
 
 /// How a call ended.
@@ -103,6 +111,9 @@ pub enum Outcome {
     /// The service answered with an error.
     Failed,
     Unknown(UnknownCause),
+    ApprovalDenied,
+    ApprovalExpired,
+    ApprovalVoid(VoidReason),
 }
 
 impl Outcome {
@@ -114,6 +125,9 @@ impl Outcome {
             Self::ToolError => ExecutionState::ToolError,
             Self::Failed => ExecutionState::Failed,
             Self::Unknown(_) => ExecutionState::OutcomeUnknown,
+            Self::ApprovalDenied => ExecutionState::ApprovalDenied,
+            Self::ApprovalExpired => ExecutionState::ApprovalExpired,
+            Self::ApprovalVoid(_) => ExecutionState::ApprovalVoid,
         }
     }
 
@@ -121,6 +135,7 @@ impl Outcome {
         match self {
             Self::Rejected(reason) => Some(name_of(reason)),
             Self::Unknown(cause) => Some(cause_name(*cause).into()),
+            Self::ApprovalVoid(reason) => Some(name_of(reason)),
             _ => None,
         }
     }
@@ -293,6 +308,34 @@ pub async fn dispatch(conn: &DatabaseConnection, id: &str) -> Result<bool, Execu
     Ok(moved.rows_affected == 1)
 }
 
+/// Parks call `id` on the user's answer. False if it had moved on.
+pub async fn await_approval(conn: &DatabaseConnection, id: &str) -> Result<bool, ExecutionError> {
+    let moved = connector_execution::Entity::update_many()
+        .col_expr(
+            connector_execution::Column::State,
+            Expr::value(name_of(ExecutionState::AwaitingApproval)),
+        )
+        .filter(connector_execution::Column::Id.eq(id))
+        .filter(from_any(ExecutionState::AwaitingApproval.follows()))
+        .exec(conn)
+        .await?;
+    Ok(moved.rows_affected == 1)
+}
+
+/// Records who let call `id` run or refused it: `policy`, `session_grant`,
+/// `host` or `device:<id>`.
+pub async fn decided(conn: &DatabaseConnection, id: &str, by: &str) -> Result<(), ExecutionError> {
+    connector_execution::Entity::update_many()
+        .col_expr(
+            connector_execution::Column::DecidedBy,
+            Expr::value(Some(by.to_string())),
+        )
+        .filter(connector_execution::Column::Id.eq(id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 /// Ends call `id` with `outcome`. `detail` is the line the agent was given,
 /// already redacted. `None` if the record had already ended.
 pub async fn finish(
@@ -398,21 +441,28 @@ pub async fn sweep(conn: &DatabaseConnection) -> Result<u64, ExecutionError> {
     let unfinished = connector_execution::Entity::find()
         .filter(from_any(&[
             ExecutionState::Received,
+            ExecutionState::AwaitingApproval,
             ExecutionState::Dispatched,
         ]))
         .all(conn)
         .await?;
     let mut ended = 0;
     for row in unfinished {
-        let outcome = if row.dispatched_at.is_some() {
-            Outcome::Unknown(UnknownCause::HostShutdown)
+        let (outcome, detail) = if row.dispatched_at.is_some() {
+            (
+                Outcome::Unknown(UnknownCause::HostShutdown),
+                "Zwiim stopped while the call was running; it may have run.",
+            )
+        } else if row.state == name_of(ExecutionState::AwaitingApproval) {
+            (
+                Outcome::ApprovalVoid(VoidReason::HostRestart),
+                "Zwiim stopped while the call waited for approval; nothing was sent.",
+            )
         } else {
-            Outcome::CancelledBeforeDispatch
-        };
-        let detail = if row.dispatched_at.is_some() {
-            "Zwiim stopped while the call was running; it may have run."
-        } else {
-            "Zwiim stopped before the call was sent."
+            (
+                Outcome::CancelledBeforeDispatch,
+                "Zwiim stopped before the call was sent.",
+            )
         };
         if finish(conn, &row.id, outcome, Some(detail), Timings::default())
             .await?

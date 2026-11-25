@@ -264,6 +264,19 @@ impl DelegationListener {
         Some((self.connectors.get()?.clone(), id))
     }
 
+    /// Who a connector call comes from, from its token alone. Nothing that
+    /// can answer an approval yet: a call that asks is refused.
+    async fn call_session(&self, token: &str) -> Option<crate::connectors::runtime::CallSession> {
+        let entry = self.tokens.lookup(token).await?;
+        Some(crate::connectors::runtime::CallSession {
+            session_id: entry.parent_connection_id,
+            workspace_id: None,
+            agent: String::new(),
+            engine: entry.engine.is_some(),
+            cards: Arc::new(crate::connectors::runtime::NoCards),
+        })
+    }
+
     /// Bind the socket, then serve it forever. Kept as the one-call entry
     /// point for callers that don't need to observe the bind separately;
     /// [`DelegationService`](super::service::DelegationService) uses the two
@@ -745,7 +758,10 @@ impl DelegationListener {
                 encode(&ConnectorRevision { revision })?
             }
             BrokerMessage::ConnectorCall(req) => {
-                let Some((connectors, id)) = self.connector_of(&req.token).await else {
+                let (Some((connectors, id)), Some(session)) = (
+                    self.connector_of(&req.token).await,
+                    self.call_session(&req.token).await,
+                ) else {
                     write_frame(conn, &no_connector_response()).await?;
                     return Ok(());
                 };
@@ -754,7 +770,7 @@ impl DelegationListener {
                 let mut probe = [0u8; 1];
                 let output = tokio::select! {
                     biased;
-                    output = connectors.call(&id, &req.tool, req.arguments) => output,
+                    output = connectors.call(&session, &id, &req.tool, req.arguments) => output,
                     _ = conn.read(&mut probe) => {
                         tracing::info!("[connectors] a call on {id} was cancelled by its proxy");
                         return Ok(());
@@ -4030,6 +4046,19 @@ mod tests {
             .await
             .unwrap();
         created.validation.unwrap();
+        // Every session may run every tool.
+        let grant = crate::connectors::grants::set_grant(
+            &db.conn,
+            &created.id,
+            crate::connectors::grants::Scope::default(),
+            crate::connectors::grants::Fallback::Ask,
+            crate::connectors::grants::Fallback::Ask,
+        )
+        .await
+        .unwrap();
+        crate::connectors::grants::allow_all(&db.conn, grant.id)
+            .await
+            .unwrap();
         let tokens = Arc::new(TokenRegistry::default());
         let entry = |connector| TokenEntry {
             parent_connection_id: "conn".into(),
