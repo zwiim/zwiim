@@ -618,3 +618,120 @@ async fn each_call_is_published_as_it_starts_and_as_it_ends() {
     assert_eq!(ended["event"]["payload"]["execution"]["state"], "succeeded");
     assert!(!ended.to_string().contains("sk-live-42"), "{ended}");
 }
+
+#[tokio::test]
+async fn a_call_that_asks_is_answered_through_its_session() {
+    use crate::acp::delegation::listener::ConnectorSessionLookup;
+
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let (sid, _rx) = h.live_session().await;
+    // Granted to the session's root workspace and agent; tools ask.
+    ok(
+        &h,
+        "connection.grant.set",
+        json!({
+            "service_connection_id": id,
+            "workspace_id": h.workspace_id,
+            "agent": "claude_code",
+            "default_policy": "ask",
+            "new_tools": "ask",
+        }),
+    )
+    .await;
+    let session = crate::acp::connector_cards::ConnectorSessions::new(
+        h.state.db.conn.clone(),
+        h.state.connection_manager.clone_ref(),
+    )
+    .session(super::CONN, std::path::Path::new(&h.wt), false)
+    .await
+    .unwrap();
+    assert_eq!(
+        session.workspace_id.as_deref(),
+        Some(h.workspace_id.as_str())
+    );
+
+    let connectors = h.state.connectors().await;
+    let call = {
+        let (connectors, id) = (connectors.clone(), id.clone());
+        let arguments = json!({ "text": "hi" }).as_object().unwrap().clone();
+        tokio::spawn(async move { connectors.call(&session, &id, "echo", arguments).await })
+    };
+    let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let state = h
+                .state
+                .connection_manager
+                .get_state(super::CONN)
+                .await
+                .unwrap();
+            let snapshot = state.read().await.to_snapshot();
+            let request = crate::protocol::events::project_snapshot(&snapshot, None)
+                ["pending_request"]
+                .clone();
+            if !request.is_null() {
+                return request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the card is shown");
+    assert_eq!(request["kind"], "connector_approval");
+    let request_id = request["request_id"].clone();
+    let binding = request["binding_hash"].clone();
+    let respond = |decision: &str, binding: Value| {
+        json!({
+            "session_id": sid,
+            "request_id": request_id,
+            "kind": "connector_approval",
+            "answer": { "decision": decision, "binding_hash": binding },
+        })
+    };
+
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, body) = h
+        .call_as(
+            &device,
+            "session.respond",
+            respond("always", binding.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "permission_denied");
+    let (status, body) = h
+        .call_as(
+            &device,
+            "session.respond",
+            respond("once", json!("sha256:other")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "approval_mismatch");
+    let (status, body) = h
+        .call_as(&device, "session.respond", respond("once", binding.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.is_error, "{output:?}");
+    let (status, body) = h
+        .call_as(&device, "session.respond", respond("deny", binding))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "already_resolved");
+    assert_eq!(body["error"]["details"]["decided_by"], "device");
+
+    let page = ok(
+        &h,
+        "connection.executions",
+        json!({ "service_connection_id": id }),
+    )
+    .await;
+    assert_eq!(page["executions"][0]["state"], "succeeded");
+}

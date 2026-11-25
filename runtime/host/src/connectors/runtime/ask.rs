@@ -47,7 +47,7 @@ pub struct CallSession {
 }
 
 /// What the user is asked about.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalCard {
     pub approval_id: String,
     /// An answer must carry it back.

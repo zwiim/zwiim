@@ -26,6 +26,7 @@ use crate::acp::session_state::{
     LiveContentBlock, LiveMessage, LiveSessionSnapshot, PendingPermissionState,
     PendingUserMessage, SubagentInfo, ToolCallOutput, ToolCallState,
 };
+use crate::connectors::runtime::ApprovalCard;
 use crate::acp::types::{
     AcpEvent, BackgroundView, EventEnvelope, PermissionOptionInfo, PlanEntryInfo,
     UserMessageBlock,
@@ -322,6 +323,11 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             plan_markdown,
             ..
         } => ("agent.request", plan_request(approval_id, plan_markdown)),
+        AcpEvent::ConnectorApprovalRequest { card } => ("agent.request", connector_request(card)),
+        AcpEvent::ConnectorApprovalResolved { approval_id } => (
+            "agent.request_resolved",
+            json!({ "kind": "connector_approval", "request_id": approval_id }),
+        ),
         AcpEvent::PermissionResolved { request_id } => (
             "agent.request_resolved",
             json!({ "kind": "permission", "request_id": request_id }),
@@ -554,6 +560,23 @@ fn question_request(question_id: &str, questions: &[QuestionSpec]) -> Value {
     })
 }
 
+/// A connector call waiting on the user. `answers` lists every answer; a
+/// paired device can't give the two that change a grant (`always`,
+/// `always_deny`).
+fn connector_request(card: &ApprovalCard) -> Value {
+    json!({
+        "kind": "connector_approval",
+        "request_id": card.approval_id,
+        "binding_hash": card.binding_hash,
+        "connection": { "label": card.label, "slug": card.slug },
+        "tool": { "name": card.tool, "title": card.tool_title },
+        "risk": card.risk,
+        "preview": scrub(&card.preview),
+        "expires_at": card.expires_at.to_rfc3339(),
+        "answers": ["once", "session", "always", "deny", "always_deny"],
+    })
+}
+
 fn plan_request(approval_id: &str, plan_markdown: &str) -> Value {
     json!({
         "kind": "plan_approval",
@@ -577,6 +600,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             s.pending_permission.as_ref(),
             s.pending_question.as_ref(),
             s.pending_plan_approval.as_ref(),
+            s.pending_connector_approvals.first(),
             root,
         ),
         "options": s
@@ -805,6 +829,7 @@ fn pending_request(
     permission: Option<&PendingPermissionState>,
     question: Option<&PendingQuestionState>,
     plan: Option<&PendingPlanApprovalState>,
+    connector: Option<&ApprovalCard>,
     root: Option<&str>,
 ) -> Value {
     if let Some(p) = permission {
@@ -815,6 +840,9 @@ fn pending_request(
     }
     if let Some(p) = plan {
         return plan_request(&p.approval_id, &p.plan_markdown);
+    }
+    if let Some(card) = connector {
+        return connector_request(card);
     }
     Value::Null
 }

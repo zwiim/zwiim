@@ -83,6 +83,18 @@ pub trait ItemAttempts: Send + Sync {
     async fn is_current(&self, attempt: crate::automation::lockdown::ItemAttempt) -> bool;
 }
 
+/// Who a connector proxy's session is: its workspace, agent and where its
+/// approval cards go. The production impl reads the connection manager.
+#[async_trait]
+pub trait ConnectorSessionLookup: Send + Sync {
+    async fn session(
+        &self,
+        parent_connection_id: &str,
+        working_dir: &std::path::Path,
+        engine: bool,
+    ) -> Option<crate::connectors::runtime::CallSession>;
+}
+
 /// Per-launch token entry. Bound at MCP injection time and revoked on parent
 /// connection teardown.
 #[derive(Debug, Clone)]
@@ -199,6 +211,9 @@ pub struct DelegationListener {
     /// The Host's connections, which answer connector proxies. Set once at
     /// startup; unset refuses every connector frame.
     connectors: std::sync::OnceLock<Arc<crate::connectors::runtime::Connectors>>,
+    /// Who a connector call's session is. Set once at startup; unset, a
+    /// call's session is known only by its token and nothing can be asked.
+    connector_sessions: std::sync::OnceLock<Arc<dyn ConnectorSessionLookup>>,
 }
 
 impl DelegationListener {
@@ -231,6 +246,7 @@ impl DelegationListener {
             attempts: std::sync::OnceLock::new(),
             engine_sessions: std::sync::OnceLock::new(),
             connectors: std::sync::OnceLock::new(),
+            connector_sessions: std::sync::OnceLock::new(),
         })
     }
 
@@ -264,10 +280,23 @@ impl DelegationListener {
         Some((self.connectors.get()?.clone(), id))
     }
 
-    /// Who a connector call comes from, from its token alone. Nothing that
-    /// can answer an approval yet: a call that asks is refused.
+    pub fn set_connector_sessions(&self, sessions: Arc<dyn ConnectorSessionLookup>) {
+        let _ = self.connector_sessions.set(sessions);
+    }
+
+    /// Who a connector call comes from, from its token and the Host's own
+    /// state, never from the proxy.
     async fn call_session(&self, token: &str) -> Option<crate::connectors::runtime::CallSession> {
         let entry = self.tokens.lookup(token).await?;
+        if let Some(sessions) = self.connector_sessions.get() {
+            return sessions
+                .session(
+                    &entry.parent_connection_id,
+                    &entry.working_dir,
+                    entry.engine.is_some(),
+                )
+                .await;
+        }
         Some(crate::connectors::runtime::CallSession {
             session_id: entry.parent_connection_id,
             workspace_id: None,

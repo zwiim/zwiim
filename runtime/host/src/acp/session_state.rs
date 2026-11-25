@@ -443,6 +443,12 @@ pub struct SessionState {
     /// the backend's `pending_questions` registry keys the answer one-shot.
     pub pending_question: Option<PendingQuestionState>,
 
+    /// Connector calls waiting on the user, oldest first; clients see the
+    /// first. Set by `ConnectorApprovalRequest` / `ConnectorApprovalQueued`,
+    /// removed by `ConnectorApprovalResolved`. The approval rows decide;
+    /// this only mirrors them for a client attaching mid-wait.
+    pub pending_connector_approvals: Vec<crate::connectors::runtime::ApprovalCard>,
+
     /// The agent's in-flight Grok `exit_plan_mode` approval (the plan awaiting the
     /// user's Approve / Request-changes / Abandon decision). Set by
     /// `PlanApprovalRequest`, cleared by a matching `PlanApprovalResolved` (and
@@ -890,6 +896,7 @@ impl SessionState {
             active_tool_calls: BTreeMap::new(),
             pending_permission: None,
             pending_question: None,
+            pending_connector_approvals: Vec::new(),
             pending_plan_approval: None,
             active_delegations: BTreeMap::new(),
             feedback: Vec::new(),
@@ -1452,6 +1459,20 @@ impl SessionState {
                 ) {
                     self.pending_question = None;
                 }
+            }
+            AcpEvent::ConnectorApprovalRequest { card }
+            | AcpEvent::ConnectorApprovalQueued { card } => {
+                if !self
+                    .pending_connector_approvals
+                    .iter()
+                    .any(|c| c.approval_id == card.approval_id)
+                {
+                    self.pending_connector_approvals.push(card.clone());
+                }
+            }
+            AcpEvent::ConnectorApprovalResolved { approval_id } => {
+                self.pending_connector_approvals
+                    .retain(|c| c.approval_id != *approval_id);
             }
             AcpEvent::PlanApprovalRequest {
                 approval_id,
@@ -2524,6 +2545,7 @@ impl SessionState {
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
             pending_question: self.pending_question.clone(),
+            pending_connector_approvals: self.pending_connector_approvals.clone(),
             pending_plan_approval: self.pending_plan_approval.clone(),
             pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
@@ -2636,6 +2658,10 @@ pub struct LiveSessionSnapshot {
     /// the wire so every snapshot stays byte-identical with the pre-feature shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_question: Option<PendingQuestionState>,
+    /// Connector calls waiting on the user (see
+    /// `SessionState.pending_connector_approvals`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_connector_approvals: Vec<crate::connectors::runtime::ApprovalCard>,
     /// The agent's in-flight Grok `exit_plan_mode` approval (see
     /// `SessionState.pending_plan_approval`). `#[serde(default)]` so older
     /// payloads deserialize; `skip_serializing_if` keeps the common no-approval

@@ -24,7 +24,9 @@ use crate::connectors::definition::{Auth, Runtime, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
 use crate::connectors::executions::{self, Execution, ExecutionError, ExecutionState};
 use crate::connectors::grants::{self, Fallback, Grant, GrantError, Scope, ToolPolicy};
-use crate::connectors::runtime::{CreateError, RevokeError, ValidateError};
+use crate::connectors::runtime::{
+    AnswerError, ApprovalAnswer, CreateError, RevokeError, ValidateError,
+};
 use crate::connectors::store::{self, Connection, CredentialStore, SnapshotChanges, StoreError};
 use crate::connectors::upstream::ToolDefinition;
 use crate::models::AgentType;
@@ -809,4 +811,65 @@ pub async fn connection_executions(
         executions: page.into_iter().map(ExecutionView::from).collect(),
         next_cursor,
     }))
+}
+
+// ── approvals ─────────────────────────────────────────────────────────────
+
+/// `session.respond {session_id, request_id, kind: "connector_approval",
+/// answer: {decision, binding_hash}}`: the user's answer to a connector
+/// call waiting in that session. `always` and `always_deny` change a grant,
+/// so only the Host itself may give them.
+pub async fn connector_respond(
+    state: &Arc<AppState>,
+    principal: Option<Extension<Principal>>,
+    session_id: &str,
+    approval_id: &str,
+    decision: ApprovalAnswer,
+    binding_hash: &str,
+) -> Result<(), ZwiimError> {
+    let decided_by = match &principal {
+        Some(Extension(Principal::Device(device_id))) => format!("device:{device_id}"),
+        _ => "host".to_string(),
+    };
+    if decision.changes_grant() {
+        grants_host_only(principal)?;
+    }
+    let live =
+        crate::session::live_connection_id(&state.db.conn, &state.connection_manager, session_id)
+            .await?
+            .ok_or_else(ZwiimError::session_not_live)?;
+    state
+        .connectors()
+        .await
+        .answer_approval(&live, approval_id, binding_hash, decision, &decided_by)
+        .await
+        .map_err(answer_error)
+}
+
+fn answer_error(e: AnswerError) -> ZwiimError {
+    match e {
+        AnswerError::NotFound => ZwiimError::not_found("No such request"),
+        AnswerError::Mismatch => ZwiimError::new(
+            StatusCode::CONFLICT,
+            "approval_mismatch",
+            "This answer is for another call",
+        ),
+        AnswerError::AlreadyResolved { status, decided_by } => {
+            let mut e = ZwiimError::new(
+                StatusCode::CONFLICT,
+                "already_resolved",
+                "This call was already answered",
+            );
+            // Who answered, without device ids: "Answered on another device".
+            let by = decided_by.map(|by| if by == "host" { "host" } else { "device" });
+            e.details = Some(serde_json::json!({ "status": status, "decided_by": by }));
+            e
+        }
+        AnswerError::Expired => ZwiimError::new(
+            StatusCode::CONFLICT,
+            "approval_expired",
+            "No one answered in time",
+        ),
+        AnswerError::Store(message) => internal(message),
+    }
 }
