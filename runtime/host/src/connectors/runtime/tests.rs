@@ -10,7 +10,8 @@ use crate::connectors::definition::{from_user, Runtime, UserAuth, UserConnector}
 use crate::connectors::egress::{NetworkClass, SystemResolver};
 use crate::connectors::fake_mcp::{tool, Era, FakeMcp, HttpServer};
 use crate::connectors::store::{
-    self, create_connection, save_definition, ConnectionStatus, CredentialStore,
+    self, create_connection, record_revocation, save_definition, ConnectionStatus, CredentialStore,
+    RevocationStep,
 };
 use crate::connectors::upstream::ShutdownReason;
 use crate::db::test_helpers::fresh_in_memory_db;
@@ -18,6 +19,7 @@ use crate::db::AppDatabase;
 
 struct Setup {
     db: AppDatabase,
+    secrets: Arc<MemorySecrets>,
     connectors: Connectors,
     connection: String,
     _server: Option<HttpServer>,
@@ -46,10 +48,11 @@ async fn setup_at(url: &str, key: Option<&str>) -> Setup {
     let connectors = Connectors::new(
         db.conn.clone(),
         Arc::new(McpFactory::new(Arc::new(SystemResolver))),
-        secrets,
+        secrets.clone(),
     );
     Setup {
         db,
+        secrets,
         connectors,
         connection,
         _server: None,
@@ -150,7 +153,7 @@ async fn a_missing_key_fails_the_connection_and_a_locked_store_changes_nothing()
         locked.db.conn.clone(),
         Arc::new(McpFactory::new(Arc::new(SystemResolver))),
         Arc::new(MemorySecrets {
-            broken: true,
+            broken: true.into(),
             ..Default::default()
         }),
     );
@@ -238,4 +241,120 @@ async fn the_factory_refuses_local_servers() {
     let factory = McpFactory::new(Arc::new(SystemResolver));
     let err = factory.open(&def, Vec::new(), None).await.err().unwrap();
     assert!(err.to_string().contains("sandbox"), "{err}");
+}
+
+const ALL_STEPS: [RevocationStep; 4] = [
+    RevocationStep::Blocked,
+    RevocationStep::Stopped,
+    RevocationStep::UpstreamRevoked,
+    RevocationStep::SecretsDeleted,
+];
+
+async fn connection(setup: &Setup) -> store::Connection {
+    store::connection(&setup.db.conn, &setup.connection)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn revoking_closes_the_connection_and_deletes_its_key() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = setup(&fake).await;
+    setup.connectors.validate(&setup.connection).await.unwrap();
+    assert_eq!(setup.secrets.names().len(), 1);
+
+    setup.connectors.revoke(&setup.connection).await.unwrap();
+    let revoked = connection(&setup).await;
+    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    assert_eq!(revoked.revocation, ALL_STEPS);
+    assert_eq!(revoked.last_error, None);
+    assert!(setup.secrets.names().is_empty());
+    assert!(setup.connectors.runtime(&setup.connection).is_blocked());
+
+    let sent = fake.received().len();
+    let err = setup
+        .connectors
+        .validate(&setup.connection)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "connection_unavailable");
+    assert_eq!(fake.received().len(), sent, "nothing sent after revoking");
+    // Again is fine.
+    setup.connectors.revoke(&setup.connection).await.unwrap();
+    let err = setup.connectors.revoke("missing").await.unwrap_err();
+    assert_eq!(err.code(), "connection_not_found");
+}
+
+/// The connection is unusable from the first step; a locked keychain only
+/// delays the cleanup, which the next start finishes.
+#[tokio::test]
+async fn a_locked_keychain_leaves_the_revocation_waiting_until_it_opens() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = setup(&fake).await;
+    setup.connectors.validate(&setup.connection).await.unwrap();
+    setup
+        .secrets
+        .broken
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let err = setup
+        .connectors
+        .revoke(&setup.connection)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "credential_store_unavailable");
+    let waiting = connection(&setup).await;
+    assert_eq!(waiting.status, ConnectionStatus::Revoking);
+    assert_eq!(waiting.revocation, ALL_STEPS[..3]);
+    assert!(waiting.last_error.unwrap().contains("keychain"));
+    let err = setup
+        .connectors
+        .validate(&setup.connection)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "connection_unavailable");
+
+    // Still locked: still waiting.
+    setup.connectors.resume_revocations().await.unwrap();
+    assert_eq!(connection(&setup).await.status, ConnectionStatus::Revoking);
+
+    setup
+        .secrets
+        .broken
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    setup.connectors.resume_revocations().await.unwrap();
+    let revoked = connection(&setup).await;
+    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    assert_eq!(revoked.revocation, ALL_STEPS);
+    assert!(setup.secrets.names().is_empty());
+}
+
+/// A Host that exited after the first step: the next start resumes from
+/// the second, with a fresh runtime.
+#[tokio::test]
+async fn an_interrupted_revocation_resumes_after_its_last_step() {
+    let setup = setup_at("http://127.0.0.1:9/mcp", Some("k3y")).await;
+    store::set_status(
+        &setup.db.conn,
+        &setup.connection,
+        ConnectionStatus::Revoking,
+        None,
+    )
+    .await
+    .unwrap();
+    record_revocation(
+        &setup.db.conn,
+        &setup.connection,
+        &[RevocationStep::Blocked],
+        None,
+    )
+    .await
+    .unwrap();
+
+    setup.connectors.resume_revocations().await.unwrap();
+    let revoked = connection(&setup).await;
+    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    assert_eq!(revoked.revocation, ALL_STEPS);
+    assert!(setup.secrets.names().is_empty());
 }

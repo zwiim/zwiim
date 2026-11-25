@@ -20,7 +20,7 @@ use super::credentials::{self, CredentialError, SecretStore};
 use super::definition::{ConnectorDefinition, Runtime};
 use super::egress::{Credential, EgressGuard, EgressHttpClient, EndpointRule, Resolver};
 use super::mcp::McpUpstream;
-use super::store::{self, ConnectionStatus, SnapshotChanges, StoreError};
+use super::store::{self, ConnectionStatus, RevocationStep, SnapshotChanges, StoreError};
 use super::upstream::{ConnectorError, ShutdownReason, Upstream};
 
 /// How long connecting to a service, or one listing, may take.
@@ -99,13 +99,17 @@ impl ConnectionRuntime {
         }
     }
 
+    fn block(&self) {
+        self.blocked.store(true, Ordering::SeqCst);
+    }
+
     pub fn is_blocked(&self) -> bool {
         self.blocked.load(Ordering::SeqCst)
     }
 
     /// Refuses everything new, then closes what is open. Idempotent.
     pub async fn shutdown_all(&self, reason: ShutdownReason) {
-        self.blocked.store(true, Ordering::SeqCst);
+        self.block();
         self.replace(None, reason).await;
     }
 }
@@ -142,6 +146,32 @@ impl ValidateError {
         }
     }
 }
+
+/// Why a revocation hasn't finished. The connection is unusable whatever
+/// this says; only the cleanup is outstanding.
+#[derive(Debug, thiserror::Error)]
+pub enum RevokeError {
+    #[error("no connection {0}")]
+    NotFound(String),
+    /// Retried on the next start, or the next revoke.
+    #[error("{WAITING_FOR_STORE}: {0}")]
+    WaitingForStore(String),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+impl RevokeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound(_) => "connection_not_found",
+            Self::WaitingForStore(_) => "credential_store_unavailable",
+            Self::Store(_) => "internal",
+        }
+    }
+}
+
+/// Shown on a connection whose secrets couldn't be deleted yet.
+const WAITING_FOR_STORE: &str = "Waiting for the keychain to remove credentials";
 
 /// The Host's live connections.
 pub struct Connectors {
@@ -235,6 +265,81 @@ impl Connectors {
         store::set_status(&self.db, id, ConnectionStatus::Active, None).await?;
         runtime.replace(Some(upstream), ShutdownReason::Idle).await;
         Ok(changes)
+    }
+}
+
+impl Connectors {
+    /// Revokes connection `id` (design r3 §4.4): refused at once, then its
+    /// upstreams closed and its secrets deleted, each step recorded so an
+    /// interrupted revocation resumes where it stopped. Running it again is
+    /// fine. A credential store that won't open leaves the connection
+    /// `revoking`, waiting for it.
+    pub async fn revoke(&self, id: &str) -> Result<(), RevokeError> {
+        let connection = store::connection(&self.db, id)
+            .await?
+            .ok_or_else(|| RevokeError::NotFound(id.into()))?;
+        if connection.status == ConnectionStatus::Revoked {
+            return Ok(());
+        }
+        let runtime = self.runtime(id);
+        // In memory first, so nothing in flight can start using it again.
+        runtime.block();
+        let mut done = connection.revocation;
+        if !done.contains(&RevocationStep::Blocked) {
+            if connection.status != ConnectionStatus::Revoking {
+                store::set_status(&self.db, id, ConnectionStatus::Revoking, None).await?;
+            }
+            self.finished(id, &mut done, RevocationStep::Blocked)
+                .await?;
+        }
+        if !done.contains(&RevocationStep::Stopped) {
+            runtime.shutdown_all(ShutdownReason::Revoked).await;
+            self.finished(id, &mut done, RevocationStep::Stopped)
+                .await?;
+        }
+        if !done.contains(&RevocationStep::UpstreamRevoked) {
+            // Static keys have nothing to revoke at the service; OAuth
+            // token revocation (RFC 7009) comes with OAuth.
+            self.finished(id, &mut done, RevocationStep::UpstreamRevoked)
+                .await?;
+        }
+        if !done.contains(&RevocationStep::SecretsDeleted) {
+            let auth = store::definition_auth(&self.db, &connection.definition_id)
+                .await?
+                .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+            if let Err(e) = credentials::delete_secrets(&*self.secrets, id, &auth) {
+                store::record_revocation(&self.db, id, &done, Some(WAITING_FOR_STORE)).await?;
+                return Err(RevokeError::WaitingForStore(e.to_string()));
+            }
+            self.finished(id, &mut done, RevocationStep::SecretsDeleted)
+                .await?;
+        }
+        store::set_status(&self.db, id, ConnectionStatus::Revoked, None).await?;
+        Ok(())
+    }
+
+    async fn finished(
+        &self,
+        id: &str,
+        done: &mut Vec<RevocationStep>,
+        step: RevocationStep,
+    ) -> Result<(), StoreError> {
+        done.push(step);
+        store::record_revocation(&self.db, id, done, None).await
+    }
+
+    /// Finishes every revocation a Host exit interrupted. Run at start; one
+    /// that still waits for the credential store stays `revoking`.
+    pub async fn resume_revocations(&self) -> Result<(), StoreError> {
+        for connection in store::connections(&self.db).await? {
+            if connection.status != ConnectionStatus::Revoking {
+                continue;
+            }
+            if let Err(e) = self.revoke(&connection.id).await {
+                tracing::warn!("[connectors] revocation of {} waits: {e}", connection.id);
+            }
+        }
+        Ok(())
     }
 }
 

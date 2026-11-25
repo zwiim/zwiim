@@ -74,6 +74,26 @@ pub async fn save_definition(
     Ok(())
 }
 
+/// How stored definition `id` authenticates, read without validating the
+/// rest, so a connection whose definition no longer passes the rules can
+/// still have its secrets deleted.
+pub async fn definition_auth(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<Option<super::definition::Auth>, StoreError> {
+    let Some(row) = connector_definition::Entity::find_by_id(id.to_string())
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let record: serde_json::Value = serde_json::from_str(&row.definition_json)
+        .map_err(|e| StoreError::Corrupt(format!("definition: {e}")))?;
+    serde_json::from_value(record["auth"].clone())
+        .map(Some)
+        .map_err(|e| StoreError::Corrupt(format!("definition auth: {e}")))
+}
+
 /// The stored definition `id`, validated again on the way out: a record
 /// written before a rule existed is refused, not used.
 pub async fn definition(
@@ -167,6 +187,28 @@ pub struct Connection {
     pub last_error: Option<String>,
     pub last_validated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// The revocation steps finished so far, in order.
+    pub revocation: Vec<RevocationStep>,
+}
+
+/// One step of revoking a connection (design r3 §4.4). Each is recorded once
+/// done, so a revocation interrupted by a Host exit resumes after the last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevocationStep {
+    /// Marked `revoking`: refused from here on.
+    Blocked,
+    /// Its live upstreams are closed.
+    Stopped,
+    /// The service was told, where it has a way to be (OAuth, later).
+    UpstreamRevoked,
+    /// Its secrets are gone from the credential store.
+    SecretsDeleted,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Revocation {
+    done: Vec<RevocationStep>,
 }
 
 const MAX_LABEL: usize = 40;
@@ -434,10 +476,43 @@ pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefini
         .collect()
 }
 
+/// Records the revocation steps connection `id` has finished, and why the
+/// next one waits, if it does. The status stays as it is.
+pub async fn record_revocation(
+    conn: &DatabaseConnection,
+    id: &str,
+    done: &[RevocationStep],
+    waiting: Option<&str>,
+) -> Result<(), StoreError> {
+    let json = serde_json::to_string(&Revocation {
+        done: done.to_vec(),
+    })
+    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    connection::ActiveModel {
+        id: Set(id.into()),
+        revocation_json: Set(Some(json)),
+        last_error: Set(waiting.map(str::to_string)),
+        updated_at: Set(Utc::now()),
+        ..Default::default()
+    }
+    .update(conn)
+    .await?;
+    Ok(())
+}
+
 fn to_connection(row: connection::Model) -> Result<Connection, StoreError> {
     let status = ConnectionStatus::parse(&row.status)
         .ok_or_else(|| StoreError::Corrupt(format!("status {:?}", row.status)))?;
+    let revocation = match row.revocation_json.as_deref() {
+        None => Vec::new(),
+        Some(json) => {
+            serde_json::from_str::<Revocation>(json)
+                .map_err(|e| StoreError::Corrupt(format!("revocation: {e}")))?
+                .done
+        }
+    };
     Ok(Connection {
+        revocation,
         status,
         store: parse_name(&row.store)?,
         id: row.id,
