@@ -75,7 +75,7 @@ fn bad_values_store_nothing() {
 #[test]
 fn an_unavailable_store_is_an_error_of_its_own() {
     let store = MemorySecrets {
-        broken: true,
+        broken: true.into(),
         ..Default::default()
     };
     let err = credential(&store, "c1", &bearer()).unwrap_err();

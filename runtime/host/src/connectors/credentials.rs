@@ -41,13 +41,13 @@ impl SecretStore for Keychain {
     }
 }
 
-/// Secrets in memory, for tests. `broken` makes every call fail like a
-/// locked keychain.
+/// Secrets in memory, for tests. While `broken` is set every call fails,
+/// like a locked keychain.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct MemorySecrets {
     pub(crate) values: Mutex<HashMap<String, String>>,
-    pub(crate) broken: bool,
+    pub(crate) broken: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -59,7 +59,7 @@ impl MemorySecrets {
     }
 
     fn fail(&self) -> Result<(), String> {
-        if self.broken {
+        if self.broken.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("keychain locked".into());
         }
         Ok(())
