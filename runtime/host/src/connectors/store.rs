@@ -495,6 +495,21 @@ pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefini
         .collect()
 }
 
+/// When connection `id` first listed `tool`, if it lists it now.
+pub async fn first_seen(
+    conn: &DatabaseConnection,
+    id: &str,
+    tool: &str,
+) -> Result<Option<DateTime<Utc>>, StoreError> {
+    Ok(connection_tool::Entity::find()
+        .filter(connection_tool::Column::ConnectionId.eq(id))
+        .filter(connection_tool::Column::Name.eq(tool))
+        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
+        .one(conn)
+        .await?
+        .map(|row| row.first_seen_at))
+}
+
 /// Records the revocation steps connection `id` has finished, and why the
 /// next one waits, if it does. The status stays as it is.
 pub async fn record_revocation(

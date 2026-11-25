@@ -645,7 +645,26 @@ use serde::{Deserialize, Serialize};
 /// `connector.execution {service_connection_id, execution}` as each call
 /// starts and as it ends; it is not in the snapshot. Older clients never
 /// call the operation and ignore the event.
-pub const PROTOCOL_REVISION: u32 = 48;
+///
+/// 49 (connector approvals): a call through a connection that policy says
+/// to ask about waits for the user (connector design r3 §5.1, §5.2). It is
+/// an `agent.request` of kind `connector_approval` on the session: `{request_id,
+/// binding_hash, connection {label, slug}, tool {name, title}, risk,
+/// preview, expires_at, answers}`, on the snapshot's `pending_request` too,
+/// one per session at a time (the next shows when this one comes down with
+/// `agent.request_resolved`). `risk` is what the tool says of itself and
+/// only shortens the expiry (5 minutes for `destructive`, else 10).
+/// `session.respond` answers with kind `connector_approval` and `answer
+/// {decision, binding_hash}`: `once`, `session` (this tool until the
+/// session ends), `always` (an allow rule), `deny` or `always_deny` (a deny
+/// rule). Only the Host itself may give `always` or `always_deny`
+/// (`permission_denied`). New error codes: `approval_mismatch` (the answer
+/// names another call), `already_resolved` (with `details.status` and
+/// `details.decided_by`, `host` or `device`) and `approval_expired`.
+/// Executions gain the approval states and the reject reason `denied`.
+/// Older clients don't know the request kind and leave it unanswered; the
+/// call then expires with nothing sent.
+pub const PROTOCOL_REVISION: u32 = 49;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -952,7 +971,12 @@ mod tests {
 
     #[test]
     fn executions_are_revision_48() {
-        assert_eq!(PROTOCOL_REVISION, 48);
+        assert!(PROTOCOL_REVISION >= 48);
+    }
+
+    #[test]
+    fn connector_approvals_are_revision_49() {
+        assert_eq!(PROTOCOL_REVISION, 49);
     }
 
     #[test]

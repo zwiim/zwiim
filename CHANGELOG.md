@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key, revoke it, grant it to workspaces and agents tool by tool and see every call made through it, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
+- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key, revoke it, grant it to workspaces and agents tool by tool, approve calls that ask (once, for the session, or always) and see every call made through it, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
 - Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 
 ### Changed
@@ -22,6 +22,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
+- Protocol revision 49: a connector call that policy says to ask about shows an `agent.request` of kind `connector_approval` on its session (tool, connection, risk, a redacted preview of the arguments, `expires_at`); `session.respond` answers it with `once`, `session`, `always`, `deny` or `always_deny` and its `binding_hash`. Only the Host itself may save a rule (`always`, `always_deny`). New error codes `approval_mismatch`, `already_resolved` and `approval_expired`. Older clients leave the request unanswered and it expires with nothing sent.
 - Protocol revision 48: `connection.executions` lists a connection's tool calls, newest first a page at a time (`cursor`, `next_cursor`): what happened to each (`state`, with `reason`), when it reached the service (`dispatched_at`, null if it never did), the service's time and Zwiim's own (`upstream_ms`, `overhead_ms`) and the argument keys, never the arguments. The host feed publishes `connector.execution` as each call starts and ends. Older clients never call the operation and ignore the event.
 - Protocol revision 47: `connection.grant.list`, `connection.grant.set`, `connection.grant.remove`, `connection.tool_policy.set` and `connection.grant.allow_all` say which sessions may use a connection (every workspace or one, any agent or one) and how each tool is treated: allow, ask or deny, with an allow pinned to the tool as it was (`changed` once it isn't). Fallbacks are only `ask` or `deny`. Only the Host itself may change grants. Older clients never call them.
 - Protocol revision 46: `connection.create`, `connection.list`, `connection.validate`, `connection.set_secret`, `connection.revoke` and `connection.tools` manage connections to outside MCP servers, named by `service_connection_id`. Only the Host itself may create one or set its key; a key never comes back out. New error codes `connection_failed`, `connection_unavailable` and `definition_changed`. Older clients never call them.

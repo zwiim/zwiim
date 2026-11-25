@@ -12,6 +12,7 @@ pub mod chat_channel_thread_binding;
 pub mod connection;
 pub mod connection_endpoint;
 pub mod connection_tool;
+pub mod connector_approval;
 pub mod connector_definition;
 pub mod connector_execution;
 pub mod connector_grant;

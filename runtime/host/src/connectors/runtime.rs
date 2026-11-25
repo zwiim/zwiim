@@ -232,6 +232,8 @@ pub struct Connectors {
     runtimes: Mutex<HashMap<String, Arc<ConnectionRuntime>>>,
     /// Each call's record as it starts and as it ends.
     executions: tokio::sync::broadcast::Sender<Execution>,
+    /// Calls waiting on the user, and what sessions allowed.
+    asking: Arc<ask::Asking>,
 }
 
 /// Records a slow listener may fall behind by; it re-lists after that.
@@ -249,6 +251,7 @@ impl Connectors {
             secrets,
             runtimes: Mutex::default(),
             executions: tokio::sync::broadcast::channel(EXECUTION_EVENTS).0,
+            asking: Arc::default(),
         }
     }
 
@@ -522,6 +525,7 @@ impl Connectors {
         // In memory first, so nothing in flight can start using it again.
         runtime.block();
         runtime.changed();
+        self.end_approvals_for(id).await;
         let mut done = connection.revocation;
         if !done.contains(&RevocationStep::Blocked) {
             if connection.status != ConnectionStatus::Revoking {
@@ -589,7 +593,10 @@ async fn timeout<T>(
         .map_err(|_| ConnectorError::Transport("the service didn't answer in time".into()))?
 }
 
+mod ask;
 mod gateway;
+
+pub use ask::{AnswerError, ApprovalAnswer, ApprovalCard, ApprovalCards, CallSession, NoCards};
 
 #[cfg(test)]
 mod tests;

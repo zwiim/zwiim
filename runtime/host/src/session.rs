@@ -678,6 +678,7 @@ pub(crate) fn is_busy(s: &crate::acp::SessionState) -> bool {
         || s.pending_permission.is_some()
         || s.pending_question.is_some()
         || s.pending_plan_approval.is_some()
+        || !s.pending_connector_approvals.is_empty()
 }
 
 /// How long `stop` waits for a cancelled turn to end before disconnecting.
@@ -1113,6 +1114,13 @@ pub enum RequestAnswer {
         #[serde(default)]
         feedback: Option<String>,
     },
+    /// A connector call waiting on the user (connector design r3 §5.2).
+    /// Answered by the connectors service, not the agent: see
+    /// `protocol::connection::connector_respond`.
+    ConnectorApproval {
+        decision: crate::connectors::runtime::ApprovalAnswer,
+        binding_hash: String,
+    },
 }
 
 /// What answering a request led to, beyond the answer itself.
@@ -1169,6 +1177,8 @@ pub async fn respond<L: AgentLauncher>(
                 .as_ref()
                 .is_some_and(|q| q.question_id == request_id),
             RequestAnswer::PlanApproval { .. } => plan.is_some(),
+            // Never the agent's to answer.
+            RequestAnswer::ConnectorApproval { .. } => false,
         };
         let plan_markdown = plan.map(|p| p.plan_markdown.clone()).unwrap_or_default();
         (pending, s.agent_type, plan_exit_agent, plan_markdown)
@@ -1258,6 +1268,8 @@ pub async fn respond<L: AgentLauncher>(
                 }
             }
         }
+        // Refused as not pending above.
+        RequestAnswer::ConnectorApproval { .. } => {}
     }
     Ok(RespondOutcome::default())
 }

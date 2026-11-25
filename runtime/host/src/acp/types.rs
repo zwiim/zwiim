@@ -809,6 +809,20 @@ pub enum AcpEvent {
     /// (the tool call was aborted / the connection drained). Carries only the
     /// `question_id`; clients clear the matching card. Idempotent on apply.
     QuestionResolved { question_id: String },
+    /// A connector call asks the user (connector design r3 §5.2): the card
+    /// at the head of the session's queue, shown to every client and kept
+    /// in `SessionState.pending_connector_approvals`. The call waits on the
+    /// approval row, not on this event.
+    ConnectorApprovalRequest {
+        card: crate::connectors::runtime::ApprovalCard,
+    },
+    /// A connector card queued behind the one shown. Not sent to clients;
+    /// it becomes a `ConnectorApprovalRequest` when it reaches the head.
+    ConnectorApprovalQueued {
+        card: crate::connectors::runtime::ApprovalCard,
+    },
+    /// A connector card came down: answered, expired, or its call ended.
+    ConnectorApprovalResolved { approval_id: String },
     /// A Grok `exit_plan_mode` call: the agent finished planning and is BLOCKED
     /// on the user's approval of the plan before it leaves plan mode and starts
     /// implementing (Grok's native `_x.ai/exit_plan_mode` ext request). Broadcast

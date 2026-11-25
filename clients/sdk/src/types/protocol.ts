@@ -142,6 +142,12 @@ export type HostErrorCode =
   | "connection_unavailable"
   /** `connection.validate`: the connector changed since it was connected; connect it again. */
   | "definition_changed"
+  /** `session.respond` `connector_approval`: the answer names another call (revision 49). */
+  | "approval_mismatch"
+  /** `session.respond` `connector_approval`: already answered; `details.decided_by` is `host` or `device`. */
+  | "already_resolved"
+  /** `session.respond` `connector_approval`: no one answered in time. */
+  | "approval_expired"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -1454,7 +1460,34 @@ export type AgentRequest =
       options: PermissionOption[];
     }
   | { kind: "question"; request_id: string; questions: QuestionSpec[] }
-  | { kind: "plan_approval"; request_id: string; plan_markdown: string };
+  | { kind: "plan_approval"; request_id: string; plan_markdown: string }
+  | ConnectorApprovalRequest;
+
+/**
+ * Revision 49: a call through a connection waits for the user. Answer with
+ * `session.respond` kind `connector_approval`, carrying `binding_hash` back.
+ * One card per session at a time; the next shows when this one comes down.
+ */
+export interface ConnectorApprovalRequest {
+  kind: "connector_approval";
+  request_id: string;
+  binding_hash: string;
+  connection: { label: string; slug: string };
+  tool: { name: string; title: string | null };
+  /** What the tool says of itself; it never decides anything. */
+  risk: "read" | "write" | "destructive" | "unknown";
+  /** The arguments, redacted and short. */
+  preview: string;
+  expires_at: string;
+  /** `always` and `always_deny` change a grant: only on the Host itself. */
+  answers: ConnectorApprovalDecision[];
+}
+
+/**
+ * `once` and `deny` for this call; `session` for this tool until the session
+ * ends; `always` and `always_deny` save a rule for the tool.
+ */
+export type ConnectorApprovalDecision = "once" | "session" | "always" | "deny" | "always_deny";
 
 export type RequestKind = AgentRequest["kind"];
 
@@ -1468,7 +1501,8 @@ export type RequestAnswer =
       kind: "plan_approval";
       /** `hand_off` (Host capability `session.plan_hand_off`) continues the plan in a new session. */
       answer: { decision: "approve" | "request_changes" | "abandon" | "hand_off"; feedback?: string };
-    };
+    }
+  | { kind: "connector_approval"; answer: { decision: ConnectorApprovalDecision; binding_hash: string } };
 
 export type LiveBlock =
   | { type: "text"; text: string }
@@ -2298,7 +2332,8 @@ export interface ConnectorExecution {
   tool: string;
   state: ConnectorExecutionState;
   /**
-   * Why it was rejected (`unavailable`, `not_exposed`, `not_sent`), or why its
+   * Why it was rejected (`unavailable`, `not_exposed`, `not_sent`, `denied`),
+   * why its approval was void (revision 49), or why its
    * outcome is unknown (`timeout`, `cancelled_after_dispatch`,
    * `connection_lost`, `host_shutdown`).
    */
@@ -2316,7 +2351,7 @@ export interface ConnectorExecution {
   overhead_ms: number | null;
 }
 
-/** The approval states are reserved until approvals land. */
+/** The approval states are written from revision 49. */
 export type ConnectorExecutionState =
   | "received"
   | "rejected"

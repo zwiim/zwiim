@@ -3060,8 +3060,25 @@ pub struct SessionRespondParams {
 
 pub async fn session_respond(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<crate::web::auth::Principal>>,
     ZJson(p): ZJson<SessionRespondParams>,
 ) -> ZResult<Value> {
+    if let RequestAnswer::ConnectorApproval {
+        decision,
+        binding_hash,
+    } = &p.answer
+    {
+        super::connection::connector_respond(
+            &state,
+            principal,
+            &p.session_id,
+            &p.request_id,
+            *decision,
+            binding_hash,
+        )
+        .await?;
+        return ok();
+    }
     let outcome = session::respond(
         &state.db,
         &state.connection_manager,

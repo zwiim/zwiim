@@ -240,6 +240,8 @@ export function requestAction(r: AgentRequest): RequestAction {
       return { type: "review", label: "Answer" };
     case "plan_approval":
       return { type: "review", label: "Review plan" };
+    case "connector_approval":
+      return { type: "review", label: "Review" };
     case "permission": {
       if (r.plan_markdown) return { type: "review", label: "Review plan" };
       if (r.tool?.diffs.length) return { type: "review", label: "Review changes" };
@@ -256,6 +258,8 @@ export function requestTitle(r: AgentRequest): string {
       return r.questions.length === 1 ? r.questions[0]!.question : `${r.questions.length} questions`;
     case "plan_approval":
       return "Approve the plan";
+    case "connector_approval":
+      return `Use ${r.tool.title ?? r.tool.name} on ${r.connection.label}`;
     case "permission":
       if (r.title) return r.title;
       if (r.plan_markdown) return "Approve the plan";

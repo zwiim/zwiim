@@ -623,6 +623,12 @@ async fn async_main() -> Exit {
             let listener = listener.clone();
             let state = state.clone();
             tokio::spawn(async move {
+                listener.set_connector_sessions(Arc::new(
+                    zwiim_host::acp::connector_cards::ConnectorSessions::new(
+                        state.db.conn.clone(),
+                        state.connection_manager.clone_ref(),
+                    ),
+                ));
                 listener.set_connectors(state.connectors().await);
             });
         }

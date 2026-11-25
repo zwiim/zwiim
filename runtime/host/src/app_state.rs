@@ -339,6 +339,7 @@ impl AppState {
                     Arc::new(Keychain),
                 ));
                 service.end_unfinished_calls().await;
+                service.spawn_approval_sweeper();
                 if let Err(e) = service.resume_revocations().await {
                     tracing::warn!("[connectors] couldn't resume revocations: {e}");
                 }
