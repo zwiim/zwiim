@@ -15,6 +15,7 @@ pub mod egress;
 pub mod fake_mcp;
 pub mod grants;
 pub mod mcp;
+pub mod policy;
 pub mod runtime;
 pub mod store;
 pub mod upstream;
