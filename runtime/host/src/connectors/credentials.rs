@@ -13,6 +13,7 @@ use http::HeaderName;
 
 use super::definition::{Auth, StaticField};
 use super::egress::Credential;
+use super::store::CredentialStore;
 
 /// Where secret values are kept. [`Keychain`] in the Host; tests use their own.
 pub trait SecretStore: Send + Sync {
@@ -21,6 +22,8 @@ pub trait SecretStore: Send + Sync {
     fn set(&self, name: &str, value: &str) -> Result<(), String>;
     /// Deleting what isn't there is fine.
     fn delete(&self, name: &str) -> Result<(), String>;
+    /// Where the values end up, recorded with each connection.
+    fn kind(&self) -> CredentialStore;
 }
 
 /// The Host's credential store: the OS keychain, or `tokens.json` under
@@ -38,6 +41,14 @@ impl SecretStore for Keychain {
 
     fn delete(&self, name: &str) -> Result<(), String> {
         crate::keyring_store::delete_secret(name)
+    }
+
+    fn kind(&self) -> CredentialStore {
+        if crate::keyring_store::uses_file_store() {
+            CredentialStore::File
+        } else {
+            CredentialStore::Keychain
+        }
     }
 }
 
@@ -86,6 +97,10 @@ impl SecretStore for MemorySecrets {
         self.fail()?;
         self.values.lock().unwrap().remove(name);
         Ok(())
+    }
+
+    fn kind(&self) -> CredentialStore {
+        CredentialStore::Keychain
     }
 }
 
@@ -138,6 +153,24 @@ pub fn save_secrets(
     auth: &Auth,
     values: &HashMap<String, String>,
 ) -> Result<(), CredentialError> {
+    for (field, value) in checked(auth, values)? {
+        store
+            .set(&secret_name(connection_id, &field.name), value)
+            .map_err(CredentialError::StoreUnavailable)?;
+    }
+    Ok(())
+}
+
+/// Whether [`save_secrets`] would take `values` for `auth`, without storing
+/// anything.
+pub fn check_secrets(auth: &Auth, values: &HashMap<String, String>) -> Result<(), CredentialError> {
+    checked(auth, values).map(drop)
+}
+
+fn checked<'a>(
+    auth: &'a Auth,
+    values: &'a HashMap<String, String>,
+) -> Result<Vec<(&'a StaticField, &'a str)>, CredentialError> {
     let fields = fields(auth);
     if let Some(extra) = values
         .keys()
@@ -153,14 +186,9 @@ pub fn save_secrets(
             .filter(|v| !v.is_empty())
             .ok_or_else(|| CredentialError::Missing(field.name.clone()))?;
         header(field, value)?;
-        checked.push((secret_name(connection_id, &field.name), value));
+        checked.push((field, value));
     }
-    for (name, value) in checked {
-        store
-            .set(&name, value)
-            .map_err(CredentialError::StoreUnavailable)?;
-    }
-    Ok(())
+    Ok(checked)
 }
 
 /// The credential to send to the connection's credentialed endpoints, or

@@ -16,6 +16,7 @@ use crate::connectors::store::{
 use crate::connectors::upstream::ShutdownReason;
 use crate::db::test_helpers::fresh_in_memory_db;
 use crate::db::AppDatabase;
+use sea_orm::EntityTrait;
 
 struct Setup {
     db: AppDatabase,
@@ -357,4 +358,131 @@ async fn an_interrupted_revocation_resumes_after_its_last_step() {
     assert_eq!(revoked.status, ConnectionStatus::Revoked);
     assert_eq!(revoked.revocation, ALL_STEPS);
     assert!(setup.secrets.names().is_empty());
+}
+
+fn user_server(url: &str, auth: UserAuth) -> UserConnector {
+    UserConnector {
+        name: "Fake".into(),
+        url: url.into(),
+        auth,
+        network: NetworkClass::Local,
+    }
+}
+
+fn service(db: &AppDatabase, secrets: &Arc<MemorySecrets>) -> Connectors {
+    Connectors::new(
+        db.conn.clone(),
+        Arc::new(McpFactory::new(Arc::new(SystemResolver))),
+        secrets.clone(),
+    )
+}
+
+#[tokio::test]
+async fn creating_a_connection_stores_its_key_and_validates_it() {
+    let fake = FakeMcp::new(Era::Modern);
+    let server = fake.serve_http().await;
+    let db = fresh_in_memory_db().await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let connectors = service(&db, &secrets);
+    let created = connectors
+        .create(
+            user_server(&server.url(), UserAuth::Bearer),
+            "Work",
+            Some(" k3y "),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.validation.unwrap().added, ["echo"]);
+    let connection = store::connection(&db.conn, &created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(connection.status, ConnectionStatus::Active);
+    assert_eq!(connection.label, "Work");
+    assert_eq!(
+        secrets.names(),
+        [format!("connector:{}:api_key", created.id)]
+    );
+    assert!(fake
+        .received()
+        .iter()
+        .all(|r| r.header("authorization") == Some("Bearer k3y")));
+}
+
+#[tokio::test]
+async fn a_connection_that_fails_validation_is_kept_as_failed() {
+    let db = fresh_in_memory_db().await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let connectors = service(&db, &secrets);
+    let created = connectors
+        .create(
+            user_server("http://127.0.0.1:9/mcp", UserAuth::None),
+            "Work",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.validation.unwrap_err().code(), "connection_failed");
+    let connection = store::connection(&db.conn, &created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(connection.status, ConnectionStatus::Error);
+}
+
+#[tokio::test]
+async fn a_refused_creation_leaves_nothing_behind() {
+    let url = "http://127.0.0.1:9/mcp";
+    let cases = [
+        (UserAuth::Bearer, "Work", None, "credential_missing"),
+        (UserAuth::Bearer, "Work", Some("  "), "credential_missing"),
+        (UserAuth::None, "Work", Some("k3y"), "invalid_credential"),
+        (
+            UserAuth::Bearer,
+            "Work",
+            Some("bad\nkey"),
+            "invalid_credential",
+        ),
+        (UserAuth::Bearer, " ", Some("k3y"), "invalid_label"),
+    ];
+    for (auth, label, secret, code) in cases {
+        let db = fresh_in_memory_db().await;
+        let secrets = Arc::new(MemorySecrets::default());
+        let err = service(&db, &secrets)
+            .create(user_server(url, auth), label, secret)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), code, "{label:?} {secret:?}");
+        assert!(store::connections(&db.conn).await.unwrap().is_empty());
+        assert!(secrets.names().is_empty());
+        assert!(crate::db::entities::connector_definition::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    let mut public = user_server(url, UserAuth::None);
+    public.network = NetworkClass::Public;
+    let db = fresh_in_memory_db().await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let err = service(&db, &secrets)
+        .create(public, "Work", None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), "invalid_endpoint");
+
+    // A credential store that won't open stores nothing anywhere else.
+    secrets
+        .broken
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = service(&db, &secrets)
+        .create(user_server(url, UserAuth::Bearer), "Work", Some("k3y"))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), "credential_store_unavailable");
+    assert!(store::connections(&db.conn).await.unwrap().is_empty());
 }

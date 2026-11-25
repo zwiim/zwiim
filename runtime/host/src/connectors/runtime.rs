@@ -17,7 +17,7 @@ use sea_orm::DatabaseConnection;
 use url::Url;
 
 use super::credentials::{self, CredentialError, SecretStore};
-use super::definition::{ConnectorDefinition, Runtime};
+use super::definition::{self, Auth, ConnectorDefinition, DefinitionError, Runtime, UserConnector};
 use super::egress::{Credential, EgressGuard, EgressHttpClient, EndpointRule, Resolver};
 use super::mcp::McpUpstream;
 use super::store::{self, ConnectionStatus, RevocationStep, SnapshotChanges, StoreError};
@@ -147,6 +147,35 @@ impl ValidateError {
     }
 }
 
+/// Why a connection couldn't be created. Nothing of it is left behind.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    #[error(transparent)]
+    Definition(#[from] DefinitionError),
+    #[error(transparent)]
+    Credential(CredentialError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+impl CreateError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Definition(e) | Self::Store(StoreError::Definition(e)) => e.code(),
+            Self::Credential(e) => e.code(),
+            Self::Store(StoreError::InvalidLabel) => "invalid_label",
+            Self::Store(_) => "internal",
+        }
+    }
+}
+
+/// A new connection and how its first validation went. A validation that
+/// failed leaves the connection in place, recorded as `error`.
+pub struct Created {
+    pub id: String,
+    pub validation: Result<SnapshotChanges, ValidateError>,
+}
+
 /// Why a revocation hasn't finished. The connection is unusable whatever
 /// this says; only the cleanup is outstanding.
 #[derive(Debug, thiserror::Error)]
@@ -266,6 +295,69 @@ impl Connectors {
         runtime.replace(Some(upstream), ShutdownReason::Idle).await;
         Ok(changes)
     }
+}
+
+impl Connectors {
+    /// Connects a server the user added by URL: its definition, a connection
+    /// labelled `label` confirming it, and `secret` stored for its one
+    /// credential field. Then validated at once. Everything is checked before
+    /// anything is written, and a failure while writing undoes the rest.
+    pub async fn create(
+        &self,
+        server: UserConnector,
+        label: &str,
+        secret: Option<&str>,
+    ) -> Result<Created, CreateError> {
+        let definition = definition::from_user(server, chrono::Utc::now())?;
+        let values = secret_values(&definition.auth, secret);
+        credentials::check_secrets(&definition.auth, &values).map_err(CreateError::Credential)?;
+        store::save_definition(&self.db, &definition).await?;
+        let connection =
+            match store::create_connection(&self.db, &definition.id, label, self.secrets.kind())
+                .await
+            {
+                Ok(connection) => connection,
+                Err(e) => {
+                    self.discard(&definition.id, None, &definition.auth).await;
+                    return Err(e.into());
+                }
+            };
+        if let Err(e) =
+            credentials::save_secrets(&*self.secrets, &connection.id, &definition.auth, &values)
+        {
+            self.discard(&definition.id, Some(&connection.id), &definition.auth)
+                .await;
+            return Err(CreateError::Credential(e));
+        }
+        let validation = self.validate(&connection.id).await;
+        Ok(Created {
+            id: connection.id,
+            validation,
+        })
+    }
+
+    /// Undoes a creation that failed part way.
+    async fn discard(&self, definition_id: &str, connection_id: Option<&str>, auth: &Auth) {
+        if let Some(id) = connection_id {
+            let _ = credentials::delete_secrets(&*self.secrets, id, auth);
+        }
+        if let Err(e) = store::discard_definition(&self.db, definition_id).await {
+            tracing::warn!("[connectors] couldn't discard definition {definition_id}: {e}");
+        }
+    }
+}
+
+/// `secret` as the value of `auth`'s one credential field.
+fn secret_values(auth: &Auth, secret: Option<&str>) -> HashMap<String, String> {
+    let Some(secret) = secret else {
+        return HashMap::new();
+    };
+    let name = match auth {
+        Auth::Static { fields } => fields.first().map(|f| f.name.clone()),
+        Auth::None | Auth::Oauth { .. } => None,
+    };
+    // A secret for a server that takes none is refused by name.
+    HashMap::from([(name.unwrap_or_else(|| "secret".into()), secret.into())])
 }
 
 impl Connectors {

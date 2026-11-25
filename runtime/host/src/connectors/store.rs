@@ -313,6 +313,25 @@ pub async fn connections(conn: &DatabaseConnection) -> Result<Vec<Connection>, S
         .collect()
 }
 
+/// Deletes definition `definition_id` with its connections, their endpoints
+/// and tool snapshots. Only for undoing a connection that failed while it
+/// was being created: nothing has used it yet.
+pub async fn discard_definition(
+    conn: &DatabaseConnection,
+    definition_id: &str,
+) -> Result<(), StoreError> {
+    let txn = conn.begin().await?;
+    connection::Entity::delete_many()
+        .filter(connection::Column::DefinitionId.eq(definition_id))
+        .exec(&txn)
+        .await?;
+    connector_definition::Entity::delete_by_id(definition_id.to_string())
+        .exec(&txn)
+        .await?;
+    txn.commit().await?;
+    Ok(())
+}
+
 /// Moves connection `id` to `status`. `last_error` must already be
 /// redacted; it is cleared when the connection becomes active.
 pub async fn set_status(
