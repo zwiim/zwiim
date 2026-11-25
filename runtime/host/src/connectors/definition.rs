@@ -303,8 +303,9 @@ impl ConnectorDefinition {
             .map(|(_, endpoint)| endpoint)
             .ok_or_else(|| invalid("the server URL's origin isn't an mcp endpoint"))?;
         if let Auth::Static { fields } = &self.auth {
-            if fields.is_empty() {
-                return Err(invalid("static auth needs at least one field"));
+            // Egress sends one credential header per request.
+            if fields.len() != 1 {
+                return Err(invalid("static auth has exactly one credential field"));
             }
             for (i, field) in fields.iter().enumerate() {
                 if field.name.trim().is_empty() || fields[..i].iter().any(|f| f.name == field.name)

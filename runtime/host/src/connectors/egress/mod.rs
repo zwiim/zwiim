@@ -363,6 +363,13 @@ impl Credential {
     }
 }
 
+#[cfg(test)]
+impl Credential {
+    pub(crate) fn parts(&self) -> (&HeaderName, &HeaderValue) {
+        (&self.header, &self.value)
+    }
+}
+
 impl fmt::Debug for Credential {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credential")

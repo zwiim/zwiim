@@ -144,3 +144,5 @@ runtime/host/src/db/entities/connector_definition.rs
 runtime/host/src/db/migration/m20261125_000002_connections.rs
 runtime/host/src/db/entities/connection.rs
 runtime/host/src/db/entities/connection_endpoint.rs
+runtime/host/src/connectors/credentials.rs
+runtime/host/src/connectors/credentials/tests.rs

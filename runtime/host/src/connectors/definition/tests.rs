@@ -153,7 +153,12 @@ fn local_servers_and_oauth_are_refused_by_name() {
 
 #[test]
 fn invalid_definitions_are_refused() {
-    let edits: [(&str, Edit); 13] = [
+    let edits: [(&str, Edit); 14] = [
+        ("two credential fields", |d| {
+            let second = json!({ "name": "org", "placement": "header",
+                                 "header": "X-Org", "format": "{}" });
+            d["auth"]["fields"].as_array_mut().unwrap().push(second)
+        }),
         ("unknown field", |d| d["extra"] = json!(1)),
         ("unknown runtime", |d| {
             d["runtime"]["kind"] = json!("openapi")
