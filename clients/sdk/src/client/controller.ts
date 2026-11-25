@@ -818,6 +818,31 @@ export class HostController {
     return this.client.request("connection.revoke", { service_connection_id });
   }
 
+  listConnectionGrants(service_connection_id: string): Promise<OpResult<"connection.grant.list">> {
+    return this.client.request("connection.grant.list", { service_connection_id });
+  }
+
+  /** Grant a connection to a scope, or change that scope's grant; only on the Host itself. */
+  setConnectionGrant(params: OpParams<"connection.grant.set">): Promise<OpResult<"connection.grant.set">> {
+    return this.client.request("connection.grant.set", params);
+  }
+
+  async removeConnectionGrant(grant_id: number): Promise<void> {
+    await this.client.request("connection.grant.remove", { grant_id });
+  }
+
+  setConnectionToolPolicy(
+    grant_id: number,
+    tool: string,
+    policy: "allow" | "ask" | "deny" | null,
+  ): Promise<OpResult<"connection.tool_policy.set">> {
+    return this.client.request("connection.tool_policy.set", { grant_id, tool, policy });
+  }
+
+  allowAllConnectionTools(grant_id: number): Promise<OpResult<"connection.grant.allow_all">> {
+    return this.client.request("connection.grant.allow_all", { grant_id });
+  }
+
   connectionTools(service_connection_id: string): Promise<OpResult<"connection.tools">> {
     return this.client.request("connection.tools", { service_connection_id });
   }

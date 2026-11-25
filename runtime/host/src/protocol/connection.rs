@@ -1,7 +1,10 @@
 //! Zwiim-owned: the connector platform's `/zwiim/v1` operations (connector
-//! design r3 §10, phase 1). `connection.list`, `connection.create`,
-//! `connection.validate`, `connection.set_secret`, `connection.revoke` and
-//! `connection.tools`.
+//! design r3 §10). `connection.list`, `connection.create`,
+//! `connection.validate`, `connection.set_secret`, `connection.revoke`,
+//! `connection.tools`, and the grants that say which sessions may use a
+//! connection: `connection.grant.list`, `connection.grant.set`,
+//! `connection.grant.remove`, `connection.tool_policy.set` and
+//! `connection.grant.allow_all`.
 //!
 //! A connection is named by `service_connection_id` (`connection_id` is an agent
 //! connection's, which never crosses the boundary). It is answered as a
@@ -19,9 +22,11 @@ use crate::app_state::AppState;
 use crate::connectors::credentials::CredentialError;
 use crate::connectors::definition::{Auth, Runtime, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
+use crate::connectors::grants::{self, Fallback, Grant, GrantError, Scope, ToolPolicy};
 use crate::connectors::runtime::{CreateError, RevokeError, ValidateError};
 use crate::connectors::store::{self, Connection, CredentialStore, SnapshotChanges, StoreError};
 use crate::connectors::upstream::ToolDefinition;
+use crate::models::AgentType;
 use crate::protocol::error::{ZJson, ZwiimError};
 use crate::web::auth::Principal;
 
@@ -463,5 +468,233 @@ pub async fn connection_tools(
         .map_err(internal)?;
     Ok(Json(ToolsResult {
         tools: tools.into_iter().map(ToolView::from).collect(),
+    }))
+}
+
+// ── grants ────────────────────────────────────────────────────────────────
+
+/// One grant: which sessions may use the connection, and how its tools are
+/// treated there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrantView {
+    pub grant_id: i32,
+    /// A root workspace; null for every workspace.
+    pub workspace_id: Option<String>,
+    /// One agent; null for any.
+    pub agent: Option<AgentType>,
+    /// `ask` or `deny`, for tools with no row.
+    pub default_policy: Fallback,
+    /// `ask` or `deny`, for tools first seen after the grant was made.
+    pub new_tools: Fallback,
+    pub created_at: String,
+    pub tools: Vec<ToolPolicyView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPolicyView {
+    pub name: String,
+    pub policy: ToolPolicy,
+    /// An `allow` given for an earlier version of the tool, or for a tool
+    /// no longer listed: it asks again.
+    pub changed: bool,
+}
+
+async fn grant_view(state: &AppState, grant: Grant) -> Result<GrantView, ZwiimError> {
+    let current: std::collections::HashMap<String, String> =
+        store::tools(&state.db.conn, &grant.connection_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|tool| {
+                let hash = tool.hash();
+                (tool.name, hash)
+            })
+            .collect();
+    Ok(GrantView {
+        grant_id: grant.id,
+        workspace_id: grant.scope.workspace_id,
+        agent: grant
+            .scope
+            .agent
+            .map(|agent| serde_json::from_value(serde_json::Value::String(agent)))
+            .transpose()
+            .map_err(internal)?,
+        default_policy: grant.default_policy,
+        new_tools: grant.new_tools,
+        created_at: grant.created_at.to_rfc3339(),
+        tools: grant
+            .tools
+            .into_iter()
+            .map(|row| ToolPolicyView {
+                changed: row.policy == ToolPolicy::Allow
+                    && current.get(&row.tool) != row.schema_hash.as_ref(),
+                name: row.tool,
+                policy: row.policy,
+            })
+            .collect(),
+    })
+}
+
+fn grant_error(e: GrantError) -> ZwiimError {
+    match e {
+        GrantError::ConnectionNotFound(_) => not_found(),
+        GrantError::GrantNotFound(_) => ZwiimError::not_found("No such grant"),
+        GrantError::ToolNotFound(tool) => {
+            ZwiimError::not_found(format!("The connection lists no tool {tool:?}"))
+        }
+        e @ (GrantError::Corrupt(_) | GrantError::Db(_)) => internal(e),
+    }
+}
+
+/// Who may change what agents can do: only the Host's own computer.
+fn grants_host_only(principal: Option<Extension<Principal>>) -> Result<(), ZwiimError> {
+    match principal {
+        Some(Extension(Principal::Device(_))) => Err(ZwiimError::permission_denied(
+            "Grants are changed on the Host's computer",
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GrantsResult {
+    pub grants: Vec<GrantView>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GrantResult {
+    pub grant: GrantView,
+}
+
+/// `connection.grant.list {service_connection_id}` → `{grants}`.
+pub async fn connection_grant_list(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<ConnectionParams>,
+) -> ZResult<GrantsResult> {
+    let mut views = Vec::new();
+    store::connection(&state.db.conn, &p.service_connection_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(not_found)?;
+    for grant in grants::grants(&state.db.conn, &p.service_connection_id)
+        .await
+        .map_err(grant_error)?
+    {
+        views.push(grant_view(&state, grant).await?);
+    }
+    Ok(Json(GrantsResult { grants: views }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantSetParams {
+    pub service_connection_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub agent: Option<AgentType>,
+    pub default_policy: Fallback,
+    pub new_tools: Fallback,
+}
+
+/// `connection.grant.set {service_connection_id, workspace_id?, agent?,
+/// default_policy, new_tools}` → `{grant}`: grants the connection to that
+/// scope, or changes the scope's grant, keeping its tool rows. A workspace
+/// must be a root workspace; its worktrees go with it.
+pub async fn connection_grant_set(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<GrantSetParams>,
+) -> ZResult<GrantResult> {
+    grants_host_only(principal)?;
+    if let Some(workspace_id) = &p.workspace_id {
+        crate::workspace::root_path(&state.db.conn, workspace_id).await?;
+    }
+    let agent = p
+        .agent
+        .map(|agent| match serde_json::to_value(agent) {
+            Ok(serde_json::Value::String(name)) => Ok(name),
+            _ => Err(internal("an agent type isn't a name")),
+        })
+        .transpose()?;
+    let scope = Scope {
+        workspace_id: p.workspace_id,
+        agent,
+    };
+    let grant = grants::set_grant(
+        &state.db.conn,
+        &p.service_connection_id,
+        scope,
+        p.default_policy,
+        p.new_tools,
+    )
+    .await
+    .map_err(grant_error)?;
+    Ok(Json(GrantResult {
+        grant: grant_view(&state, grant).await?,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantParams {
+    pub grant_id: i32,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Empty {}
+
+/// `connection.grant.remove {grant_id}` → `{}`. Sessions in its scope stop
+/// being able to use the connection.
+pub async fn connection_grant_remove(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<GrantParams>,
+) -> ZResult<Empty> {
+    grants_host_only(principal)?;
+    grants::remove_grant(&state.db.conn, p.grant_id)
+        .await
+        .map_err(grant_error)?;
+    Ok(Json(Empty {}))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPolicySetParams {
+    pub grant_id: i32,
+    pub tool: String,
+    /// `allow`, `ask` or `deny`; null removes the row.
+    pub policy: Option<ToolPolicy>,
+}
+
+/// `connection.tool_policy.set {grant_id, tool, policy}` → `{grant}`. An
+/// `allow` holds for the tool as it is listed now.
+pub async fn connection_tool_policy_set(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<ToolPolicySetParams>,
+) -> ZResult<GrantResult> {
+    grants_host_only(principal)?;
+    let grant = grants::set_tool_policy(&state.db.conn, p.grant_id, &p.tool, p.policy)
+        .await
+        .map_err(grant_error)?;
+    Ok(Json(GrantResult {
+        grant: grant_view(&state, grant).await?,
+    }))
+}
+
+/// `connection.grant.allow_all {grant_id}` → `{grant}`: allows every tool
+/// the connection lists now, each as it is now. Denied tools stay denied.
+pub async fn connection_grant_allow_all(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<GrantParams>,
+) -> ZResult<GrantResult> {
+    grants_host_only(principal)?;
+    let grant = grants::allow_all(&state.db.conn, p.grant_id)
+        .await
+        .map_err(grant_error)?;
+    Ok(Json(GrantResult {
+        grant: grant_view(&state, grant).await?,
     }))
 }

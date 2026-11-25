@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key and revoke it, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
+- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key, revoke it and grant it to workspaces and agents tool by tool, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
 - Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 
 ### Changed
@@ -22,6 +22,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
+- Protocol revision 47: `connection.grant.list`, `connection.grant.set`, `connection.grant.remove`, `connection.tool_policy.set` and `connection.grant.allow_all` say which sessions may use a connection (every workspace or one, any agent or one) and how each tool is treated: allow, ask or deny, with an allow pinned to the tool as it was (`changed` once it isn't). Fallbacks are only `ask` or `deny`. Only the Host itself may change grants. Older clients never call them.
 - Protocol revision 46: `connection.create`, `connection.list`, `connection.validate`, `connection.set_secret`, `connection.revoke` and `connection.tools` manage connections to outside MCP servers, named by `service_connection_id`. Only the Host itself may create one or set its key; a key never comes back out. New error codes `connection_failed`, `connection_unavailable` and `definition_changed`. Older clients never call them.
 - Protocol revision 45: a playbook's file input may be a copy the Host keeps (`file` and `sha256`) instead of a `path`; `playbook.inputs` lists them, the facts (`playbook.input.set_fact` changes one) and the text that shows a send worked (`playbook.check.set` changes it, or clears it for the agent to judge), `playbook.file.set` copies a file in (at most 50 MB; `file_too_large`, `file_not_found`) and `playbook.file.remove` drops one no step uses (`input_in_use`), each a new version. Playbooks may carry `steps:`. `browser.record.start` / `browser.record.stop` record what the person does in a tab of their own, one `browser.tab.recorded` per step (no typed value in the event; protected fields never recorded), and stop returns a playbook draft that `playbook.create_from_draft` saves. Older clients never call the new operations.
 - Protocol revision 44: `run.resolve {item_id, choice}` settles a playbook item waiting on the person — `sent`, `not_sent` (requeued, keys released) or `skip` — and items carry `may_have_sent`; `item_not_waiting` once settled. Older clients ignore the field and never call it.

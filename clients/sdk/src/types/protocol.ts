@@ -2261,6 +2261,29 @@ export interface NewServiceConnection {
   secret?: string;
 }
 
+/**
+ * Which sessions may use a connection, and how each tool is treated there
+ * (revision 47). `workspace_id` null is every workspace; `agent` null any.
+ */
+export interface ConnectionGrant {
+  grant_id: number;
+  workspace_id: string | null;
+  agent: AgentType | null;
+  /** For tools with no row. Never `allow`. */
+  default_policy: "ask" | "deny";
+  /** For tools first seen after the grant was made. Never `allow`. */
+  new_tools: "ask" | "deny";
+  created_at: string;
+  tools: ConnectionToolPolicy[];
+}
+
+export interface ConnectionToolPolicy {
+  name: string;
+  policy: "allow" | "ask" | "deny";
+  /** An `allow` given for an earlier version of the tool: it asks again. */
+  changed: boolean;
+}
+
 /** A tool a connection's server listed. */
 export interface ServiceTool {
   name: string;
@@ -2802,6 +2825,30 @@ export interface Operations {
   "connection.revoke": [{ service_connection_id: string }, { connection: ServiceConnection }];
   /** What the server listed at the last validation, by name. */
   "connection.tools": [{ service_connection_id: string }, { tools: ServiceTool[] }];
+  /** The connection's grants (revision 47). */
+  "connection.grant.list": [{ service_connection_id: string }, { grants: ConnectionGrant[] }];
+  /**
+   * Grant the connection to a scope, or change that scope's grant (its rows
+   * kept). A workspace must be a root workspace. Only on the Host itself.
+   */
+  "connection.grant.set": [
+    {
+      service_connection_id: string;
+      workspace_id?: string;
+      agent?: AgentType;
+      default_policy: "ask" | "deny";
+      new_tools: "ask" | "deny";
+    },
+    { grant: ConnectionGrant },
+  ];
+  "connection.grant.remove": [{ grant_id: number }, Record<string, never>];
+  /** Set one tool's row; `null` removes it. `allow` holds for the tool as listed now. */
+  "connection.tool_policy.set": [
+    { grant_id: number; tool: string; policy: "allow" | "ask" | "deny" | null },
+    { grant: ConnectionGrant },
+  ];
+  /** Allow every tool listed now, each as it is now; denied tools stay denied. */
+  "connection.grant.allow_all": [{ grant_id: number }, { grant: ConnectionGrant }];
   /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
@@ -3166,6 +3213,10 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "connection.validate",
   "connection.set_secret",
   "connection.revoke",
+  "connection.grant.set",
+  "connection.grant.remove",
+  "connection.tool_policy.set",
+  "connection.grant.allow_all",
   "playbook.create",
   "playbook.save",
   "playbook.file.set",

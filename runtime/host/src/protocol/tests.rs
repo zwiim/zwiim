@@ -185,6 +185,11 @@ const OPS: &[&str] = &[
     "connection.set_secret",
     "connection.revoke",
     "connection.tools",
+    "connection.grant.list",
+    "connection.grant.set",
+    "connection.grant.remove",
+    "connection.tool_policy.set",
+    "connection.grant.allow_all",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {

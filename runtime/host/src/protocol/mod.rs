@@ -306,6 +306,23 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         )
         .route("/connection.revoke", post(connection::connection_revoke))
         .route("/connection.tools", post(connection::connection_tools))
+        .route(
+            "/connection.grant.list",
+            post(connection::connection_grant_list),
+        )
+        .route("/connection.grant.set", post(connection::connection_grant_set))
+        .route(
+            "/connection.grant.remove",
+            post(connection::connection_grant_remove),
+        )
+        .route(
+            "/connection.tool_policy.set",
+            post(connection::connection_tool_policy_set),
+        )
+        .route(
+            "/connection.grant.allow_all",
+            post(connection::connection_grant_allow_all),
+        )
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(
