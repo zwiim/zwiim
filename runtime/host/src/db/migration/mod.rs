@@ -72,6 +72,7 @@ mod m20261120_000001_playbook_run_source;
 mod m20261120_000002_playbook_knowledge;
 mod m20261120_000003_item_lane;
 mod m20261121_000001_item_tab;
+mod m20261125_000001_connector_definitions;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -149,6 +150,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261120_000002_playbook_knowledge::Migration),
             Box::new(m20261120_000003_item_lane::Migration),
             Box::new(m20261121_000001_item_tab::Migration),
+            Box::new(m20261125_000001_connector_definitions::Migration),
         ]
     }
 }

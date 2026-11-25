@@ -137,3 +137,7 @@ runtime/host/src/acp/delegation/mcp_server/connector.rs
 runtime/host/src/acp/delegation/mcp_server/connector/tests.rs
 runtime/host/src/connectors/definition.rs
 runtime/host/src/connectors/definition/tests.rs
+runtime/host/src/connectors/store.rs
+runtime/host/src/connectors/store/tests.rs
+runtime/host/src/db/migration/m20261125_000001_connector_definitions.rs
+runtime/host/src/db/entities/connector_definition.rs
