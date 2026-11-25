@@ -486,3 +486,28 @@ async fn a_refused_creation_leaves_nothing_behind() {
     assert_eq!(err.code(), "credential_store_unavailable");
     assert!(store::connections(&db.conn).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_new_key_fixes_the_same_connection() {
+    let fake = FakeMcp::new(Era::Modern);
+    let server = fake.serve_http().await;
+    let setup = setup_at(&server.url(), Some("old")).await;
+    let id = &setup.connection;
+    setup.connectors.validate(id).await.unwrap();
+
+    let blank = setup.connectors.set_secret(id, " ").await.unwrap_err();
+    assert_eq!(blank.code(), "credential_missing");
+    setup.connectors.set_secret(id, " new ").await.unwrap();
+    setup.connectors.validate(id).await.unwrap();
+    assert_eq!(status(&setup).await, (ConnectionStatus::Active, None));
+    assert_eq!(setup.secrets.names(), [format!("connector:{id}:api_key")]);
+    let last = fake.received().pop().unwrap();
+    assert_eq!(last.header("authorization"), Some("Bearer new"));
+
+    setup.connectors.revoke(id).await.unwrap();
+    let revoked = setup.connectors.set_secret(id, "again").await.unwrap_err();
+    assert_eq!(revoked.code(), "connection_unavailable");
+    assert!(setup.secrets.names().is_empty(), "a revoked key stays gone");
+    let unknown = setup.connectors.set_secret("nope", "k").await.unwrap_err();
+    assert_eq!(unknown.code(), "connection_not_found");
+}

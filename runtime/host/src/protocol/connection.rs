@@ -1,13 +1,14 @@
 //! Zwiim-owned: the connector platform's `/zwiim/v1` operations (connector
 //! design r3 §10, phase 1). `connection.list`, `connection.create`,
-//! `connection.validate`, `connection.revoke` and `connection.tools`.
+//! `connection.validate`, `connection.set_secret`, `connection.revoke` and
+//! `connection.tools`.
 //!
-//! A connection is named by `connection_uid` (`connection_id` is an agent
+//! A connection is named by `service_connection_id` (`connection_id` is an agent
 //! connection's, which never crosses the boundary). It is answered as a
 //! [`ConnectionView`], never its rows: the
 //! definition, the credential store's secret names and the connector's
-//! credential field names stay in the Host. Secrets go in once, with
-//! `connection.create`, and never come back out.
+//! credential field names stay in the Host. Secrets go in with
+//! `connection.create` or `connection.set_secret` and never come back out.
 
 use std::sync::Arc;
 
@@ -30,7 +31,7 @@ type ZResult<T> = Result<Json<T>, ZwiimError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionView {
-    pub connection_uid: String,
+    pub service_connection_id: String,
     /// The connector's name, e.g. `Linear`.
     pub name: String,
     /// The user's name for this connection, e.g. `Work`.
@@ -141,7 +142,7 @@ async fn view(state: &AppState, connection: Connection) -> Result<ConnectionView
         Auth::None | Auth::Oauth { .. } => None,
     };
     Ok(ConnectionView {
-        connection_uid: connection.id,
+        service_connection_id: connection.id,
         name: definition.display.name,
         label: connection.label,
         slug: connection.slug,
@@ -232,6 +233,16 @@ fn create_error(e: CreateError) -> ZwiimError {
     }
 }
 
+/// A key is entered on the Host's computer, where it is kept.
+fn host_only(principal: Option<Extension<Principal>>) -> Result<(), ZwiimError> {
+    match principal {
+        Some(Extension(Principal::Device(_))) => Err(ZwiimError::permission_denied(
+            "Keys for connections are entered on the Host's computer",
+        )),
+        _ => Ok(()),
+    }
+}
+
 // ── connection.list ───────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize)]
@@ -294,8 +305,8 @@ pub struct CreateParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateResult {
     pub connection: ConnectionView,
-    /// Why its first validation failed; null when it succeeded. The
-    /// connection is kept either way.
+    /// Why connecting failed; null when it succeeded. The connection is
+    /// kept either way.
     pub validation_error: Option<ProblemView>,
 }
 
@@ -307,11 +318,7 @@ pub async fn connection_create(
     principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<CreateParams>,
 ) -> ZResult<CreateResult> {
-    if let Some(Extension(Principal::Device(_))) = principal {
-        return Err(ZwiimError::permission_denied(
-            "Connections are added on the Host's computer",
-        ));
-    }
+    host_only(principal)?;
     let server = UserConnector {
         name: p.name,
         url: p.url,
@@ -343,7 +350,7 @@ pub async fn connection_create(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionParams {
-    pub connection_uid: String,
+    pub service_connection_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -352,7 +359,7 @@ pub struct ValidateResult {
     pub changes: ChangesView,
 }
 
-/// `connection.validate {connection_uid}` → `{connection, changes}`.
+/// `connection.validate {service_connection_id}` → `{connection, changes}`.
 /// Connects afresh and lists the server's tools.
 pub async fn connection_validate(
     Extension(state): Extension<Arc<AppState>>,
@@ -361,12 +368,47 @@ pub async fn connection_validate(
     let changes = state
         .connectors()
         .await
-        .validate(&p.connection_uid)
+        .validate(&p.service_connection_id)
         .await
         .map_err(validate_error)?;
     Ok(Json(ValidateResult {
-        connection: view_of(&state, &p.connection_uid).await?,
+        connection: view_of(&state, &p.service_connection_id).await?,
         changes: changes.into(),
+    }))
+}
+
+// ── connection.set_secret ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSecretParams {
+    pub service_connection_id: String,
+    pub secret: String,
+}
+
+/// `connection.set_secret {service_connection_id, secret}` →
+/// `{connection, validation_error}`, like `connection.create`. Replaces a
+/// wrong, expired or rotated key and connects again; the connection, its
+/// label and tools are kept. Only on the Host itself.
+pub async fn connection_set_secret(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<SetSecretParams>,
+) -> ZResult<CreateResult> {
+    host_only(principal)?;
+    let connectors = state.connectors().await;
+    connectors
+        .set_secret(&p.service_connection_id, &p.secret)
+        .await
+        .map_err(validate_error)?;
+    let validation_error = connectors
+        .validate(&p.service_connection_id)
+        .await
+        .err()
+        .map(|e| validate_error(e).into());
+    Ok(Json(CreateResult {
+        connection: view_of(&state, &p.service_connection_id).await?,
+        validation_error,
     }))
 }
 
@@ -377,20 +419,25 @@ pub struct ConnectionResult {
     pub connection: ConnectionView,
 }
 
-/// `connection.revoke {connection_uid}` → `{connection}`. The connection is
+/// `connection.revoke {service_connection_id}` → `{connection}`. The connection is
 /// unusable at once; one still `revoking` waits for the keychain to delete
 /// its key, and revoking it again retries.
 pub async fn connection_revoke(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<ConnectionParams>,
 ) -> ZResult<ConnectionResult> {
-    match state.connectors().await.revoke(&p.connection_uid).await {
+    match state
+        .connectors()
+        .await
+        .revoke(&p.service_connection_id)
+        .await
+    {
         Ok(()) | Err(RevokeError::WaitingForStore(_)) => {}
         Err(RevokeError::NotFound(_)) => return Err(not_found()),
         Err(RevokeError::Store(e)) => return Err(internal(e)),
     }
     Ok(Json(ConnectionResult {
-        connection: view_of(&state, &p.connection_uid).await?,
+        connection: view_of(&state, &p.service_connection_id).await?,
     }))
 }
 
@@ -401,17 +448,17 @@ pub struct ToolsResult {
     pub tools: Vec<ToolView>,
 }
 
-/// `connection.tools {connection_uid}` → `{tools}`: what its server listed at
+/// `connection.tools {service_connection_id}` → `{tools}`: what its server listed at
 /// the last validation, by name.
 pub async fn connection_tools(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<ConnectionParams>,
 ) -> ZResult<ToolsResult> {
-    store::connection(&state.db.conn, &p.connection_uid)
+    store::connection(&state.db.conn, &p.service_connection_id)
         .await
         .map_err(internal)?
         .ok_or_else(not_found)?;
-    let tools = store::tools(&state.db.conn, &p.connection_uid)
+    let tools = store::tools(&state.db.conn, &p.service_connection_id)
         .await
         .map_err(internal)?;
     Ok(Json(ToolsResult {

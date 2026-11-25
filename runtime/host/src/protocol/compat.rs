@@ -577,28 +577,33 @@ use serde::{Deserialize, Serialize};
 /// Older clients never call the new operations.
 ///
 /// 46 (`connection.*`): connections to outside MCP servers (connector design
-/// r3, phase 1). `connection.create {name, url, auth, network?, label,
-/// secret?}` adds a remote server by URL (`auth` `{kind: "none" | "bearer"}`
-/// or `{kind: "header", header}`, `network` `public` (default, https only)
-/// or `local`), keeps `secret` in the keychain, connects and lists its tools
-/// at once, and returns `{connection, validation_error}`: a connection whose
-/// first validation failed is kept as `error`, with `validation_error {code,
-/// message}`. Only the Host itself may create one (`permission_denied`).
-/// `connection.list {}` returns `{connections}`, `connection.validate
-/// {connection_uid}` connects afresh and returns `{connection, changes:
-/// {added, changed, removed}}`, `connection.revoke {connection_uid}` makes
-/// it unusable at once and deletes its key, returning `{connection}` (still
-/// `revoking`, with `error`, while the keychain is locked; revoking again
-/// retries), and `connection.tools {connection_uid}` returns `{tools}`, each
+/// r3, phase 1), each named by `service_connection_id`. `connection.create
+/// {name, url, auth, network?, label, secret?}` adds a remote server by URL
+/// (`auth` `{kind: "none" | "bearer"}` or `{kind: "header", header}`,
+/// `network` `public` (default, https only) or `local`), keeps `secret` in
+/// the keychain, connects and lists its tools at once, and returns
+/// `{connection, validation_error}`: a connection whose first validation
+/// failed is kept as `error`, with `validation_error {code, message}`.
+/// `connection.set_secret {service_connection_id, secret}` replaces a wrong,
+/// expired or rotated key on the same connection and connects again,
+/// answering like `connection.create`. Only the Host itself may create one
+/// or set its key (`permission_denied`). `connection.list {}` returns
+/// `{connections}`, `connection.validate {service_connection_id}` connects
+/// afresh and returns `{connection, changes: {added, changed, removed}}`,
+/// `connection.revoke {service_connection_id}` makes it unusable at once and
+/// deletes its key, returning `{connection}` (still `revoking`, with
+/// `error`, while the keychain is locked; revoking again retries), and
+/// `connection.tools {service_connection_id}` returns `{tools}`, each
 /// `{name, title, description, input_schema, output_schema, annotations}`.
-/// A connection is `{connection_uid, name, label, slug, url, status, error,
-/// last_validated_at, created_at, credentials, endpoints, tool_count}`:
-/// `status` one of `validating`, `active`, `needs_reauth`, `error`,
-/// `revoking` and `revoked`, `credentials` `keychain`, `file` (stored
-/// unencrypted on a headless Host) or null for a server without a key, and
-/// `endpoints` `[{origin, credentials}]`. Refused with `connection_failed`,
-/// `connection_unavailable`, `definition_changed`, `keychain_unavailable`,
-/// `invalid_input` or `not_found`. Older clients never call them.
+/// A connection is `{service_connection_id, name, label, slug, url, status,
+/// error, last_validated_at, created_at, credentials, endpoints,
+/// tool_count}`: `status` one of `validating`, `active`, `needs_reauth`,
+/// `error`, `revoking` and `revoked`, `credentials` `keychain`, `file`
+/// (stored unencrypted on a headless Host) or null for a server without a
+/// key, and `endpoints` `[{origin, credentials}]`. Refused with
+/// `connection_failed`, `connection_unavailable`, `definition_changed`,
+/// `keychain_unavailable`, `invalid_input` or `not_found`. Older clients
+/// never call them.
 pub const PROTOCOL_REVISION: u32 = 46;
 
 /// Oldest client revision this Host serves. Raise only after a release that

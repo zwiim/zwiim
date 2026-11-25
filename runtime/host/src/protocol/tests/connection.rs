@@ -50,7 +50,7 @@ async fn ok(h: &Host, op: &str, body: Value) -> Value {
 
 async fn created(h: &Host, server: &HttpServer) -> String {
     let body = ok(h, "connection.create", create_body(&server.url())).await;
-    body["connection"]["connection_uid"]
+    body["connection"]["service_connection_id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -75,21 +75,84 @@ async fn a_server_added_by_url_is_connected_listed_and_its_tools_shown() {
         json!([{ "origin": server.url().trim_end_matches("/mcp"), "credentials": true }])
     );
     assert!(connection["last_validated_at"].is_string());
-    let uid = connection["connection_uid"].as_str().unwrap();
+    let uid = connection["service_connection_id"].as_str().unwrap();
     assert_eq!(secrets.names(), [format!("connector:{uid}:api_key")]);
 
     let list = ok(&h, "connection.list", json!({})).await;
     assert_eq!(list["connections"], json!([connection]));
 
-    let tools = ok(&h, "connection.tools", json!({ "connection_uid": uid })).await;
+    let tools = ok(
+        &h,
+        "connection.tools",
+        json!({ "service_connection_id": uid }),
+    )
+    .await;
     assert_eq!(tools["tools"][0]["name"], "echo");
     assert_eq!(tools["tools"][0]["input_schema"]["type"], "object");
 
     fake.set_tools(vec![tool("search", "Searches")]);
-    let body = ok(&h, "connection.validate", json!({ "connection_uid": uid })).await;
+    let body = ok(
+        &h,
+        "connection.validate",
+        json!({ "service_connection_id": uid }),
+    )
+    .await;
     assert_eq!(
         body["changes"],
         json!({ "added": ["search"], "changed": [], "removed": ["echo"] })
+    );
+}
+
+#[tokio::test]
+async fn a_new_key_reconnects_the_same_connection() {
+    let fake = FakeMcp::new(Era::Modern);
+    let server = fake.serve_http().await;
+    let (h, secrets) = connected_host().await;
+    let id = created(&h, &server).await;
+    let new_key = "n3w-k3y-77";
+    let body = ok(
+        &h,
+        "connection.set_secret",
+        json!({ "service_connection_id": id, "secret": new_key }),
+    )
+    .await;
+    assert!(!body.to_string().contains(new_key), "the new key came back");
+    assert_eq!(body["validation_error"], Value::Null);
+    assert_eq!(body["connection"]["service_connection_id"], id.as_str());
+    assert_eq!(body["connection"]["status"], "active");
+    assert_eq!(body["connection"]["label"], "Work");
+    let last = fake.received().pop().unwrap();
+    assert_eq!(
+        last.header("authorization"),
+        Some(format!("Bearer {new_key}").as_str())
+    );
+    assert_eq!(secrets.names().len(), 1);
+
+    let (status, code) = h
+        .err(
+            "connection.set_secret",
+            json!({ "service_connection_id": id, "secret": " " }),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_input")
+    );
+    ok(
+        &h,
+        "connection.revoke",
+        json!({ "service_connection_id": id }),
+    )
+    .await;
+    let (status, code) = h
+        .err(
+            "connection.set_secret",
+            json!({ "service_connection_id": id, "secret": new_key }),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "connection_unavailable")
     );
 }
 
@@ -105,9 +168,14 @@ async fn a_server_that_cannot_be_reached_is_kept_as_failed() {
     assert_eq!(body["connection"]["status"], "error");
     assert_eq!(body["validation_error"]["code"], "connection_failed");
     assert!(body["connection"]["error"].is_string());
-    let uid = body["connection"]["connection_uid"].as_str().unwrap();
+    let uid = body["connection"]["service_connection_id"]
+        .as_str()
+        .unwrap();
     let (status, code) = h
-        .err("connection.validate", json!({ "connection_uid": uid }))
+        .err(
+            "connection.validate",
+            json!({ "service_connection_id": uid }),
+        )
         .await;
     assert_eq!(
         (status, code.as_str()),
@@ -161,7 +229,7 @@ async fn revoking_makes_the_connection_unusable_and_retries_a_locked_keychain() 
     let server = fake.serve_http().await;
     let (h, secrets) = connected_host().await;
     let uid = created(&h, &server).await;
-    let one = json!({ "connection_uid": uid });
+    let one = json!({ "service_connection_id": uid });
 
     secrets.broken.store(true, Ordering::SeqCst);
     let body = ok(&h, "connection.revoke", one.clone()).await;
@@ -190,7 +258,7 @@ async fn unknown_connections_are_not_found() {
         "connection.revoke",
         "connection.tools",
     ] {
-        let (status, code) = h.err(op, json!({ "connection_uid": "nope" })).await;
+        let (status, code) = h.err(op, json!({ "service_connection_id": "nope" })).await;
         assert_eq!(
             (status, code.as_str()),
             (StatusCode::NOT_FOUND, "not_found"),
@@ -212,6 +280,15 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"]["code"], "permission_denied");
+    let (status, body) = h
+        .call_as(
+            &device,
+            "connection.set_secret",
+            json!({ "service_connection_id": uid, "secret": "k" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "permission_denied");
 
     let (status, body) = h.call_as(&device, "connection.list", json!({})).await;
     assert_eq!(status, StatusCode::OK);
@@ -220,7 +297,7 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
         .call_as(
             &device,
             "connection.revoke",
-            json!({ "connection_uid": uid }),
+            json!({ "service_connection_id": uid }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");

@@ -805,16 +805,21 @@ export class HostController {
     return this.client.request("connection.create", connection);
   }
 
-  validateConnection(connection_uid: string): Promise<OpResult<"connection.validate">> {
-    return this.client.request("connection.validate", { connection_uid });
+  validateConnection(service_connection_id: string): Promise<OpResult<"connection.validate">> {
+    return this.client.request("connection.validate", { service_connection_id });
   }
 
-  revokeConnection(connection_uid: string): Promise<OpResult<"connection.revoke">> {
-    return this.client.request("connection.revoke", { connection_uid });
+  /** Replace the connection's key and connect again; only on the Host itself. */
+  setConnectionSecret(service_connection_id: string, secret: string): Promise<OpResult<"connection.set_secret">> {
+    return this.client.request("connection.set_secret", { service_connection_id, secret });
   }
 
-  connectionTools(connection_uid: string): Promise<OpResult<"connection.tools">> {
-    return this.client.request("connection.tools", { connection_uid });
+  revokeConnection(service_connection_id: string): Promise<OpResult<"connection.revoke">> {
+    return this.client.request("connection.revoke", { service_connection_id });
+  }
+
+  connectionTools(service_connection_id: string): Promise<OpResult<"connection.tools">> {
+    return this.client.request("connection.tools", { service_connection_id });
   }
 
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────

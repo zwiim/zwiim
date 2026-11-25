@@ -300,6 +300,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/connection.list", post(connection::connection_list))
         .route("/connection.create", post(connection::connection_create))
         .route("/connection.validate", post(connection::connection_validate))
+        .route(
+            "/connection.set_secret",
+            post(connection::connection_set_secret),
+        )
         .route("/connection.revoke", post(connection::connection_revoke))
         .route("/connection.tools", post(connection::connection_tools))
         .route("/settings.get", post(http::settings_get))

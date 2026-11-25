@@ -336,6 +336,28 @@ impl Connectors {
         })
     }
 
+    /// Replaces connection `id`'s key with `secret`, for a key that was
+    /// wrong, expired or rotated. Validate it afterwards: the connection is
+    /// the same one, its tools and label kept. Refused once it is revoking.
+    pub async fn set_secret(&self, id: &str, secret: &str) -> Result<(), ValidateError> {
+        let connection = store::connection(&self.db, id)
+            .await?
+            .ok_or_else(|| ValidateError::NotFound(id.into()))?;
+        if matches!(
+            connection.status,
+            ConnectionStatus::Revoking | ConnectionStatus::Revoked
+        ) || self.runtime(id).is_blocked()
+        {
+            return Err(ValidateError::Unavailable(connection.status));
+        }
+        let auth = store::definition_auth(&self.db, &connection.definition_id)
+            .await?
+            .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+        let values = secret_values(&auth, Some(secret));
+        credentials::save_secrets(&*self.secrets, id, &auth, &values)
+            .map_err(ValidateError::Credential)
+    }
+
     /// Undoes a creation that failed part way.
     async fn discard(&self, definition_id: &str, connection_id: Option<&str>, auth: &Auth) {
         if let Some(id) = connection_id {

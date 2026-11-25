@@ -2225,10 +2225,10 @@ export interface StoredPlaybookFile {
 
 /**
  * A connection to an outside MCP server (revision 46). Named by
- * `connection_uid`; secrets never come back from the Host.
+ * `service_connection_id`; keys never come back from the Host.
  */
 export interface ServiceConnection {
-  connection_uid: string;
+  service_connection_id: string;
   /** The connector's name, e.g. `Linear`. */
   name: string;
   /** The user's name for this connection, e.g. `Work`. */
@@ -2789,11 +2789,19 @@ export interface Operations {
     { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
   ];
   /** Connect afresh and list the server's tools. */
-  "connection.validate": [{ connection_uid: string }, { connection: ServiceConnection; changes: ServiceToolChanges }];
+  "connection.validate": [{ service_connection_id: string }, { connection: ServiceConnection; changes: ServiceToolChanges }];
+  /**
+   * Replace a wrong, expired or rotated key on the same connection and
+   * connect again; answers like `connection.create`. Only on the Host itself.
+   */
+  "connection.set_secret": [
+    { service_connection_id: string; secret: string },
+    { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
+  ];
   /** Unusable at once; still `revoking` while the keychain is locked, and calling again retries. */
-  "connection.revoke": [{ connection_uid: string }, { connection: ServiceConnection }];
+  "connection.revoke": [{ service_connection_id: string }, { connection: ServiceConnection }];
   /** What the server listed at the last validation, by name. */
-  "connection.tools": [{ connection_uid: string }, { tools: ServiceTool[] }];
+  "connection.tools": [{ service_connection_id: string }, { tools: ServiceTool[] }];
   /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
@@ -3156,6 +3164,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "github.cancel_sign_in",
   "connection.create",
   "connection.validate",
+  "connection.set_secret",
   "connection.revoke",
   "playbook.create",
   "playbook.save",

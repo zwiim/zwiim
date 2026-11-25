@@ -21,7 +21,7 @@ describe("connection methods", () => {
   it("send each connection operation, the changing ones as mutating", async () => {
     const t = await live();
     const sent = () => t.transport.requests.at(-1);
-    const connection = { connection_uid: "c1", status: "active" };
+    const connection = { service_connection_id: "c1", status: "active" };
 
     t.transport.handlers["connection.list"] = () => ({ connections: [connection] });
     expect(await t.controller.listConnections()).toEqual({ connections: [connection] });
@@ -43,15 +43,23 @@ describe("connection methods", () => {
       changes: { added: ["search"], changed: [], removed: [] },
     });
     expect((await t.controller.validateConnection("c1")).changes.added).toEqual(["search"]);
-    expect(sent()).toMatchObject({ op: "connection.validate", params: { connection_uid: "c1" }, options: { mutating: true } });
+    expect(sent()).toMatchObject({ op: "connection.validate", params: { service_connection_id: "c1" }, options: { mutating: true } });
+
+    t.transport.handlers["connection.set_secret"] = () => ({ connection, validation_error: null });
+    await t.controller.setConnectionSecret("c1", "n3w");
+    expect(sent()).toMatchObject({
+      op: "connection.set_secret",
+      params: { service_connection_id: "c1", secret: "n3w" },
+      options: { mutating: true },
+    });
 
     t.transport.handlers["connection.revoke"] = () => ({ connection: { ...connection, status: "revoked" } });
     expect((await t.controller.revokeConnection("c1")).connection.status).toBe("revoked");
-    expect(sent()).toMatchObject({ op: "connection.revoke", params: { connection_uid: "c1" }, options: { mutating: true } });
+    expect(sent()).toMatchObject({ op: "connection.revoke", params: { service_connection_id: "c1" }, options: { mutating: true } });
 
     t.transport.handlers["connection.tools"] = () => ({ tools: [] });
     await t.controller.connectionTools("c1");
-    expect(sent()).toMatchObject({ op: "connection.tools", params: { connection_uid: "c1" } });
+    expect(sent()).toMatchObject({ op: "connection.tools", params: { service_connection_id: "c1" } });
     expect(sent()?.options?.mutating).toBeFalsy();
   });
 });

@@ -182,6 +182,7 @@ const OPS: &[&str] = &[
     "connection.list",
     "connection.create",
     "connection.validate",
+    "connection.set_secret",
     "connection.revoke",
     "connection.tools",
 ];
