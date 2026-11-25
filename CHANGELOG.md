@@ -9,6 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again and revoke it, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
 - Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 
 ### Changed
@@ -21,6 +22,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
+- Protocol revision 46: `connection.create`, `connection.list`, `connection.validate`, `connection.revoke` and `connection.tools` manage connections to outside MCP servers, named by `connection_uid`. Only the Host itself may create one; a key goes in once and never comes back. New error codes `connection_failed`, `connection_unavailable` and `definition_changed`. Older clients never call them.
 - Protocol revision 45: a playbook's file input may be a copy the Host keeps (`file` and `sha256`) instead of a `path`; `playbook.inputs` lists them, the facts (`playbook.input.set_fact` changes one) and the text that shows a send worked (`playbook.check.set` changes it, or clears it for the agent to judge), `playbook.file.set` copies a file in (at most 50 MB; `file_too_large`, `file_not_found`) and `playbook.file.remove` drops one no step uses (`input_in_use`), each a new version. Playbooks may carry `steps:`. `browser.record.start` / `browser.record.stop` record what the person does in a tab of their own, one `browser.tab.recorded` per step (no typed value in the event; protected fields never recorded), and stop returns a playbook draft that `playbook.create_from_draft` saves. Older clients never call the new operations.
 - Protocol revision 44: `run.resolve {item_id, choice}` settles a playbook item waiting on the person — `sent`, `not_sent` (requeued, keys released) or `skip` — and items carry `may_have_sent`; `item_not_waiting` once settled. Older clients ignore the field and never call it.
 - Protocol revision 43: `run.list` pages a playbook's past runs; runs carry `error` and live counts; items carry `tab_id` (and `run.item_changed` adds `site`, `url`, `question`, `tab_id`); pending approvals carry `playbook_name`, `site`, `item_title`, `item_url` and mark `prefilled` fields; playbooks carry `sites` with `risk_accepted`. Older clients ignore the new fields and never call `run.list`.

@@ -36,6 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
+  NewServiceConnection,
   PlaybookDraft,
   RunResolveChoice,
   SessionEvent,
@@ -791,6 +792,29 @@ export class HostController {
 
   async closeBrowserView(stream_id: string): Promise<void> {
     await this.client.request("browser.view.close", { stream_id });
+  }
+
+  // ── Connections to outside services (revision 46) ───────────────────────
+
+  listConnections(): Promise<OpResult<"connection.list">> {
+    return this.client.request("connection.list", {});
+  }
+
+  /** Add a remote server by URL and connect it; only on the Host itself. */
+  createConnection(connection: NewServiceConnection): Promise<OpResult<"connection.create">> {
+    return this.client.request("connection.create", connection);
+  }
+
+  validateConnection(connection_uid: string): Promise<OpResult<"connection.validate">> {
+    return this.client.request("connection.validate", { connection_uid });
+  }
+
+  revokeConnection(connection_uid: string): Promise<OpResult<"connection.revoke">> {
+    return this.client.request("connection.revoke", { connection_uid });
+  }
+
+  connectionTools(connection_uid: string): Promise<OpResult<"connection.tools">> {
+    return this.client.request("connection.tools", { connection_uid });
   }
 
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────

@@ -468,7 +468,17 @@ async fn async_main() -> Exit {
         github_auth: Default::default(),
         browser: Default::default(),
         browser_streams: Default::default(),
+        connectors: Default::default(),
     });
+
+    // Finish connection revocations a Host exit interrupted (connector design
+    // r3 §4.4), off the startup path.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            state.connectors().await;
+        });
+    }
 
     // Load (first boot: mint) the host's identity keys off the startup path.
     if let Some(host_id) = host_id.clone() {
