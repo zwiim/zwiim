@@ -135,3 +135,5 @@ runtime/host/src/acp/delegation/mcp_server.rs
 runtime/host/src/acp/delegation/mcp_server/tests.rs
 runtime/host/src/acp/delegation/mcp_server/connector.rs
 runtime/host/src/acp/delegation/mcp_server/connector/tests.rs
+runtime/host/src/connectors/definition.rs
+runtime/host/src/connectors/definition/tests.rs

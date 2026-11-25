@@ -54,10 +54,16 @@ impl ToolDefinition {
                 fields.insert(key.into(), value);
             }
         }
-        let mut canonical = String::new();
-        write_sorted(&Value::Object(fields), &mut canonical);
-        format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
+        sha256_of(&Value::Object(fields))
     }
+}
+
+/// `sha256:<hex>` over `value` as compact JSON with object keys sorted at
+/// every level, so the hash doesn't depend on key order.
+pub(crate) fn sha256_of(value: &Value) -> String {
+    let mut canonical = String::new();
+    write_sorted(value, &mut canonical);
+    format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 /// Compact JSON with object keys sorted at every level.

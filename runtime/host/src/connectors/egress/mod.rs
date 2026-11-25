@@ -63,7 +63,8 @@ pub enum EgressError {
     Transport(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkClass {
     /// Internet services. Every special-purpose address range is refused.
     Public,
@@ -124,7 +125,8 @@ impl EndpointRule {
         })
     }
 
-    fn matches(&self, url: &Url) -> bool {
+    /// Whether `url` is at this rule's origin.
+    pub fn matches(&self, url: &Url) -> bool {
         url.scheme() == self.scheme
             && url.host().map(|h| h.to_owned()).as_ref() == Some(&self.host)
             && url.port_or_known_default() == Some(self.port)
