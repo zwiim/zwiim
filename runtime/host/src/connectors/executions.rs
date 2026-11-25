@@ -9,8 +9,12 @@
 //!                             ├─> tool_error
 //!                             ├─> failed
 //!                             ├─> outcome_unknown   may have run
-//!                             └─> rejected          the adapter proved it wasn't sent
+//!                             └─> rejected or cancelled_before_dispatch
+//!                                     the adapter proved it wasn't sent
 //! ```
+//!
+//! A call is marked `dispatched` just before it is handed to the service's
+//! adapter, so a crash mid-call is never taken for "not sent".
 //!
 //! A record only moves forward: [`finish`] from a state it can't follow is a
 //! no-op, so a late write never overwrites the real outcome. Arguments are
@@ -61,8 +65,7 @@ impl ExecutionState {
     /// The states a record may move to this one from.
     fn follows(self) -> &'static [ExecutionState] {
         match self {
-            Self::Rejected => &[Self::Received, Self::Dispatched],
-            Self::CancelledBeforeDispatch => &[Self::Received],
+            Self::Rejected | Self::CancelledBeforeDispatch => &[Self::Received, Self::Dispatched],
             Self::Dispatched => &[Self::Received],
             Self::Succeeded | Self::ToolError | Self::Failed | Self::OutcomeUnknown => {
                 &[Self::Dispatched]
