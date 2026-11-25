@@ -11,6 +11,7 @@ mod bench;
 pub mod credentials;
 pub mod definition;
 pub mod egress;
+pub mod executions;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake_mcp;
 pub mod grants;

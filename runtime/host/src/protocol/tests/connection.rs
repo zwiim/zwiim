@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use super::{bearer_device, host, Host};
+use super::{bearer_device, event_is, host, Host};
 use crate::connectors::credentials::MemorySecrets;
 use crate::connectors::egress::SystemResolver;
 use crate::connectors::fake_mcp::{tool, Era, FakeMcp, HttpServer};
@@ -19,7 +19,12 @@ const KEY: &str = "k3y-9d1e";
 type Edit = fn(&mut Value);
 
 async fn connected_host() -> (Host, Arc<MemorySecrets>) {
-    let h = host(false).await;
+    connected_host_over(false).await
+}
+
+/// With `http_transport`, the Host also serves its sockets.
+async fn connected_host_over(http_transport: bool) -> (Host, Arc<MemorySecrets>) {
+    let h = host(http_transport).await;
     let secrets = Arc::new(MemorySecrets::default());
     let service = Connectors::new(
         h.state.db.conn.clone(),
@@ -259,6 +264,7 @@ async fn unknown_connections_are_not_found() {
         "connection.validate",
         "connection.revoke",
         "connection.tools",
+        "connection.executions",
     ] {
         let (status, code) = h.err(op, json!({ "service_connection_id": "nope" })).await;
         assert_eq!(
@@ -461,4 +467,119 @@ async fn grant_changes_that_cannot_hold_are_refused() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "a paired device may look");
+}
+
+#[tokio::test]
+async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let connectors = h.state.connectors().await;
+    let secret = json!({ "text": "ship the token sk-live-42" });
+    let arguments = secret.as_object().unwrap().clone();
+    for _ in 0..3 {
+        assert!(
+            !connectors
+                .call(&id, "echo", arguments.clone())
+                .await
+                .is_error
+        );
+    }
+    assert!(connectors.call(&id, "missing", arguments).await.is_error);
+
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, body) = h
+        .call_as(
+            &device,
+            "connection.executions",
+            json!({ "service_connection_id": id, "limit": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.to_string().contains("sk-live-42"), "{body}");
+    let first = body["executions"].as_array().unwrap();
+    assert_eq!(first.len(), 2);
+    let newest = &first[0];
+    assert_eq!(newest["tool"], "missing");
+    assert_eq!(newest["state"], "rejected");
+    assert_eq!(newest["reason"], "not_exposed");
+    assert_eq!(newest["dispatched_at"], Value::Null);
+    assert!(newest["detail"]
+        .as_str()
+        .unwrap()
+        .contains("nothing was sent"));
+    let cursor = body["next_cursor"].clone();
+    assert!(cursor.is_string());
+
+    let body = ok(
+        &h,
+        "connection.executions",
+        json!({ "service_connection_id": id, "cursor": cursor }),
+    )
+    .await;
+    let rest = body["executions"].as_array().unwrap();
+    assert_eq!(rest.len(), 2);
+    assert_eq!(body["next_cursor"], Value::Null);
+    let oldest = &rest[1];
+    assert_eq!(oldest["state"], "succeeded");
+    assert_eq!(oldest["arg_keys"], json!(["text"]));
+    assert!(oldest["dispatched_at"].is_string());
+    assert!(oldest["upstream_ms"].is_i64() && oldest["overhead_ms"].is_i64());
+    assert_eq!(oldest["detail"], Value::Null);
+
+    let (status, code) = h
+        .err(
+            "connection.executions",
+            json!({ "service_connection_id": id, "cursor": "nope" }),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_input")
+    );
+}
+
+#[tokio::test]
+async fn each_call_is_published_as_it_starts_and_as_it_ends() {
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host_over(true).await;
+    let id = created(&h, &server).await;
+    let (mut feed, snapshot) = h.feed().await;
+    assert!(
+        !snapshot.to_string().contains("execution"),
+        "not in the snapshot"
+    );
+
+    let connectors = h.state.connectors().await;
+    let secret = json!({ "text": "ship the token sk-live-42" });
+    let arguments = secret.as_object().unwrap().clone();
+    assert!(!connectors.call(&id, "echo", arguments).await.is_error);
+
+    let started = h
+        .host_event(
+            &mut feed,
+            "the call started",
+            event_is("connector.execution", |p| {
+                p["execution"]["state"] == "received"
+            }),
+        )
+        .await;
+    assert_eq!(
+        started["event"]["payload"]["service_connection_id"],
+        id.as_str()
+    );
+    let execution_id = started["event"]["payload"]["execution"]["execution_id"].clone();
+    let ended = h
+        .host_event(
+            &mut feed,
+            "the call ended",
+            event_is("connector.execution", |p| {
+                p["execution"]["execution_id"] == execution_id
+            }),
+        )
+        .await;
+    assert_eq!(ended["event"]["payload"]["execution"]["state"], "succeeded");
+    assert!(!ended.to_string().contains("sk-live-42"), "{ended}");
 }

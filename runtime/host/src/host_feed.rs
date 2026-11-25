@@ -26,6 +26,11 @@
 //! its base again, a finished agent turn asks it to fetch the base first,
 //! and what it finds is published as `workspace.conflicts_changed`.
 //!
+//! Connector calls come from the connectors service: each call's record as
+//! it starts and as it ends is published as `connector.execution`. It is
+//! not part of the snapshot; a client that missed some lists them with
+//! `connection.executions`.
+//!
 //! `epoch` names this feed's generation (one per host process) and `seq` is
 //! contiguous within it. There is no replay: a subscriber that falls behind
 //! gets a fresh snapshot instead.
@@ -45,6 +50,8 @@ use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::downloads::{Download, Downloads};
+use crate::connectors::executions::Execution;
+use crate::protocol::connection::ExecutionView;
 use crate::conflict_watch::{
     self, ConflictCmd, ConflictResult, ConflictTarget, ConflictWatchConfig,
 };
@@ -310,6 +317,7 @@ async fn start(
     let mut keep_awake_rx = state.keep_awake.subscribe();
     let mut downloads_rx = state.downloads.subscribe();
     let mut approvals_rx = state.playbook_changes.subscribe();
+    let executions_rx = state.connectors().await.subscribe_executions();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let (conflict_results, conflict_rx) = mpsc::unbounded_channel();
@@ -378,6 +386,7 @@ async fn start(
         keep_awake_rx,
         downloads_rx,
         approvals_rx,
+        executions_rx,
     ));
     Ok(shared)
 }
@@ -567,6 +576,16 @@ fn is_merged(entry: &PrEntry) -> bool {
         .is_some_and(|pr| pr.state == PrLifecycle::Merged)
 }
 
+fn execution_changed(execution: Execution) -> (&'static str, Value) {
+    (
+        "connector.execution",
+        json!({
+            "service_connection_id": execution.connection_id.clone(),
+            "execution": ExecutionView::from(execution),
+        }),
+    )
+}
+
 fn pr_changed(workspace_id: &str, entry: &PrEntry) -> (&'static str, Value) {
     (
         "workspace.pr_changed",
@@ -605,6 +624,7 @@ impl FeedTask {
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
         mut downloads_rx: tokio::sync::watch::Receiver<u64>,
         mut approvals_rx: tokio::sync::watch::Receiver<u64>,
+        mut executions_rx: broadcast::Receiver<Execution>,
     ) {
         let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<Recheck>();
         let mut stale = Stale::default();
@@ -661,6 +681,15 @@ impl FeedTask {
                         continue;
                     }
                     Err(_) => return,
+                },
+                r = executions_rx.recv() => match r {
+                    Ok(execution) => {
+                        self.publish(&shared, vec![execution_changed(execution)]);
+                        continue;
+                    }
+                    // Clients list what they missed.
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
                 },
             }
             // Fold whatever is already queued into this pass.

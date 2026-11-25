@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use super::super::tests::{service, setup, Setup};
+use crate::connectors::executions::{executions, Execution, ExecutionState};
 use crate::connectors::fake_mcp::{tool, CallBehaviour, Era, FakeMcp};
 use crate::connectors::upstream::CallOutput;
 
@@ -21,6 +22,24 @@ fn calls(fake: &FakeMcp) -> usize {
         .iter()
         .filter(|m| *m == "tools/call")
         .count()
+}
+
+/// The connection's call records, oldest first.
+async fn records(setup: &Setup) -> Vec<Execution> {
+    let mut all = executions(&setup.db.conn, &setup.connection, 100, None)
+        .await
+        .unwrap();
+    all.reverse();
+    all
+}
+
+/// The state and reason of each record, oldest first.
+async fn outcomes(setup: &Setup) -> Vec<(ExecutionState, Option<String>)> {
+    records(setup)
+        .await
+        .into_iter()
+        .map(|e| (e.state, e.reason))
+        .collect()
 }
 
 async fn active(fake: &FakeMcp) -> Setup {
@@ -42,6 +61,17 @@ async fn an_active_connection_shows_its_tools_and_runs_calls() {
     assert_eq!(text(&output), "hi");
     let sent = fake.received().pop().unwrap();
     assert_eq!(sent.header("authorization"), Some("Bearer k3y"));
+
+    let [record] = &records(&setup).await[..] else {
+        panic!("one record per call");
+    };
+    assert_eq!(record.state, ExecutionState::Succeeded);
+    assert_eq!(record.tool_name, "echo");
+    assert_eq!(record.schema_hash.as_ref(), Some(&tools[0].hash()));
+    assert_eq!(record.arg_keys, ["text"]);
+    assert!(record.dispatched_at.is_some() && record.finished_at.is_some());
+    assert!(record.upstream_ms.is_some() && record.overhead_ms.is_some());
+    assert!(record.detail.is_none());
 }
 
 #[tokio::test]
@@ -59,6 +89,12 @@ async fn a_tool_the_snapshot_lacks_is_never_sent() {
         text(&output)
     );
     assert_eq!(calls(&fake), 0);
+    let [record] = &records(&setup).await[..] else {
+        panic!("one record per call");
+    };
+    assert_eq!(record.state, ExecutionState::Rejected);
+    assert_eq!(record.reason.as_deref(), Some("not_exposed"));
+    assert!(record.schema_hash.is_none() && record.dispatched_at.is_none());
 }
 
 #[tokio::test]
@@ -76,6 +112,10 @@ async fn a_revoked_connection_shows_nothing_and_sends_nothing() {
     assert!(output.is_error);
     assert!(text(&output).contains("revoked"), "{}", text(&output));
     assert_eq!(calls(&fake), 0);
+    assert_eq!(
+        outcomes(&setup).await,
+        [(ExecutionState::Rejected, Some("unavailable".into()))]
+    );
 }
 
 #[tokio::test]
@@ -133,6 +173,71 @@ async fn failures_say_whether_the_call_may_have_run() {
         .filter(|r| r.method == "tools/call")
         .count();
     assert_eq!(dropping, 3, "never retried");
+
+    assert_eq!(
+        outcomes(&setup).await,
+        [
+            (ExecutionState::ToolError, None),
+            (ExecutionState::Failed, None),
+            (
+                ExecutionState::OutcomeUnknown,
+                Some("connection_lost".into())
+            ),
+        ]
+    );
+    let details: Vec<String> = records(&setup)
+        .await
+        .into_iter()
+        .map(|e| e.detail.unwrap())
+        .collect();
+    assert_eq!(details[0], "no such issue");
+    assert!(!details[1].contains("k3y"), "the key is never recorded");
+    assert!(details[2].contains("may have run"));
+}
+
+#[tokio::test]
+async fn a_call_dropped_midway_is_recorded_as_maybe_run() {
+    let fake = FakeMcp::new(Era::Modern);
+    fake.on_call("echo", CallBehaviour::Hang);
+    let setup = std::sync::Arc::new(active(&fake).await);
+    let call = {
+        let setup = setup.clone();
+        tokio::spawn(async move {
+            setup
+                .connectors
+                .call(&setup.connection, "echo", args("hi"))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while calls(&fake) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the call reached the service");
+    // The proxy hanging up drops the call like this.
+    call.abort();
+    let _ = call.await;
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let outcomes = outcomes(&setup).await;
+            if outcomes[0].0 != ExecutionState::Dispatched {
+                return outcomes;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the record was ended");
+    assert_eq!(
+        ended,
+        [(
+            ExecutionState::OutcomeUnknown,
+            Some("cancelled_after_dispatch".into())
+        )]
+    );
 }
 
 #[tokio::test]

@@ -1924,6 +1924,11 @@ export type HostFeedEvent = { seq: number } & (
   /** Capability `downloads`: one started or moved (at most every 250 ms each). */
   | { type: "download.changed"; payload: { download: HostDownload } }
   | { type: "download.removed"; payload: { download_id: string } }
+  /**
+   * Revision 48: a connection's tool call started or ended. Not in the
+   * snapshot; list what was missed with `connection.executions`.
+   */
+  | { type: "connector.execution"; payload: { service_connection_id: string; execution: ConnectorExecution } }
   /** Capability `playbooks`: an item parked on an outward approval (spec 8.5.1). */
   | { type: "run.approval_requested"; payload: PendingApproval }
   /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
@@ -2283,6 +2288,48 @@ export interface ConnectionToolPolicy {
   /** An `allow` given for an earlier version of the tool: it asks again. */
   changed: boolean;
 }
+
+/**
+ * One tool call an agent made through a connection (revision 48). Its
+ * arguments are never kept, only their top-level keys.
+ */
+export interface ConnectorExecution {
+  execution_id: string;
+  tool: string;
+  state: ConnectorExecutionState;
+  /**
+   * Why it was rejected (`unavailable`, `not_exposed`, `not_sent`), or why its
+   * outcome is unknown (`timeout`, `cancelled_after_dispatch`,
+   * `connection_lost`, `host_shutdown`).
+   */
+  reason: string | null;
+  /** What the agent was told, for a call that didn't succeed. */
+  detail: string | null;
+  arg_keys: string[];
+  received_at: string;
+  /** When it reached the service; null if it never did. */
+  dispatched_at: string | null;
+  finished_at: string | null;
+  /** The service's round trip. */
+  upstream_ms: number | null;
+  /** The rest of the call's time in the Host. */
+  overhead_ms: number | null;
+}
+
+/** The approval states are reserved until approvals land. */
+export type ConnectorExecutionState =
+  | "received"
+  | "rejected"
+  | "awaiting_approval"
+  | "approval_denied"
+  | "approval_expired"
+  | "approval_void"
+  | "cancelled_before_dispatch"
+  | "dispatched"
+  | "succeeded"
+  | "tool_error"
+  | "failed"
+  | "outcome_unknown";
 
 /** A tool a connection's server listed. */
 export interface ServiceTool {
@@ -2849,6 +2896,10 @@ export interface Operations {
   ];
   /** Allow every tool listed now, each as it is now; denied tools stay denied. */
   "connection.grant.allow_all": [{ grant_id: number }, { grant: ConnectionGrant }];
+  "connection.executions": [
+    { service_connection_id: string; cursor?: string; limit?: number },
+    { executions: ConnectorExecution[]; next_cursor: string | null },
+  ];
   /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.

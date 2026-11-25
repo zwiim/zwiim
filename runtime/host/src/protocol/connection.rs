@@ -22,6 +22,7 @@ use crate::app_state::AppState;
 use crate::connectors::credentials::CredentialError;
 use crate::connectors::definition::{Auth, Runtime, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
+use crate::connectors::executions::{self, Execution, ExecutionError, ExecutionState};
 use crate::connectors::grants::{self, Fallback, Grant, GrantError, Scope, ToolPolicy};
 use crate::connectors::runtime::{CreateError, RevokeError, ValidateError};
 use crate::connectors::store::{self, Connection, CredentialStore, SnapshotChanges, StoreError};
@@ -696,5 +697,116 @@ pub async fn connection_grant_allow_all(
         .map_err(grant_error)?;
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
+    }))
+}
+
+// ── executions ────────────────────────────────────────────────────────────
+
+/// One tool call an agent made through the connection. Its arguments are
+/// never kept, only their top-level keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionView {
+    pub execution_id: String,
+    pub tool: String,
+    /// `received`, `rejected`, `cancelled_before_dispatch`, `dispatched`,
+    /// `succeeded`, `tool_error`, `failed` or `outcome_unknown`, and the
+    /// approval states once approvals land.
+    pub state: ExecutionState,
+    /// Why it was rejected, or why its outcome is unknown.
+    pub reason: Option<String>,
+    /// What the agent was told, for a call that didn't succeed.
+    pub detail: Option<String>,
+    pub arg_keys: Vec<String>,
+    pub received_at: String,
+    /// When it reached the service; null if it never did.
+    pub dispatched_at: Option<String>,
+    pub finished_at: Option<String>,
+    /// The service's round trip.
+    pub upstream_ms: Option<i64>,
+    /// The rest of the call's time in the Host.
+    pub overhead_ms: Option<i64>,
+}
+
+impl From<Execution> for ExecutionView {
+    fn from(e: Execution) -> Self {
+        Self {
+            execution_id: e.id,
+            tool: e.tool_name,
+            state: e.state,
+            reason: e.reason,
+            detail: e.detail.as_deref().map(super::events::scrub),
+            arg_keys: e.arg_keys,
+            received_at: e.received_at.to_rfc3339(),
+            dispatched_at: e.dispatched_at.map(|t| t.to_rfc3339()),
+            finished_at: e.finished_at.map(|t| t.to_rfc3339()),
+            upstream_ms: e.upstream_ms,
+            overhead_ms: e.overhead_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionsParams {
+    pub service_connection_id: String,
+    /// The `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionsResult {
+    pub executions: Vec<ExecutionView>,
+    pub next_cursor: Option<String>,
+}
+
+const DEFAULT_PAGE: u64 = 50;
+const MAX_PAGE: u64 = 200;
+
+fn execution_error(e: ExecutionError) -> ZwiimError {
+    internal(e)
+}
+
+/// `connection.executions {service_connection_id, cursor?, limit?}` →
+/// `{executions, next_cursor}`: its calls, newest first.
+pub async fn connection_executions(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<ExecutionsParams>,
+) -> ZResult<ExecutionsResult> {
+    let conn = &state.db.conn;
+    store::connection(conn, &p.service_connection_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(not_found)?;
+    if let Some(cursor) = &p.cursor {
+        let known = executions::execution(conn, cursor)
+            .await
+            .map_err(execution_error)?
+            .is_some_and(|e| e.connection_id == p.service_connection_id);
+        if !known {
+            return Err(ZwiimError::invalid_input("Unknown cursor"));
+        }
+    }
+    let limit = p.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
+    // One extra row tells whether a next page exists.
+    let mut page = executions::executions(
+        conn,
+        &p.service_connection_id,
+        limit + 1,
+        p.cursor.as_deref(),
+    )
+    .await
+    .map_err(execution_error)?;
+    let next_cursor = if page.len() as u64 > limit {
+        page.truncate(limit as usize);
+        page.last().map(|e| e.id.clone())
+    } else {
+        None
+    };
+    Ok(Json(ExecutionsResult {
+        executions: page.into_iter().map(ExecutionView::from).collect(),
+        next_cursor,
     }))
 }

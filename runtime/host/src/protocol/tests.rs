@@ -190,6 +190,7 @@ const OPS: &[&str] = &[
     "connection.grant.remove",
     "connection.tool_policy.set",
     "connection.grant.allow_all",
+    "connection.executions",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {

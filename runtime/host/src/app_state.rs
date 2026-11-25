@@ -338,6 +338,7 @@ impl AppState {
                     Arc::new(runtime::McpFactory::new(Arc::new(SystemResolver))),
                     Arc::new(Keychain),
                 ));
+                service.end_unfinished_calls().await;
                 if let Err(e) = service.resume_revocations().await {
                     tracing::warn!("[connectors] couldn't resume revocations: {e}");
                 }
