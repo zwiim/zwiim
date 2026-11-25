@@ -14,9 +14,9 @@ use crate::acp::delegation::companion::{
 };
 use crate::acp::delegation::transport::{read_frame, write_frame};
 
-const LEGACY: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
-const MODERN: &str = "2026-07-28";
-const WAIT: Duration = Duration::from_secs(5);
+pub(super) const LEGACY: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+pub(super) const MODERN: &str = "2026-07-28";
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 /// The Host's side of the companion socket. Records every message; answers
 /// at once except `ask` and `call`, which stay open until the companion
@@ -91,8 +91,9 @@ impl Broker {
 }
 
 /// An agent talking to one companion: its stdin and stdout are separate
-/// streams, as with a real child process.
-struct Agent {
+/// streams, as with a real child process. Shared with the connector proxy's
+/// tests.
+pub(super) struct Agent {
     stdin: DuplexStream,
     stdout: Lines<BufReader<DuplexStream>>,
     served: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -127,14 +128,18 @@ fn setup(features: &str) -> Setup {
 
 impl Agent {
     fn start(ctx: &CompanionContext) -> Self {
+        let ctx = ctx.clone();
+        Self::over(|read, write| serve(ctx, Arc::new(InflightCalls::new()), read, write))
+    }
+
+    /// An agent on the server `serve` runs over the agent's stdin / stdout.
+    pub(super) fn over<F>(serve: impl FnOnce(DuplexStream, DuplexStream) -> F) -> Self
+    where
+        F: std::future::Future<Output = std::io::Result<()>> + Send + 'static,
+    {
         let (stdin, server_in) = tokio::io::duplex(1 << 20);
         let (server_out, stdout) = tokio::io::duplex(1 << 20);
-        let served = tokio::spawn(serve(
-            ctx.clone(),
-            Arc::new(InflightCalls::new()),
-            server_in,
-            server_out,
-        ));
+        let served = tokio::spawn(serve(server_in, server_out));
         Self {
             stdin,
             stdout: BufReader::new(stdout).lines(),
@@ -143,17 +148,17 @@ impl Agent {
         }
     }
 
-    async fn send(&mut self, message: Value) {
+    pub(super) async fn send(&mut self, message: Value) {
         let line = format!("{message}\n");
         self.stdin.write_all(line.as_bytes()).await.unwrap();
     }
 
-    async fn notify(&mut self, method: &str, params: Value) {
+    pub(super) async fn notify(&mut self, method: &str, params: Value) {
         self.send(json!({ "jsonrpc": "2.0", "method": method, "params": params }))
             .await;
     }
 
-    async fn start_request(&mut self, method: &str, params: Value) -> u64 {
+    pub(super) async fn start_request(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
@@ -162,7 +167,7 @@ impl Agent {
     }
 
     /// The reply to `id`, skipping anything else; `None` if none in `wait`.
-    async fn reply(&mut self, id: u64, wait: Duration) -> Option<Value> {
+    pub(super) async fn reply(&mut self, id: u64, wait: Duration) -> Option<Value> {
         tokio::time::timeout(wait, async {
             loop {
                 let line = self.stdout.next_line().await.ok()??;
@@ -177,14 +182,31 @@ impl Agent {
         .flatten()
     }
 
-    async fn request(&mut self, method: &str, params: Value) -> Value {
+    /// The next notification named `method`, skipping anything else; `None`
+    /// if none in `wait`.
+    pub(super) async fn notification(&mut self, method: &str, wait: Duration) -> Option<Value> {
+        tokio::time::timeout(wait, async {
+            loop {
+                let line = self.stdout.next_line().await.ok()??;
+                let message: Value = serde_json::from_str(&line).ok()?;
+                if message.get("id").is_none() && message["method"] == method {
+                    return Some(message);
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub(super) async fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.start_request(method, params).await;
         self.reply(id, WAIT)
             .await
             .unwrap_or_else(|| panic!("no reply to {method}"))
     }
 
-    async fn initialize(&mut self, version: &str) -> Value {
+    pub(super) async fn initialize(&mut self, version: &str) -> Value {
         let init = self
             .request(
                 "initialize",
@@ -197,7 +219,7 @@ impl Agent {
     }
 }
 
-fn modern(mut params: Value) -> Value {
+pub(super) fn modern(mut params: Value) -> Value {
     params["_meta"] = json!({
         "io.modelcontextprotocol/protocolVersion": MODERN,
         "io.modelcontextprotocol/clientInfo": { "name": "agent", "version": "1" },
