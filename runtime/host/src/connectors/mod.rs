@@ -8,10 +8,12 @@
 
 #[cfg(test)]
 mod bench;
+pub mod definition;
 pub mod egress;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake_mcp;
 pub mod mcp;
+pub mod store;
 pub mod upstream;
 
 #[cfg(test)]
