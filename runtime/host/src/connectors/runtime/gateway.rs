@@ -11,9 +11,12 @@ use std::time::{Duration, Instant};
 
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Map, Value};
+use tokio::sync::broadcast;
 
 use super::{Connectors, ValidateError};
-use crate::connectors::executions::{self, NewCall, Outcome, RejectReason, Timings};
+use crate::connectors::executions::{
+    self, Execution, ExecutionError, NewCall, Outcome, RejectReason, Timings,
+};
 use crate::connectors::store::{self, ConnectionStatus};
 use crate::connectors::upstream::{
     CallFailure, CallOutput, DispatchMark, ToolDefinition, UnknownCause, Upstream, UpstreamCall,
@@ -68,7 +71,11 @@ impl Connectors {
         )
         .await;
         let record = match record {
-            Ok(record) => Record::new(self.db.clone(), record.id, started),
+            Ok(record) => {
+                let id = record.id.clone();
+                let _ = self.executions.send(record);
+                Record::new(self.db.clone(), self.executions.clone(), id, started)
+            }
             Err(e) => return refusal(&unrecorded(e)),
         };
         let (outcome, upstream_ms, output) = self
@@ -240,6 +247,7 @@ fn first_text(output: &CallOutput) -> String {
 /// on its way may have run.
 struct Record {
     db: DatabaseConnection,
+    events: broadcast::Sender<Execution>,
     id: String,
     started: Instant,
     mark: DispatchMark,
@@ -247,9 +255,15 @@ struct Record {
 }
 
 impl Record {
-    fn new(db: DatabaseConnection, id: String, started: Instant) -> Self {
+    fn new(
+        db: DatabaseConnection,
+        events: broadcast::Sender<Execution>,
+        id: String,
+        started: Instant,
+    ) -> Self {
         Self {
             db,
+            events,
             id,
             started,
             mark: DispatchMark::default(),
@@ -258,18 +272,16 @@ impl Record {
     }
 
     async fn end(&self, outcome: Outcome, detail: Option<&str>, upstream: Option<Duration>) {
-        self.ended.store(true, Ordering::SeqCst);
         let total = self.started.elapsed();
         let timings = Timings {
             upstream_ms: upstream.map(millis),
             overhead_ms: Some(millis(total.saturating_sub(upstream.unwrap_or_default()))),
         };
-        if let Err(e) = executions::finish(&self.db, &self.id, outcome, detail, timings).await {
-            tracing::warn!(
-                "[connectors] couldn't record the end of call {}: {e}",
-                self.id
-            );
-        }
+        let result = executions::finish(&self.db, &self.id, outcome, detail, timings).await;
+        // Only now: dropped during the write, the record still ends itself,
+        // and a record that already ended keeps its outcome.
+        self.ended.store(true, Ordering::SeqCst);
+        ended(&self.events, &self.id, result);
     }
 }
 
@@ -292,14 +304,31 @@ impl Drop for Record {
                 "The agent stopped waiting before the call was sent.",
             )
         };
-        let (db, id) = (self.db.clone(), std::mem::take(&mut self.id));
+        let (db, events, id) = (
+            self.db.clone(),
+            self.events.clone(),
+            std::mem::take(&mut self.id),
+        );
         handle.spawn(async move {
-            if let Err(e) =
-                executions::finish(&db, &id, outcome, Some(detail), Timings::default()).await
-            {
-                tracing::warn!("[connectors] couldn't record the end of call {id}: {e}");
-            }
+            let result =
+                executions::finish(&db, &id, outcome, Some(detail), Timings::default()).await;
+            ended(&events, &id, result);
         });
+    }
+}
+
+/// Tells listeners how call `id` ended.
+fn ended(
+    events: &broadcast::Sender<Execution>,
+    id: &str,
+    result: Result<Option<Execution>, ExecutionError>,
+) {
+    match result {
+        Ok(Some(execution)) => {
+            let _ = events.send(execution);
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("[connectors] couldn't record the end of call {id}: {e}"),
     }
 }
 

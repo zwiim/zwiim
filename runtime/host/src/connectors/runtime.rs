@@ -19,6 +19,7 @@ use url::Url;
 use super::credentials::{self, CredentialError, SecretStore};
 use super::definition::{self, Auth, ConnectorDefinition, DefinitionError, Runtime, UserConnector};
 use super::egress::{Credential, EgressGuard, EgressHttpClient, EndpointRule, Resolver};
+use super::executions::Execution;
 use super::mcp::McpUpstream;
 use super::store::{self, ConnectionStatus, RevocationStep, SnapshotChanges, StoreError};
 use super::upstream::{ConnectorError, ShutdownReason, Upstream};
@@ -229,7 +230,12 @@ pub struct Connectors {
     factory: Arc<dyn UpstreamFactory>,
     secrets: Arc<dyn SecretStore>,
     runtimes: Mutex<HashMap<String, Arc<ConnectionRuntime>>>,
+    /// Each call's record as it starts and as it ends.
+    executions: tokio::sync::broadcast::Sender<Execution>,
 }
+
+/// Records a slow listener may fall behind by; it re-lists after that.
+const EXECUTION_EVENTS: usize = 256;
 
 impl Connectors {
     pub fn new(
@@ -242,7 +248,13 @@ impl Connectors {
             factory,
             secrets,
             runtimes: Mutex::default(),
+            executions: tokio::sync::broadcast::channel(EXECUTION_EVENTS).0,
         }
+    }
+
+    /// Each call's record as it starts and as it ends.
+    pub fn subscribe_executions(&self) -> tokio::sync::broadcast::Receiver<Execution> {
+        self.executions.subscribe()
     }
 
     /// Connection `id`'s runtime, made on first use.

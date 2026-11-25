@@ -641,8 +641,10 @@ use serde::{Deserialize, Serialize};
 /// the service's round trip and `overhead_ms` the rest of the Host's time.
 /// `connection.executions {service_connection_id, cursor?, limit?}` returns
 /// `{executions, next_cursor}`, newest first, 50 a page by default and 200
-/// at most; an unknown cursor is `invalid_input`. Older clients never call
-/// it.
+/// at most; an unknown cursor is `invalid_input`. The host feed publishes
+/// `connector.execution {service_connection_id, execution}` as each call
+/// starts and as it ends; it is not in the snapshot. Older clients never
+/// call the operation and ignore the event.
 pub const PROTOCOL_REVISION: u32 = 48;
 
 /// Oldest client revision this Host serves. Raise only after a release that

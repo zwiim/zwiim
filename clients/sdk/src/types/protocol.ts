@@ -1924,6 +1924,11 @@ export type HostFeedEvent = { seq: number } & (
   /** Capability `downloads`: one started or moved (at most every 250 ms each). */
   | { type: "download.changed"; payload: { download: HostDownload } }
   | { type: "download.removed"; payload: { download_id: string } }
+  /**
+   * Revision 48: a connection's tool call started or ended. Not in the
+   * snapshot; list what was missed with `connection.executions`.
+   */
+  | { type: "connector.execution"; payload: { service_connection_id: string; execution: ConnectorExecution } }
   /** Capability `playbooks`: an item parked on an outward approval (spec 8.5.1). */
   | { type: "run.approval_requested"; payload: PendingApproval }
   /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
