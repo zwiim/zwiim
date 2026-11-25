@@ -165,3 +165,7 @@ runtime/host/src/connectors/executions.rs
 runtime/host/src/connectors/executions/tests.rs
 runtime/host/src/db/migration/m20261125_000005_connector_executions.rs
 runtime/host/src/db/entities/connector_execution.rs
+runtime/host/src/connectors/approvals.rs
+runtime/host/src/connectors/approvals/tests.rs
+runtime/host/src/db/migration/m20261125_000006_connector_approvals.rs
+runtime/host/src/db/entities/connector_approval.rs

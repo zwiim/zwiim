@@ -6,6 +6,7 @@
 //! create. Local stdio servers stay refused until the Phase 5 sandbox ships;
 //! the stdio transport is only ever run against trusted test servers.
 
+pub mod approvals;
 #[cfg(test)]
 mod bench;
 pub mod credentials;
