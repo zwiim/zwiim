@@ -66,6 +66,13 @@ function useRespond(session_id: string, request_id: string, hostName: string) {
 
 const permission = (o: PermissionOption): RequestAnswer => ({ kind: "permission", answer: { option_id: o.option_id } });
 
+/** What a phone may answer a connector call: saving a rule is done on the Host's computer. */
+const CONNECTOR_ANSWERS = [
+  { decision: "once", label: "Allow once", kind: "need" },
+  { decision: "session", label: "Allow for this session", kind: "secondary" },
+  { decision: "deny", label: "Deny", kind: "ghost" },
+] as const;
+
 function tapFeedback(o: PermissionOption) {
   if (!isRejectOption(o)) void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
@@ -185,6 +192,8 @@ export function RequestSheet({
           <PermissionBody request={request} />
         ) : request.kind === "plan_approval" ? (
           <PlanText markdown={request.plan_markdown} />
+        ) : request.kind === "connector_approval" ? (
+          <T variant="mono">{request.preview}</T>
         ) : (
           <QuestionBody request={request} sending={sending} onAnswer={(a) => void answer(a, "answer")} />
         )}
@@ -213,6 +222,26 @@ export function RequestSheet({
           sending={sending}
           onAnswer={(a, key) => void answer(a, key)}
         />
+      ) : request.kind === "connector_approval" ? (
+        <View style={styles.stack}>
+          {CONNECTOR_ANSWERS.map(({ decision, label, kind }) => (
+            <Button
+              key={decision}
+              testID={`sheet-connector-${decision}`}
+              tall
+              label={label}
+              kind={kind}
+              loading={sending === decision}
+              disabled={sending !== null && sending !== decision}
+              onPress={() =>
+                void answer(
+                  { kind: "connector_approval", answer: { decision, binding_hash: request.binding_hash } },
+                  decision,
+                )
+              }
+            />
+          ))}
+        </View>
       ) : null}
       {error ? (
         <T variant="callout" color={theme.err} testID="sheet-error">

@@ -11,6 +11,7 @@ import {
   questionsAnswered,
   RECENT_LIMIT,
   requestAction,
+  requestTitle,
   respondError,
   sessionSections,
   sessionState,
@@ -208,6 +209,22 @@ describe("requests", () => {
       tool: { ...(bash as { tool: object }).tool, command: null, diffs: [{ path: "a.ts", old_text: "a", new_text: "b" }] },
     } as AgentRequest;
     expect(requestAction(edit)).toEqual({ type: "review", label: "Review changes" });
+  });
+
+  it("sends a connector call to the sheet, named by its tool and connection", () => {
+    const call: AgentRequest = {
+      kind: "connector_approval",
+      request_id: "a1",
+      binding_hash: "sha256:b",
+      connection: { label: "Work", slug: "linear_work" },
+      tool: { name: "create_issue", title: "Create issue" },
+      risk: "write",
+      preview: '{"title":"Ship it"}',
+      expires_at: "2026-11-25T00:10:00Z",
+      answers: ["once", "session", "always", "deny", "always_deny"],
+    };
+    expect(requestAction(call)).toEqual({ type: "review", label: "Review" });
+    expect(requestTitle(call)).toBe("Use Create issue on Work");
   });
 
   it("puts rejecting first and allowing once last", () => {
