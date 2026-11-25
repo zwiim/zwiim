@@ -75,6 +75,7 @@ mod m20261121_000001_item_tab;
 mod m20261125_000001_connector_definitions;
 mod m20261125_000002_connections;
 mod m20261125_000003_connection_tools;
+mod m20261125_000004_connector_grants;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -155,6 +156,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261125_000001_connector_definitions::Migration),
             Box::new(m20261125_000002_connections::Migration),
             Box::new(m20261125_000003_connection_tools::Migration),
+            Box::new(m20261125_000004_connector_grants::Migration),
         ]
     }
 }

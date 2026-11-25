@@ -57,6 +57,40 @@ describe("connection methods", () => {
     expect((await t.controller.revokeConnection("c1")).connection.status).toBe("revoked");
     expect(sent()).toMatchObject({ op: "connection.revoke", params: { service_connection_id: "c1" }, options: { mutating: true } });
 
+    const grant = { grant_id: 7, workspace_id: null, agent: null, default_policy: "ask", new_tools: "deny", tools: [] };
+    t.transport.handlers["connection.grant.list"] = () => ({ grants: [grant] });
+    expect((await t.controller.listConnectionGrants("c1")).grants).toEqual([grant]);
+    expect(sent()).toMatchObject({ op: "connection.grant.list", params: { service_connection_id: "c1" } });
+
+    t.transport.handlers["connection.grant.set"] = () => ({ grant });
+    await t.controller.setConnectionGrant({
+      service_connection_id: "c1",
+      agent: "codex",
+      default_policy: "ask",
+      new_tools: "deny",
+    });
+    expect(sent()).toMatchObject({
+      op: "connection.grant.set",
+      params: { service_connection_id: "c1", agent: "codex", default_policy: "ask", new_tools: "deny" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["connection.tool_policy.set"] = () => ({ grant });
+    await t.controller.setConnectionToolPolicy(7, "search", "allow");
+    expect(sent()).toMatchObject({
+      op: "connection.tool_policy.set",
+      params: { grant_id: 7, tool: "search", policy: "allow" },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["connection.grant.allow_all"] = () => ({ grant });
+    await t.controller.allowAllConnectionTools(7);
+    expect(sent()).toMatchObject({ op: "connection.grant.allow_all", params: { grant_id: 7 }, options: { mutating: true } });
+
+    t.transport.handlers["connection.grant.remove"] = () => ({});
+    await t.controller.removeConnectionGrant(7);
+    expect(sent()).toMatchObject({ op: "connection.grant.remove", params: { grant_id: 7 }, options: { mutating: true } });
+
     t.transport.handlers["connection.tools"] = () => ({ tools: [] });
     await t.controller.connectionTools("c1");
     expect(sent()).toMatchObject({ op: "connection.tools", params: { service_connection_id: "c1" } });

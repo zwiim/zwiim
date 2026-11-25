@@ -604,7 +604,29 @@ use serde::{Deserialize, Serialize};
 /// `connection_failed`, `connection_unavailable`, `definition_changed`,
 /// `keychain_unavailable`, `invalid_input` or `not_found`. Older clients
 /// never call them.
-pub const PROTOCOL_REVISION: u32 = 46;
+///
+/// 47 (`connection.grant.*`): grants say which sessions may use a
+/// connection and how each tool is treated there (connector design r3
+/// §5.1). A grant is `{grant_id, workspace_id, agent, default_policy,
+/// new_tools, created_at, tools}`: for every workspace (`workspace_id`
+/// null) or one root workspace and its worktrees, any agent (`agent` null)
+/// or one; `default_policy` (tools with no row) and `new_tools` (tools
+/// first seen after the grant was made) are `ask` or `deny`, never
+/// `allow`. Each tool row is `{name, policy, changed}`: `allow`, `ask` or
+/// `deny`, and `changed` when an `allow` was given for an earlier version
+/// of the tool, which then asks again. `connection.grant.list
+/// {service_connection_id}` returns `{grants}`. `connection.grant.set
+/// {service_connection_id, workspace_id?, agent?, default_policy,
+/// new_tools}` grants the connection to that scope or changes the scope's
+/// grant, keeping its rows, and returns `{grant}` (a worktree is
+/// `invalid_input`). `connection.grant.remove {grant_id}` returns `{}`.
+/// `connection.tool_policy.set {grant_id, tool, policy}` sets one tool's
+/// row (null removes it; `allow` holds for the tool as listed now), and
+/// `connection.grant.allow_all {grant_id}` allows every tool listed now,
+/// keeping denied ones; both return `{grant}`. Only the Host itself may
+/// change grants (`permission_denied`). Unknown grants and tools are
+/// `not_found`. Older clients never call them.
+pub const PROTOCOL_REVISION: u32 = 47;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -901,7 +923,12 @@ mod tests {
 
     #[test]
     fn connections_are_revision_46() {
-        assert_eq!(PROTOCOL_REVISION, 46);
+        assert!(PROTOCOL_REVISION >= 46);
+    }
+
+    #[test]
+    fn grants_are_revision_47() {
+        assert_eq!(PROTOCOL_REVISION, 47);
     }
 
     #[test]

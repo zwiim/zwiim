@@ -154,3 +154,10 @@ runtime/host/src/connectors/runtime.rs
 runtime/host/src/connectors/runtime/tests.rs
 runtime/host/src/connectors/runtime/gateway.rs
 runtime/host/src/connectors/runtime/gateway/tests.rs
+runtime/host/src/connectors/grants.rs
+runtime/host/src/connectors/grants/tests.rs
+runtime/host/src/db/migration/m20261125_000004_connector_grants.rs
+runtime/host/src/db/entities/connector_grant.rs
+runtime/host/src/db/entities/grant_tool_policy.rs
+runtime/host/src/connectors/policy.rs
+runtime/host/src/connectors/policy/tests.rs

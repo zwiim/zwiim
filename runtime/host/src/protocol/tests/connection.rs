@@ -305,3 +305,160 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["connection"]["status"], "revoked");
 }
+
+#[tokio::test]
+async fn grants_say_which_sessions_may_use_a_connection_and_each_tool() {
+    let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let one = json!({ "service_connection_id": id });
+
+    let body = ok(
+        &h,
+        "connection.grant.set",
+        json!({ "service_connection_id": id, "default_policy": "ask", "new_tools": "deny" }),
+    )
+    .await;
+    let grant = &body["grant"];
+    assert_eq!(grant["workspace_id"], Value::Null);
+    assert_eq!(grant["agent"], Value::Null);
+    assert_eq!(grant["default_policy"], "ask");
+    assert_eq!(grant["new_tools"], "deny");
+    let grant_id = grant["grant_id"].clone();
+
+    let body = ok(
+        &h,
+        "connection.tool_policy.set",
+        json!({ "grant_id": grant_id, "tool": "echo", "policy": "allow" }),
+    )
+    .await;
+    assert_eq!(
+        body["grant"]["tools"],
+        json!([{ "name": "echo", "policy": "allow", "changed": false }])
+    );
+
+    // The tool changes: its allow no longer holds, until given again.
+    fake.set_tools(vec![tool("echo", "Echoes, now differently")]);
+    ok(&h, "connection.validate", one.clone()).await;
+    let list = ok(&h, "connection.grant.list", one.clone()).await;
+    assert_eq!(list["grants"][0]["tools"][0]["changed"], true);
+    let body = ok(
+        &h,
+        "connection.grant.allow_all",
+        json!({ "grant_id": grant_id }),
+    )
+    .await;
+    assert_eq!(body["grant"]["tools"][0]["changed"], false);
+
+    let scoped = ok(
+        &h,
+        "connection.grant.set",
+        json!({ "service_connection_id": id, "workspace_id": h.workspace_id,
+                "agent": "codex", "default_policy": "deny", "new_tools": "deny" }),
+    )
+    .await;
+    assert_eq!(scoped["grant"]["workspace_id"], h.workspace_id.as_str());
+    assert_eq!(scoped["grant"]["agent"], "codex");
+    let list = ok(&h, "connection.grant.list", one.clone()).await;
+    assert_eq!(list["grants"].as_array().unwrap().len(), 2);
+
+    ok(
+        &h,
+        "connection.grant.remove",
+        json!({ "grant_id": scoped["grant"]["grant_id"] }),
+    )
+    .await;
+    let list = ok(&h, "connection.grant.list", one).await;
+    assert_eq!(list["grants"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn grant_changes_that_cannot_hold_are_refused() {
+    let fake = FakeMcp::new(Era::Modern);
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let set = |extra: Value| {
+        let mut body = json!({ "service_connection_id": id, "default_policy": "ask",
+                               "new_tools": "ask" });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+
+    let (_, code) = h
+        .err(
+            "connection.grant.set",
+            set(json!({ "default_policy": "allow" })),
+        )
+        .await;
+    assert_eq!(code, "invalid_request", "a fallback never allows");
+    let (status, code) = h
+        .err(
+            "connection.grant.set",
+            set(json!({ "workspace_id": h.wt_workspace_id })),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_input")
+    );
+    let (_, code) = h
+        .err(
+            "connection.grant.set",
+            set(json!({ "workspace_id": "nope" })),
+        )
+        .await;
+    assert_eq!(code, "not_found");
+    let (_, code) = h
+        .err(
+            "connection.grant.set",
+            set(json!({ "service_connection_id": "nope" })),
+        )
+        .await;
+    assert_eq!(code, "not_found");
+
+    let grant = ok(&h, "connection.grant.set", set(json!({}))).await;
+    let grant_id = grant["grant"]["grant_id"].clone();
+    let (_, code) = h
+        .err(
+            "connection.tool_policy.set",
+            json!({ "grant_id": grant_id, "tool": "drop_db", "policy": "allow" }),
+        )
+        .await;
+    assert_eq!(code, "not_found");
+    ok(
+        &h,
+        "connection.grant.remove",
+        json!({ "grant_id": grant_id }),
+    )
+    .await;
+    let (_, code) = h
+        .err("connection.grant.remove", json!({ "grant_id": grant_id }))
+        .await;
+    assert_eq!(code, "not_found");
+
+    let device = bearer_device(&h, "dev-1").await;
+    for (op, body) in [
+        ("connection.grant.set", set(json!({}))),
+        ("connection.grant.remove", json!({ "grant_id": 1 })),
+        (
+            "connection.tool_policy.set",
+            json!({ "grant_id": 1, "tool": "echo", "policy": "allow" }),
+        ),
+        ("connection.grant.allow_all", json!({ "grant_id": 1 })),
+    ] {
+        let (status, body) = h.call_as(&device, op, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{op}: {body}");
+    }
+    let (status, _) = h
+        .call_as(
+            &device,
+            "connection.grant.list",
+            json!({ "service_connection_id": id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "a paired device may look");
+}
