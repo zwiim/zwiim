@@ -148,6 +148,12 @@ export type HostErrorCode =
   | "already_resolved"
   /** `session.respond` `connector_approval`: no one answered in time. */
   | "approval_expired"
+  /**
+   * `connector.tool.set_enabled`: the tool doesn't fit in what the limit leaves
+   * (`details {needs, left, tool_budget}`); `connector.tool_budget.set`: below
+   * what is on (`details {used}`). Revision 50.
+   */
+  | "over_budget"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2286,6 +2292,10 @@ export interface Connector {
   endpoints: { origin: string; credentials: boolean }[];
   /** Tools its server listed at the last validation. */
   tool_count: number;
+  /** The most its tools that are on may take of an agent's context, about (revision 50). */
+  tool_budget: number;
+  /** What its tools that are on take now, about (revision 50). */
+  tools_used: number;
 }
 
 /** What `connector.create` takes: a remote server added by URL. */
@@ -2375,6 +2385,10 @@ export interface ConnectorTool {
   output_schema: unknown | null;
   /** The server's own hints (`readOnlyHint`, ...), as it sent them. */
   annotations: Record<string, unknown> | null;
+  /** Agents are shown it (revision 50). */
+  enabled: boolean;
+  /** About what it takes of an agent's context, in token-equivalents (revision 50). */
+  estimate: number;
 }
 
 /** What a validation changed in a connector's tools, by name. */
@@ -2936,6 +2950,19 @@ export interface Operations {
     { executions: ConnectorExecution[]; next_cursor: string | null },
   ];
   /**
+   * Turn one tool on or off for agents (revision 50). Turning one on that
+   * doesn't fit in what the limit leaves is `over_budget`. Only on the Host itself.
+   */
+  "connector.tool.set_enabled": [
+    { connector_id: string; tool: string; enabled: boolean },
+    { connector: Connector; tools: ConnectorTool[] },
+  ];
+  /**
+   * Set a connector's tool limit, 1,000 to 10,000 (revision 50); below what
+   * is on is `over_budget`. Only on the Host itself.
+   */
+  "connector.tool_budget.set": [{ connector_id: string; tool_budget: number }, { connector: Connector }];
+  /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
    */
@@ -3303,6 +3330,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "connector.grant.remove",
   "connector.tool_policy.set",
   "connector.grant.allow_all",
+  "connector.tool.set_enabled",
+  "connector.tool_budget.set",
   "playbook.create",
   "playbook.save",
   "playbook.file.set",

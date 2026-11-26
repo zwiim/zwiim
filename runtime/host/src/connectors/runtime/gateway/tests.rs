@@ -14,6 +14,7 @@ use crate::connectors::approvals::{self, ApprovalStatus};
 use crate::connectors::executions::{executions, Execution, ExecutionState};
 use crate::connectors::fake_mcp::{tool, CallBehaviour, Era, FakeMcp};
 use crate::connectors::grants::{self, Fallback, Scope, ToolPolicy};
+use crate::connectors::store;
 use crate::connectors::upstream::CallOutput;
 
 /// A session in no workspace, run by Codex, that no one can answer for.
@@ -145,7 +146,7 @@ async fn an_active_connector_shows_its_tools_and_runs_calls() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
     let id = &setup.connector;
-    let (_, tools) = setup.connectors.exposed_tools(id).await.unwrap();
+    let (_, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
     assert_eq!(tools[0].name, "echo");
 
     let output = setup
@@ -197,10 +198,10 @@ async fn a_revoked_connector_shows_nothing_and_sends_nothing() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
     let id = &setup.connector;
-    let (before, _) = setup.connectors.exposed_tools(id).await.unwrap();
+    let (before, _) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
     setup.connectors.revoke(id).await.unwrap();
 
-    let (after, tools) = setup.connectors.exposed_tools(id).await.unwrap();
+    let (after, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
     assert!(after > before, "proxies are told");
     assert!(tools.is_empty());
     let output = setup
@@ -370,8 +371,14 @@ async fn proxies_are_told_only_when_what_agents_see_changes() {
         .unwrap()
         .unwrap();
     assert!(next > seen);
-    let (revision, tools) = setup.connectors.exposed_tools(id).await.unwrap();
-    assert_eq!((revision, tools[0].name.as_str()), (next, "search"));
+    let (revision, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
+    assert_eq!(revision, next);
+    assert!(tools.is_empty(), "a tool the service adds starts off");
+    store::set_tool_enabled(&setup.db.conn, id, "search", true)
+        .await
+        .unwrap();
+    let (_, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
+    assert_eq!(tools[0].name, "search");
 }
 
 #[tokio::test]
@@ -390,7 +397,10 @@ async fn a_service_reporting_new_tools_updates_what_agents_see() {
             .await
             .unwrap_or_else(|_| panic!("{era:?}: the change was never followed"));
         assert!(next > seen);
-        let (_, tools) = setup.connectors.exposed_tools(id).await.unwrap();
+        store::set_tool_enabled(&setup.db.conn, id, "search", true)
+            .await
+            .unwrap();
+        let (_, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
         assert_eq!(tools[0].name, "search", "{era:?}");
     }
 }
@@ -792,7 +802,7 @@ async fn offered(setup: &Setup, agent: &str, engine: bool) -> Vec<String> {
         .offered(std::path::Path::new("/nowhere"), agent, engine)
         .await
         .into_iter()
-        .map(|c| c.id)
+        .map(|o| o.connector.id)
         .collect()
 }
 
@@ -834,6 +844,91 @@ async fn a_session_is_offered_a_connector_it_may_use_some_tool_of() {
         "engine sessions get none"
     );
 
+    store::set_tool_enabled(&setup.db.conn, &id, "echo", false)
+        .await
+        .unwrap();
+    assert!(
+        offered(&setup, "codex", false).await.is_empty(),
+        "every tool is off"
+    );
+    store::set_tool_enabled(&setup.db.conn, &id, "echo", true)
+        .await
+        .unwrap();
+
     setup.connectors.revoke(&id).await.unwrap();
     assert!(offered(&setup, "codex", false).await.is_empty(), "revoked");
+}
+
+#[tokio::test]
+async fn a_change_to_any_connector_or_grant_wakes_every_proxy() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = active(&fake).await;
+    let (one, other) = (
+        setup.connectors.runtime(&setup.connector),
+        setup.connectors.runtime("another"),
+    );
+    let seen = other.revision();
+    one.changed();
+    let next = tokio::time::timeout(Duration::from_secs(5), other.changed_since(seen))
+        .await
+        .expect("another connector's proxies list again");
+    setup.connectors.exposure_changed();
+    tokio::time::timeout(Duration::from_secs(5), one.changed_since(next))
+        .await
+        .expect("a grant change makes them list again");
+}
+
+/// The names `session` is shown on the setup's connector.
+async fn shown(setup: &Setup, session: &CallSession) -> Vec<String> {
+    let (_, tools) = setup
+        .connectors
+        .exposed_tools(session, &setup.connector)
+        .await
+        .unwrap();
+    tools.into_iter().map(|t| t.name).collect()
+}
+
+#[tokio::test]
+async fn a_session_is_shown_the_tools_that_are_on_and_not_denied() {
+    let fake = FakeMcp::new(Era::Modern);
+    fake.set_tools(vec![
+        tool("read", "Reads"),
+        tool("wipe", "Wipes"),
+        tool("write", "Writes"),
+    ]);
+    let setup = asking(&fake).await;
+    assert!(shown(&setup, &anyone()).await.is_empty(), "no grant");
+    let grant = granted(&setup).await;
+    assert_eq!(shown(&setup, &anyone()).await, ["read", "wipe", "write"]);
+
+    grants::set_tool_policy(&setup.db.conn, grant, "wipe", Some(ToolPolicy::Deny))
+        .await
+        .unwrap();
+    store::set_tool_enabled(&setup.db.conn, &setup.connector, "write", false)
+        .await
+        .unwrap();
+    assert_eq!(shown(&setup, &anyone()).await, ["read"]);
+    let mut engine = anyone();
+    engine.engine = true;
+    assert!(shown(&setup, &engine).await.is_empty(), "engine sessions");
+}
+
+#[tokio::test]
+async fn a_tool_that_is_off_is_never_sent() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = active(&fake).await;
+    store::set_tool_enabled(&setup.db.conn, &setup.connector, "echo", false)
+        .await
+        .unwrap();
+    let output = setup
+        .connectors
+        .call(&anyone(), &setup.connector, "echo", args("hi"))
+        .await;
+    assert!(output.is_error);
+    assert!(text(&output).contains("turned off"), "{}", text(&output));
+    assert_eq!(calls(&fake), 0);
+    assert_eq!(
+        outcomes(&setup).await,
+        [(ExecutionState::Rejected, Some("not_exposed".into()))]
+    );
 }

@@ -18,6 +18,7 @@ use axum::{extract::Extension, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::AppState;
+use crate::connectors::budget;
 use crate::connectors::credentials::CredentialError;
 use crate::connectors::definition::{Auth, Runtime, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
@@ -26,8 +27,9 @@ use crate::connectors::grants::{self, Fallback, Grant, GrantError, Scope, ToolPo
 use crate::connectors::runtime::{
     AnswerError, ApprovalAnswer, CreateError, RevokeError, ValidateError,
 };
-use crate::connectors::store::{self, Connector, CredentialStore, SnapshotChanges, StoreError};
-use crate::connectors::upstream::ToolDefinition;
+use crate::connectors::store::{
+    self, Connector, CredentialStore, ListedTool, SnapshotChanges, StoreError,
+};
 use crate::models::AgentType;
 use crate::protocol::error::{ZJson, ZwiimError};
 use crate::web::auth::Principal;
@@ -59,6 +61,11 @@ pub struct ConnectorView {
     pub endpoints: Vec<EndpointView>,
     /// Tools its server listed at the last validation.
     pub tool_count: usize,
+    /// The most its tools that are on may take of an agent's context,
+    /// about, in token-equivalents (revision 50).
+    pub tool_budget: u32,
+    /// What its tools that are on take now, about (revision 50).
+    pub tools_used: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,10 +83,16 @@ pub struct ToolView {
     pub output_schema: Option<serde_json::Value>,
     /// The server's own hints (`readOnlyHint`, …), as it sent them.
     pub annotations: Option<serde_json::Value>,
+    /// Agents are shown it (revision 50).
+    pub enabled: bool,
+    /// About what it takes of an agent's context, in token-equivalents
+    /// (revision 50).
+    pub estimate: u32,
 }
 
-impl From<ToolDefinition> for ToolView {
-    fn from(tool: ToolDefinition) -> Self {
+impl From<ListedTool> for ToolView {
+    fn from(listed: ListedTool) -> Self {
+        let tool = listed.tool;
         Self {
             name: tool.name,
             title: tool.title,
@@ -87,6 +100,8 @@ impl From<ToolDefinition> for ToolView {
             input_schema: tool.input_schema,
             output_schema: tool.output_schema,
             annotations: tool.annotations,
+            enabled: listed.enabled,
+            estimate: listed.estimate,
         }
     }
 }
@@ -130,10 +145,7 @@ async fn view(state: &AppState, connector: Connector) -> Result<ConnectorView, Z
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("a connector's definition is gone"))?;
-    let tool_count = store::tools(conn, &connector.id)
-        .await
-        .map_err(internal)?
-        .len();
+    let tools = store::listed(conn, &connector.id).await.map_err(internal)?;
     let url = match &definition.runtime {
         Runtime::McpHttp { url, .. } => url.clone(),
         Runtime::McpStdio { .. } => String::new(),
@@ -168,7 +180,9 @@ async fn view(state: &AppState, connector: Connector) -> Result<ConnectorView, Z
                 credentials: e.credentials,
             })
             .collect(),
-        tool_count,
+        tool_count: tools.len(),
+        tool_budget: connector.tool_budget,
+        tools_used: store::used(&tools),
     })
 }
 
@@ -460,11 +474,124 @@ pub async fn connector_tools(
         .await
         .map_err(internal)?
         .ok_or_else(not_found)?;
-    let tools = store::tools(&state.db.conn, &p.connector_id)
-        .await
-        .map_err(internal)?;
     Ok(Json(ToolsResult {
-        tools: tools.into_iter().map(ToolView::from).collect(),
+        tools: tools_of(&state, &p.connector_id).await?,
+    }))
+}
+
+async fn tools_of(state: &AppState, id: &str) -> Result<Vec<ToolView>, ZwiimError> {
+    let tools = store::listed(&state.db.conn, id).await.map_err(internal)?;
+    Ok(tools.into_iter().map(ToolView::from).collect())
+}
+
+// ── tool switches ────────────────────────────────────────────────────────
+
+/// Who may change which tools agents see: only the Host's own computer.
+fn switches_host_only(principal: Option<Extension<Principal>>) -> Result<(), ZwiimError> {
+    match principal {
+        Some(Extension(Principal::Device(_))) => Err(ZwiimError::permission_denied(
+            "Tool switches and limits are changed on the Host's computer",
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn switch_error(e: StoreError) -> ZwiimError {
+    match e {
+        StoreError::ConnectorNotFound(_) => not_found(),
+        StoreError::ToolNotFound(tool) => {
+            ZwiimError::not_found(format!("The connector lists no tool {tool:?}"))
+        }
+        StoreError::OverBudget {
+            needs,
+            left,
+            budget,
+        } => {
+            let mut e = ZwiimError::new(
+                StatusCode::CONFLICT,
+                "over_budget",
+                format!(
+                    "This tool needs about {needs} of the connector's {budget}; {left} are \
+                     left. Turn another tool off or raise the limit"
+                ),
+            );
+            e.details = Some(serde_json::json!({
+                "needs": needs, "left": left, "tool_budget": budget,
+            }));
+            e
+        }
+        StoreError::BudgetBelowUse { used } => {
+            let mut e = ZwiimError::new(
+                StatusCode::CONFLICT,
+                "over_budget",
+                format!("Its tools that are on take about {used}; turn some off first"),
+            );
+            e.details = Some(serde_json::json!({ "used": used }));
+            e
+        }
+        StoreError::BudgetOutOfRange(_) => ZwiimError::invalid_input(format!(
+            "A connector's tool limit is {} to {}",
+            budget::MIN,
+            budget::MAX
+        )),
+        e => internal(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSetEnabledParams {
+    pub connector_id: String,
+    pub tool: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolSwitchResult {
+    pub connector: ConnectorView,
+    pub tools: Vec<ToolView>,
+}
+
+/// `connector.tool.set_enabled {connector_id, tool, enabled}` →
+/// `{connector, tools}`. Turning a tool on that doesn't fit in what the
+/// connector's limit leaves is refused (`over_budget`).
+pub async fn connector_tool_set_enabled(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<ToolSetEnabledParams>,
+) -> ZResult<ToolSwitchResult> {
+    switches_host_only(principal)?;
+    store::set_tool_enabled(&state.db.conn, &p.connector_id, &p.tool, p.enabled)
+        .await
+        .map_err(switch_error)?;
+    state.connectors().await.exposure_changed();
+    Ok(Json(ToolSwitchResult {
+        connector: view_of(&state, &p.connector_id).await?,
+        tools: tools_of(&state, &p.connector_id).await?,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolBudgetSetParams {
+    pub connector_id: String,
+    pub tool_budget: u32,
+}
+
+/// `connector.tool_budget.set {connector_id, tool_budget}` → `{connector}`.
+/// Refused outside 1,000 to 10,000 (`invalid_input`), or below what its
+/// tools that are on take (`over_budget`).
+pub async fn connector_tool_budget_set(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<ToolBudgetSetParams>,
+) -> ZResult<ConnectorResult> {
+    switches_host_only(principal)?;
+    let connector = store::set_tool_budget(&state.db.conn, &p.connector_id, p.tool_budget)
+        .await
+        .map_err(switch_error)?;
+    Ok(Json(ConnectorResult {
+        connector: view(&state, connector).await?,
     }))
 }
 
@@ -627,6 +754,7 @@ pub async fn connector_grant_set(
     )
     .await
     .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))
@@ -652,6 +780,7 @@ pub async fn connector_grant_remove(
     grants::remove_grant(&state.db.conn, p.grant_id)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(Empty {}))
 }
 
@@ -675,6 +804,7 @@ pub async fn connector_tool_policy_set(
     let grant = grants::set_tool_policy(&state.db.conn, p.grant_id, &p.tool, p.policy)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))
@@ -691,6 +821,7 @@ pub async fn connector_grant_allow_all(
     let grant = grants::allow_all(&state.db.conn, p.grant_id)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))

@@ -154,6 +154,7 @@ runtime/host/src/connectors/runtime.rs
 runtime/host/src/connectors/runtime/tests.rs
 runtime/host/src/connectors/runtime/gateway.rs
 runtime/host/src/connectors/runtime/gateway/tests.rs
+runtime/host/src/connectors/runtime/offer.rs
 runtime/host/src/connectors/grants.rs
 runtime/host/src/connectors/grants/tests.rs
 runtime/host/src/db/migration/m20261125_000004_connector_grants.rs
@@ -161,6 +162,8 @@ runtime/host/src/db/entities/connector_grant.rs
 runtime/host/src/db/entities/grant_tool_policy.rs
 runtime/host/src/connectors/policy.rs
 runtime/host/src/connectors/policy/tests.rs
+runtime/host/src/connectors/budget.rs
+runtime/host/src/connectors/budget/tests.rs
 runtime/host/src/connectors/executions.rs
 runtime/host/src/connectors/executions/tests.rs
 runtime/host/src/db/migration/m20261125_000005_connector_executions.rs
@@ -168,6 +171,7 @@ runtime/host/src/db/entities/connector_execution.rs
 runtime/host/src/connectors/approvals.rs
 runtime/host/src/connectors/approvals/tests.rs
 runtime/host/src/db/migration/m20261125_000006_connector_approvals.rs
+runtime/host/src/db/migration/m20261126_000001_connector_tool_switches.rs
 runtime/host/src/db/entities/connector_approval.rs
 runtime/host/src/connectors/runtime/ask.rs
 runtime/host/src/acp/connector_cards.rs

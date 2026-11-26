@@ -104,5 +104,21 @@ describe("connector methods", () => {
       params: { connector_id: "c1", cursor: "e9", limit: 20 },
     });
     expect(sent()?.options?.mutating).toBeFalsy();
+
+    t.transport.handlers["connector.tool.set_enabled"] = () => ({ connector, tools: [] });
+    await t.controller.setConnectorToolEnabled("c1", "search", true);
+    expect(sent()).toMatchObject({
+      op: "connector.tool.set_enabled",
+      params: { connector_id: "c1", tool: "search", enabled: true },
+      options: { mutating: true },
+    });
+
+    t.transport.handlers["connector.tool_budget.set"] = () => ({ connector });
+    await t.controller.setConnectorToolBudget("c1", 6000);
+    expect(sent()).toMatchObject({
+      op: "connector.tool_budget.set",
+      params: { connector_id: "c1", tool_budget: 6000 },
+      options: { mutating: true },
+    });
   });
 });

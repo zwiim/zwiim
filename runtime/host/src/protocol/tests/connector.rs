@@ -311,6 +311,15 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
     assert_eq!(body["connector"]["status"], "revoked");
 }
 
+/// Runs grant op `op`, which makes every proxy list its tools again.
+async fn changed(h: &Host, id: &str, op: &str, body: Value) -> Value {
+    let connectors = h.state.connectors().await;
+    let before = connectors.runtime(id).revision();
+    let result = ok(h, op, body).await;
+    assert!(connectors.runtime(id).revision() > before, "{op}");
+    result
+}
+
 #[tokio::test]
 async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
@@ -319,8 +328,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let id = created(&h, &server).await;
     let one = json!({ "connector_id": id });
 
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.grant.set",
         json!({ "connector_id": id, "default_policy": "ask", "new_tools": "deny" }),
     )
@@ -332,8 +342,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     assert_eq!(grant["new_tools"], "deny");
     let grant_id = grant["grant_id"].clone();
 
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.tool_policy.set",
         json!({ "grant_id": grant_id, "tool": "echo", "policy": "allow" }),
     )
@@ -348,16 +359,18 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     ok(&h, "connector.validate", one.clone()).await;
     let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"][0]["tools"][0]["changed"], true);
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.grant.allow_all",
         json!({ "grant_id": grant_id }),
     )
     .await;
     assert_eq!(body["grant"]["tools"][0]["changed"], false);
 
-    let scoped = ok(
+    let scoped = changed(
         &h,
+        &id,
         "connector.grant.set",
         json!({ "connector_id": id, "workspace_id": h.workspace_id,
                 "agent": "codex", "default_policy": "deny", "new_tools": "deny" }),
@@ -368,8 +381,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"].as_array().unwrap().len(), 2);
 
-    ok(
+    changed(
         &h,
+        &id,
         "connector.grant.remove",
         json!({ "grant_id": scoped["grant"]["grant_id"] }),
     )
@@ -702,4 +716,88 @@ async fn a_call_that_asks_is_answered_through_its_session() {
 
     let page = ok(&h, "connector.executions", json!({ "connector_id": id })).await;
     assert_eq!(page["executions"][0]["state"], "succeeded");
+}
+
+#[tokio::test]
+async fn tools_are_turned_on_and_off_within_the_connectors_limit() {
+    let fake = FakeMcp::new(Era::Modern);
+    // About 1,500 token-equivalents each: two fit in the first 4,000.
+    let big = "x".repeat(6_000);
+    fake.set_tools(vec![tool("a", &big), tool("b", &big), tool("c", &big)]);
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let one = json!({ "connector_id": id });
+
+    let tools = ok(&h, "connector.tools", one.clone()).await;
+    let on: Vec<_> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t["enabled"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(on, [("a", true), ("b", true), ("c", false)]);
+    let estimate = tools["tools"][2]["estimate"].as_u64().unwrap();
+    assert!(estimate > 1_000, "{estimate}");
+    let listed = ok(&h, "connector.list", json!({})).await;
+    let connector = &listed["connectors"][0];
+    assert_eq!(connector["tool_budget"], 4_000);
+    let used = connector["tools_used"].as_u64().unwrap();
+    assert_eq!(used, 2 * estimate);
+
+    let c = json!({ "connector_id": id, "tool": "c", "enabled": true });
+    let (status, body) = h.call("connector.tool.set_enabled", c.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "over_budget");
+    assert_eq!(
+        body["error"]["details"],
+        json!({ "needs": estimate, "left": 4_000 - used, "tool_budget": 4_000 })
+    );
+
+    let (status, body) = h
+        .call(
+            "connector.tool_budget.set",
+            json!({ "connector_id": id, "tool_budget": 10_001 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let body = ok(
+        &h,
+        "connector.tool_budget.set",
+        json!({ "connector_id": id, "tool_budget": 6_000 }),
+    )
+    .await;
+    assert_eq!(body["connector"]["tool_budget"], 6_000);
+    let body = changed(&h, &id, "connector.tool.set_enabled", c).await;
+    assert_eq!(body["connector"]["tools_used"], 3 * estimate);
+    assert!(body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["enabled"] == true));
+    let (status, body) = h
+        .call(
+            "connector.tool_budget.set",
+            json!({ "connector_id": id, "tool_budget": 4_000 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "below what is on: {body}");
+    assert_eq!(body["error"]["details"]["used"], 3 * estimate);
+
+    let device = bearer_device(&h, "dev-1").await;
+    for (op, body) in [
+        (
+            "connector.tool.set_enabled",
+            json!({ "connector_id": id, "tool": "a", "enabled": false }),
+        ),
+        (
+            "connector.tool_budget.set",
+            json!({ "connector_id": id, "tool_budget": 8_000 }),
+        ),
+    ] {
+        let (status, body) = h.call_as(&device, op, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{op}: {body}");
+    }
+    let (status, _) = h.call_as(&device, "connector.tools", one).await;
+    assert_eq!(status, StatusCode::OK, "a paired device may look");
 }

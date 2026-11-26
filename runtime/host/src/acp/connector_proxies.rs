@@ -44,9 +44,17 @@ pub(crate) async fn inject(
         );
         return Vec::new();
     };
+    let cost: u32 = offered.iter().map(|o| o.cost).sum();
+    if cost > crate::connectors::budget::SESSION_WARNING {
+        tracing::warn!(
+            "[connectors] agent connection {parent_connection_id} is shown about {cost} \
+             token-equivalents of connector tools, over {}",
+            crate::connectors::budget::SESSION_WARNING
+        );
+    }
     let mut taken: HashSet<String> = servers.iter().filter_map(server_name).collect();
     let mut injected = Vec::new();
-    for connector in offered {
+    for crate::connectors::runtime::Offered { connector, .. } in offered {
         if !taken.insert(connector.slug.clone()) {
             tracing::warn!(
                 "[connectors] an MCP server is already named {}; connector {} isn't offered \

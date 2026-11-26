@@ -21,6 +21,8 @@ pub struct Model {
     pub last_validated_at: Option<DateTimeUtc>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
+    /// The most its enabled tools may take of an agent's context, about.
+    pub tool_budget: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -23,6 +23,8 @@ pub struct Model {
     pub first_seen_at: DateTimeUtc,
     pub last_seen_at: DateTimeUtc,
     pub changed_at: Option<DateTimeUtc>,
+    /// The user's switch: agents are shown the tool only when on.
+    pub enabled: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

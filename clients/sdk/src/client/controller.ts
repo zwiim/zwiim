@@ -854,6 +854,23 @@ export class HostController {
     return this.client.request("connector.executions", params);
   }
 
+  /** Turn one of a connector's tools on or off for agents; only on the Host itself. */
+  setConnectorToolEnabled(
+    connector_id: string,
+    tool: string,
+    enabled: boolean,
+  ): Promise<OpResult<"connector.tool.set_enabled">> {
+    return this.client.request("connector.tool.set_enabled", { connector_id, tool, enabled });
+  }
+
+  /** Set how much a connector's tools that are on may take; only on the Host itself. */
+  setConnectorToolBudget(
+    connector_id: string,
+    tool_budget: number,
+  ): Promise<OpResult<"connector.tool_budget.set">> {
+    return this.client.request("connector.tool_budget.set", { connector_id, tool_budget });
+  }
+
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────
 
   listPlaybooks(): Promise<OpResult<"playbook.list">> {

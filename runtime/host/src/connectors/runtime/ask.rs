@@ -473,12 +473,12 @@ impl Connectors {
                 } else {
                     ToolPolicy::Deny
                 };
-                if let Err(e) =
-                    grants::set_tool_policy(&self.db, grant_id, &approval.tool_name, Some(policy))
-                        .await
+                match grants::set_tool_policy(&self.db, grant_id, &approval.tool_name, Some(policy))
+                    .await
                 {
+                    Ok(_) => self.exposure_changed(),
                     // The answer itself stands; the row can be set again.
-                    log_grant(&approval, e);
+                    Err(e) => log_grant(&approval, e),
                 }
             }
             _ => {}
