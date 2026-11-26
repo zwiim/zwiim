@@ -211,12 +211,12 @@ describe("requests", () => {
     expect(requestAction(edit)).toEqual({ type: "review", label: "Review changes" });
   });
 
-  it("sends a connector call to the sheet, named by its tool and connection", () => {
+  it("sends a connector call to the sheet, named by its tool and connector", () => {
     const call: AgentRequest = {
       kind: "connector_approval",
       request_id: "a1",
       binding_hash: "sha256:b",
-      connection: { label: "Work", slug: "linear_work" },
+      connector: { label: "Work", slug: "linear_work" },
       tool: { name: "create_issue", title: "Create issue" },
       risk: "write",
       preview: '{"title":"Ship it"}',

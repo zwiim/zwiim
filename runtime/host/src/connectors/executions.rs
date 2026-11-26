@@ -1,5 +1,5 @@
 //! Execution records (connector design r3 §4.3): one per tool call made
-//! through a connection, written as the call moves, so the audit trail
+//! through a connector, written as the call moves, so the audit trail
 //! survives a crash.
 //!
 //! ```text
@@ -89,9 +89,9 @@ impl ExecutionState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectReason {
-    /// The connection isn't active.
+    /// The connector isn't active.
     Unavailable,
-    /// The connection doesn't list the tool.
+    /// The connector doesn't list the tool.
     NotExposed,
     /// The service couldn't be reached; nothing left the Host.
     NotSent,
@@ -161,7 +161,7 @@ pub struct Timings {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Execution {
     pub id: String,
-    pub connection_id: String,
+    pub connector_id: String,
     pub session_id: Option<String>,
     pub tool_name: String,
     pub schema_hash: Option<String>,
@@ -181,10 +181,10 @@ pub struct Execution {
 /// A call as it arrives.
 #[derive(Clone, Copy, Debug)]
 pub struct NewCall<'a> {
-    pub connection_id: &'a str,
+    pub connector_id: &'a str,
     pub session_id: Option<&'a str>,
     pub tool_name: &'a str,
-    /// The tool's hash, if the connection lists it.
+    /// The tool's hash, if the connector lists it.
     pub schema_hash: Option<&'a str>,
     pub arguments: &'a Map<String, Value>,
 }
@@ -238,7 +238,7 @@ fn to_execution(row: connector_execution::Model) -> Result<Execution, ExecutionE
         arg_keys: serde_json::from_str(&row.arg_keys_json)
             .map_err(|e| ExecutionError::Corrupt(format!("argument keys: {e}")))?,
         id: row.id,
-        connection_id: row.connection_id,
+        connector_id: row.connector_id,
         session_id: row.session_id,
         tool_name: row.tool_name,
         schema_hash: row.schema_hash,
@@ -262,7 +262,7 @@ pub async fn receive(
     let keys = serde_json::to_string(&arg_keys(call.arguments)).expect("strings serialize");
     let row = connector_execution::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
-        connection_id: Set(call.connection_id.into()),
+        connector_id: Set(call.connector_id.into()),
         session_id: Set(call.session_id.map(Into::into)),
         tool_name: Set(call.tool_name.into()),
         schema_hash: Set(call.schema_hash.map(Into::into)),
@@ -400,16 +400,16 @@ pub async fn execution(
         .transpose()
 }
 
-/// Connection `connection_id`'s calls, newest first: `limit` of them, older
+/// Connector `connector_id`'s calls, newest first: `limit` of them, older
 /// than call `before` if given.
 pub async fn executions(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
     limit: u64,
     before: Option<&str>,
 ) -> Result<Vec<Execution>, ExecutionError> {
     let mut query = connector_execution::Entity::find()
-        .filter(connector_execution::Column::ConnectionId.eq(connection_id));
+        .filter(connector_execution::Column::ConnectorId.eq(connector_id));
     if let Some(before) = before {
         let Some(cursor) = execution(conn, before).await? else {
             return Ok(Vec::new());

@@ -29,8 +29,8 @@ const JSON: &str = "application/json";
 
 type Error = StreamableHttpError<EgressError>;
 
-/// One connection's HTTP client: the shared egress client and the credential
-/// this connection sends. rmcp's own `auth_header` is never set.
+/// One connector's HTTP client: the shared egress client and the credential
+/// this connector sends. rmcp's own `auth_header` is never set.
 #[derive(Clone)]
 pub(super) struct McpHttpClient {
     egress: Arc<EgressHttpClient>,

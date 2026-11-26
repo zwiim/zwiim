@@ -31,11 +31,11 @@ fn session(cards: Arc<dyn ApprovalCards>) -> CallSession {
     }
 }
 
-/// Every session may use the connection; tools with no row ask.
+/// Every session may use the connector; tools with no row ask.
 async fn granted(setup: &Setup) -> i32 {
     grants::set_grant(
         &setup.db.conn,
-        &setup.connection,
+        &setup.connector,
         Scope::default(),
         Fallback::Ask,
         Fallback::Ask,
@@ -107,9 +107,9 @@ fn calls(fake: &FakeMcp) -> usize {
         .count()
 }
 
-/// The connection's call records, oldest first.
+/// The connector's call records, oldest first.
 async fn records(setup: &Setup) -> Vec<Execution> {
-    let mut all = executions(&setup.db.conn, &setup.connection, 100, None)
+    let mut all = executions(&setup.db.conn, &setup.connector, 100, None)
         .await
         .unwrap();
     all.reverse();
@@ -125,7 +125,7 @@ async fn outcomes(setup: &Setup) -> Vec<(ExecutionState, Option<String>)> {
         .collect()
 }
 
-/// A validated connection whose every tool every session may run.
+/// A validated connector whose every tool every session may run.
 async fn active(fake: &FakeMcp) -> Setup {
     let setup = asking(fake).await;
     let grant = granted(&setup).await;
@@ -133,18 +133,18 @@ async fn active(fake: &FakeMcp) -> Setup {
     setup
 }
 
-/// A validated connection, with no grant yet.
+/// A validated connector, with no grant yet.
 async fn asking(fake: &FakeMcp) -> Setup {
     let setup = setup(fake).await;
-    setup.connectors.validate(&setup.connection).await.unwrap();
+    setup.connectors.validate(&setup.connector).await.unwrap();
     setup
 }
 
 #[tokio::test]
-async fn an_active_connection_shows_its_tools_and_runs_calls() {
+async fn an_active_connector_shows_its_tools_and_runs_calls() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
     let (_, tools) = setup.connectors.exposed_tools(id).await.unwrap();
     assert_eq!(tools[0].name, "echo");
 
@@ -175,7 +175,7 @@ async fn a_tool_the_snapshot_lacks_is_never_sent() {
     let setup = active(&fake).await;
     let output = setup
         .connectors
-        .call(&anyone(), &setup.connection, "delete_everything", args(""))
+        .call(&anyone(), &setup.connector, "delete_everything", args(""))
         .await;
     assert!(output.is_error);
     assert!(
@@ -193,10 +193,10 @@ async fn a_tool_the_snapshot_lacks_is_never_sent() {
 }
 
 #[tokio::test]
-async fn a_revoked_connection_shows_nothing_and_sends_nothing() {
+async fn a_revoked_connector_shows_nothing_and_sends_nothing() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
     let (before, _) = setup.connectors.exposed_tools(id).await.unwrap();
     setup.connectors.revoke(id).await.unwrap();
 
@@ -222,7 +222,7 @@ async fn after_a_host_restart_the_first_call_connects_again() {
     let setup = active(&fake).await;
     let restarted = service(&setup.db, &setup.secrets);
     let output = restarted
-        .call(&anyone(), &setup.connection, "echo", args("again"))
+        .call(&anyone(), &setup.connector, "echo", args("again"))
         .await;
     assert!(!output.is_error, "{output:?}");
     assert_eq!(text(&output), "again");
@@ -246,7 +246,7 @@ async fn failures_say_whether_the_call_may_have_run() {
     );
     fake.on_call("dropping", CallBehaviour::Drop);
     let setup = active(&fake).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
 
     // The service ran it and says it failed: passed on as it is.
     let output = setup
@@ -312,7 +312,7 @@ async fn a_call_dropped_midway_is_recorded_as_maybe_run() {
         tokio::spawn(async move {
             setup
                 .connectors
-                .call(&anyone(), &setup.connection, "echo", args("hi"))
+                .call(&anyone(), &setup.connector, "echo", args("hi"))
                 .await
         })
     };
@@ -351,7 +351,7 @@ async fn a_call_dropped_midway_is_recorded_as_maybe_run() {
 async fn proxies_are_told_only_when_what_agents_see_changes() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
     let runtime = setup.connectors.runtime(id);
     let seen = runtime.revision();
 
@@ -382,7 +382,7 @@ async fn a_service_reporting_new_tools_updates_what_agents_see() {
     for era in [Era::Modern, Era::DualEra] {
         let fake = FakeMcp::new(era);
         let setup = active(&fake).await;
-        let id = &setup.connection;
+        let id = &setup.connector;
         let runtime = setup.connectors.runtime(id);
         let seen = runtime.revision();
         fake.set_tools(vec![tool("search", "Searches")]);
@@ -396,10 +396,10 @@ async fn a_service_reporting_new_tools_updates_what_agents_see() {
 }
 
 #[tokio::test]
-async fn a_revoked_connection_stops_following_its_service() {
+async fn a_revoked_connector_stops_following_its_service() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
     setup.connectors.revoke(id).await.unwrap();
     let lists = |fake: &FakeMcp| {
         fake.received_methods()
@@ -425,7 +425,7 @@ fn spawn_echo(
     tokio::spawn(async move {
         setup
             .connectors
-            .call(&session, &setup.connection, "echo", args(&text))
+            .call(&session, &setup.connector, "echo", args(&text))
             .await
     })
 }
@@ -454,7 +454,7 @@ async fn without_a_grant_nothing_is_sent() {
     let setup = asking(&fake).await;
     let output = setup
         .connectors
-        .call(&anyone(), &setup.connection, "echo", args("hi"))
+        .call(&anyone(), &setup.connector, "echo", args("hi"))
         .await;
     assert!(output.is_error);
     assert!(text(&output).contains("isn't allowed"), "{}", text(&output));
@@ -464,7 +464,7 @@ async fn without_a_grant_nothing_is_sent() {
     granted(&setup).await;
     let output = setup
         .connectors
-        .call(&engine, &setup.connection, "echo", args("hi"))
+        .call(&engine, &setup.connector, "echo", args("hi"))
         .await;
     assert!(
         text(&output).contains("Automation sessions"),
@@ -671,7 +671,7 @@ async fn fake_change(setup: &Setup) {
         output_schema: None,
         annotations: None,
     };
-    crate::connectors::store::save_tool_snapshot(&setup.db.conn, &setup.connection, &[changed])
+    crate::connectors::store::save_tool_snapshot(&setup.db.conn, &setup.connector, &[changed])
         .await
         .unwrap();
 }
@@ -685,7 +685,7 @@ async fn revoking_ends_what_waits_for_an_answer() {
     let call = spawn_echo(&setup, session(cards.clone()), "hi");
     let card = cards.nth(0).await;
 
-    setup.connectors.revoke(&setup.connection).await.unwrap();
+    setup.connectors.revoke(&setup.connector).await.unwrap();
     let output = finished(call).await;
     assert!(text(&output).contains("revoked"), "{}", text(&output));
     assert_eq!(
@@ -775,7 +775,7 @@ async fn with_no_one_to_ask_nothing_is_sent() {
     granted(&setup).await;
     let output = setup
         .connectors
-        .call(&anyone(), &setup.connection, "echo", args("hi"))
+        .call(&anyone(), &setup.connector, "echo", args("hi"))
         .await;
     assert!(
         text(&output).contains("No one can answer"),
@@ -797,10 +797,10 @@ async fn offered(setup: &Setup, agent: &str, engine: bool) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_session_is_offered_a_connection_it_may_use_some_tool_of() {
+async fn a_session_is_offered_a_connector_it_may_use_some_tool_of() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = asking(&fake).await;
-    let id = setup.connection.clone();
+    let id = setup.connector.clone();
     assert!(offered(&setup, "codex", false).await.is_empty(), "no grant");
 
     let grant = grants::set_grant(

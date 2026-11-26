@@ -105,9 +105,9 @@ pub struct TokenEntry {
     /// from its own launch state. `Some` limits the token to that kind's
     /// tool profile (automation spec 10.8).
     pub engine: Option<crate::automation::lockdown::EngineLaunch>,
-    /// The connection a connector proxy launch serves (`zwiim-mcp
+    /// The connector a connector proxy launch serves (`zwiim-mcp
     /// --connector`). Only such a token is answered the connector frames,
-    /// and only for that connection.
+    /// and only for that connector.
     pub connector: Option<String>,
 }
 
@@ -208,7 +208,7 @@ pub struct DelegationListener {
     /// The live engine sessions: where `playbook_item_result` goes and where
     /// each engine call is counted. Set once at startup; unset refuses.
     engine_sessions: std::sync::OnceLock<Arc<crate::automation::sessions::EngineSessions>>,
-    /// The Host's connections, which answer connector proxies. Set once at
+    /// The Host's connectors, which answer connector proxies. Set once at
     /// startup; unset refuses every connector frame.
     connectors: std::sync::OnceLock<Arc<crate::connectors::runtime::Connectors>>,
     /// Who a connector call's session is. Set once at startup; unset, a
@@ -265,12 +265,12 @@ impl DelegationListener {
         let _ = self.engine_sessions.set(sessions);
     }
 
-    /// Give the listener the Host's connections. A second call is ignored.
+    /// Give the listener the Host's connectors. A second call is ignored.
     pub fn set_connectors(&self, connectors: Arc<crate::connectors::runtime::Connectors>) {
         let _ = self.connectors.set(connectors);
     }
 
-    /// The connections and the one `token` was minted for, if it is a
+    /// The connectors and the one `token` was minted for, if it is a
     /// connector proxy's.
     async fn connector_of(
         &self,
@@ -756,8 +756,8 @@ impl DelegationListener {
                     Err(note) => serde_json::json!({ "error": "refused", "note": note }),
                 },
             },
-            // Only a connector proxy's token names a connection, and the
-            // connection comes from the token, never from the proxy.
+            // Only a connector proxy's token names a connector, and the
+            // connector comes from the token, never from the proxy.
             BrokerMessage::ConnectorTools(req) => {
                 let Some((connectors, id)) = self.connector_of(&req.token).await else {
                     write_frame(conn, &no_connector_response()).await?;
@@ -1418,7 +1418,7 @@ impl DelegationListener {
     }
 }
 
-/// What a connector proxy is told when its token names no connection.
+/// What a connector proxy is told when its token names no connector.
 const NO_CONNECTOR_REFUSAL: &str = "No connector is available to this session.";
 
 /// Serialize a [`DelegationTaskReport`] into a [`BrokerResponse`] for the wire.
@@ -3993,10 +3993,10 @@ mod tests {
         ));
     }
 
-    /// A token that names no connection is told there is none; an engine
+    /// A token that names no connector is told there is none; an engine
     /// session is refused by its lockdown first.
     #[tokio::test]
-    async fn connector_frames_are_refused_unless_the_token_names_a_connection() {
+    async fn connector_frames_are_refused_unless_the_token_names_a_connector() {
         use crate::acp::delegation::transport::{
             BrokerConnectorCallRequest, BrokerConnectorToolsRequest, BrokerConnectorWatchRequest,
         };
@@ -4042,8 +4042,8 @@ mod tests {
         }
     }
 
-    /// A connected fake MCP server and the Host's connections, with the
-    /// listener answering a proxy token minted for that connection.
+    /// A connected fake MCP server and the Host's connectors, with the
+    /// listener answering a proxy token minted for that connector.
     async fn connector_listener(
         fake: &crate::connectors::fake_mcp::FakeMcp,
     ) -> (
@@ -4115,10 +4115,10 @@ mod tests {
         })
     }
 
-    /// A proxy's token is answered for its own connection: its tools, a
+    /// A proxy's token is answered for its own connector: its tools, a
     /// wait that ends when they change, and calls through to the service.
     #[tokio::test]
-    async fn a_connector_token_is_answered_for_its_connection() {
+    async fn a_connector_token_is_answered_for_its_connector() {
         use crate::acp::delegation::transport::{
             BrokerConnectorToolsRequest, BrokerConnectorWatchRequest,
         };

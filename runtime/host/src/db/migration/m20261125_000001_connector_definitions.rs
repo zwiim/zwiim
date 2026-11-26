@@ -1,5 +1,5 @@
 //! Zwiim-owned: connector definitions (connector design r3 §4.5, §9). One row
-//! per Zwiim Connector Definition, the stored record a connection is made
+//! per Zwiim Connector Definition, the stored record a connector is made
 //! from. The record itself is `definition_json`; the other columns are kept
 //! next to it for queries and for spotting a changed definition.
 

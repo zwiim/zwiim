@@ -1,4 +1,4 @@
-//! Zwiim-owned: one row per tool call an agent made through a connection
+//! Zwiim-owned: one row per tool call an agent made through a connector
 //! (connector design r3 §4.3, §8.1, §9). The audit trail: which tool, what
 //! happened to the call, and how long Zwiim and the service took.
 //!
@@ -41,7 +41,7 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(ConnectorExecutions::ConnectionId)
+                        ColumnDef::new(ConnectorExecutions::ConnectorId)
                             .string()
                             .not_null(),
                     )
@@ -126,12 +126,9 @@ impl MigrationTrait for Migration {
                     ))
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connector_executions_connection_id")
-                            .from(
-                                ConnectorExecutions::Table,
-                                ConnectorExecutions::ConnectionId,
-                            )
-                            .to(Connections::Table, Connections::Id)
+                            .name("fk_connector_executions_connector_id")
+                            .from(ConnectorExecutions::Table, ConnectorExecutions::ConnectorId)
+                            .to(Connectors::Table, Connectors::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
@@ -150,9 +147,9 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("idx_connector_executions_connection")
+                    .name("idx_connector_executions_connector")
                     .table(ConnectorExecutions::Table)
-                    .col(ConnectorExecutions::ConnectionId)
+                    .col(ConnectorExecutions::ConnectorId)
                     .col(ConnectorExecutions::ReceivedAt)
                     .to_owned(),
             )
@@ -170,7 +167,7 @@ impl MigrationTrait for Migration {
 enum ConnectorExecutions {
     Table,
     Id,
-    ConnectionId,
+    ConnectorId,
     SessionId,
     ToolName,
     SchemaHash,
@@ -188,7 +185,7 @@ enum ConnectorExecutions {
 }
 
 #[derive(DeriveIden)]
-enum Connections {
+enum Connectors {
     Table,
     Id,
 }
@@ -202,7 +199,7 @@ mod tests {
 
     fn insert(id: &str, state: &str, reason: &str, dispatched_at: &str) -> String {
         format!(
-            "INSERT INTO connector_executions (id, connection_id, tool_name, state, reason, \
+            "INSERT INTO connector_executions (id, connector_id, tool_name, state, reason, \
              args_digest, arg_keys_json, received_at, dispatched_at) VALUES ('{id}', 'c1', \
              'echo', '{state}', {reason}, 'sha256:0', '[]', {NOW}, {dispatched_at})"
         )
@@ -215,8 +212,8 @@ mod tests {
             .expect("open in-memory sqlite");
         let manager = SchemaManager::new(&conn);
         conn.execute_unprepared(
-            "PRAGMA foreign_keys = ON; CREATE TABLE connections (id TEXT PRIMARY KEY); \
-             INSERT INTO connections (id) VALUES ('c1')",
+            "PRAGMA foreign_keys = ON; CREATE TABLE connectors (id TEXT PRIMARY KEY); \
+             INSERT INTO connectors (id) VALUES ('c1')",
         )
         .await
         .unwrap();
@@ -264,7 +261,7 @@ mod tests {
             );
         }
 
-        conn.execute_unprepared("DELETE FROM connections WHERE id = 'c1'")
+        conn.execute_unprepared("DELETE FROM connectors WHERE id = 'c1'")
             .await
             .unwrap();
         let left = conn
@@ -277,7 +274,7 @@ mod tests {
             .unwrap()
             .try_get::<i64>("", "n")
             .unwrap();
-        assert_eq!(left, 0, "records go with their connection");
+        assert_eq!(left, 0, "records go with their connector");
 
         Migration.down(&manager).await.expect("run migration down");
         assert!(!manager.has_table("connector_executions").await.unwrap());

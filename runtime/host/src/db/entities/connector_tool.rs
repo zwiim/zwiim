@@ -1,13 +1,13 @@
 use sea_orm::entity::prelude::*;
 
-/// Zwiim-owned: one tool in a connection's snapshot. See
+/// Zwiim-owned: one tool in a connector's snapshot. See
 /// `crate::connectors::store`.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "connection_tools")]
+#[sea_orm(table_name = "connector_tools")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    pub connection_id: String,
+    pub connector_id: String,
     pub name: String,
     pub title: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]

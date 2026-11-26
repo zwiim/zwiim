@@ -11,7 +11,7 @@ use crate::connectors::definition::{from_user, UserAuth, UserConnector};
 use crate::connectors::egress::{NetworkClass, SystemResolver};
 use crate::connectors::grants::{self, Fallback, Scope};
 use crate::connectors::runtime::{Connectors, McpFactory};
-use crate::connectors::store::{self, ConnectionStatus, CredentialStore};
+use crate::connectors::store::{self, ConnectorStatus, CredentialStore};
 use crate::connectors::upstream::ToolDefinition;
 use crate::models::agent::AgentType;
 
@@ -23,8 +23,8 @@ fn injection() -> DelegationInjection {
     test_delegation_injection(Arc::new(TestAllAgentsAvailable))
 }
 
-/// An active connection with one tool that every session may ask to use,
-/// on the Host's connections given to `injection`. Returns its id and slug.
+/// An active connector with one tool that every session may ask to use,
+/// on the Host's connectors given to `injection`. Returns its id and slug.
 async fn granted(injection: &DelegationInjection) -> (String, String) {
     let db = crate::db::test_helpers::fresh_in_memory_db().await;
     let def = from_user(
@@ -38,10 +38,10 @@ async fn granted(injection: &DelegationInjection) -> (String, String) {
     )
     .unwrap();
     store::save_definition(&db.conn, &def).await.unwrap();
-    let connection = store::create_connection(&db.conn, &def.id, "Work", CredentialStore::Keychain)
+    let connector = store::create_connector(&db.conn, &def.id, "Work", CredentialStore::Keychain)
         .await
         .unwrap();
-    store::set_status(&db.conn, &connection.id, ConnectionStatus::Active, None)
+    store::set_status(&db.conn, &connector.id, ConnectorStatus::Active, None)
         .await
         .unwrap();
     let echo = ToolDefinition {
@@ -52,12 +52,12 @@ async fn granted(injection: &DelegationInjection) -> (String, String) {
         output_schema: None,
         annotations: None,
     };
-    store::save_tool_snapshot(&db.conn, &connection.id, &[echo])
+    store::save_tool_snapshot(&db.conn, &connector.id, &[echo])
         .await
         .unwrap();
     grants::set_grant(
         &db.conn,
-        &connection.id,
+        &connector.id,
         Scope::default(),
         Fallback::Ask,
         Fallback::Ask,
@@ -70,7 +70,7 @@ async fn granted(injection: &DelegationInjection) -> (String, String) {
         Arc::new(MemorySecrets::default()),
     );
     assert!(injection.connectors.set(Arc::new(connectors)).is_ok());
-    (connection.id, connection.slug)
+    (connector.id, connector.slug)
 }
 
 fn stdio(server: &McpServer) -> &McpServerStdio {
@@ -86,7 +86,7 @@ fn token_of(server: &McpServerStdio) -> String {
 }
 
 #[tokio::test]
-async fn a_session_gets_one_proxy_per_connection_it_may_use() {
+async fn a_session_gets_one_proxy_per_connector_it_may_use() {
     let injection = injection();
     let (id, slug) = granted(&injection).await;
     let mut servers = Vec::new();
@@ -140,7 +140,7 @@ async fn some_sessions_get_no_proxies() {
         launch(&injection, &mut servers, false, binary)
             .await
             .is_empty(),
-        "the Host's connections aren't made yet"
+        "the Host's connectors aren't made yet"
     );
     granted(&injection).await;
     assert!(

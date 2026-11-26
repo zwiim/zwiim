@@ -7,7 +7,7 @@ use super::{
 use crate::connectors::definition::{from_user, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
 use crate::connectors::store::{
-    create_connection, save_definition, save_tool_snapshot, CredentialStore,
+    create_connector, save_definition, save_tool_snapshot, CredentialStore,
 };
 use crate::connectors::upstream::ToolDefinition;
 use crate::db::test_helpers::fresh_in_memory_db;
@@ -24,7 +24,7 @@ fn tool(name: &str, description: &str) -> ToolDefinition {
     }
 }
 
-/// A connection listing `search` and `delete`.
+/// A connector listing `search` and `delete`.
 async fn connected() -> (AppDatabase, String) {
     let db = fresh_in_memory_db().await;
     let input = UserConnector {
@@ -35,7 +35,7 @@ async fn connected() -> (AppDatabase, String) {
     };
     let def = from_user(input, chrono::Utc::now()).unwrap();
     save_definition(&db.conn, &def).await.unwrap();
-    let id = create_connection(&db.conn, &def.id, "Work", CredentialStore::Keychain)
+    let id = create_connector(&db.conn, &def.id, "Work", CredentialStore::Keychain)
         .await
         .unwrap()
         .id;
@@ -99,7 +99,7 @@ async fn a_scope_has_one_grant_whose_fallbacks_can_change() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(missing, GrantError::ConnectionNotFound(_)));
+    assert!(matches!(missing, GrantError::ConnectorNotFound(_)));
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@
 
 pub mod browser;
 pub mod compat;
-pub mod connection;
+pub mod connector;
 pub mod error;
 pub mod events;
 pub mod http;
@@ -297,35 +297,35 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/site.resume", post(playbook::site_resume))
         .route("/site.risk_accept", post(playbook::site_risk_accept))
         .route("/site.usage", post(playbook::site_usage))
-        .route("/connection.list", post(connection::connection_list))
-        .route("/connection.create", post(connection::connection_create))
-        .route("/connection.validate", post(connection::connection_validate))
+        .route("/connector.list", post(connector::connector_list))
+        .route("/connector.create", post(connector::connector_create))
+        .route("/connector.validate", post(connector::connector_validate))
         .route(
-            "/connection.set_secret",
-            post(connection::connection_set_secret),
+            "/connector.set_secret",
+            post(connector::connector_set_secret),
         )
-        .route("/connection.revoke", post(connection::connection_revoke))
-        .route("/connection.tools", post(connection::connection_tools))
+        .route("/connector.revoke", post(connector::connector_revoke))
+        .route("/connector.tools", post(connector::connector_tools))
         .route(
-            "/connection.grant.list",
-            post(connection::connection_grant_list),
+            "/connector.grant.list",
+            post(connector::connector_grant_list),
         )
-        .route("/connection.grant.set", post(connection::connection_grant_set))
+        .route("/connector.grant.set", post(connector::connector_grant_set))
         .route(
-            "/connection.grant.remove",
-            post(connection::connection_grant_remove),
-        )
-        .route(
-            "/connection.tool_policy.set",
-            post(connection::connection_tool_policy_set),
+            "/connector.grant.remove",
+            post(connector::connector_grant_remove),
         )
         .route(
-            "/connection.grant.allow_all",
-            post(connection::connection_grant_allow_all),
+            "/connector.tool_policy.set",
+            post(connector::connector_tool_policy_set),
         )
         .route(
-            "/connection.executions",
-            post(connection::connection_executions),
+            "/connector.grant.allow_all",
+            post(connector::connector_grant_allow_all),
+        )
+        .route(
+            "/connector.executions",
+            post(connector::connector_executions),
         )
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))

@@ -1,4 +1,4 @@
-//! `connection.*` through the real router, against the fake MCP server over
+//! `connector.*` through the real router, against the fake MCP server over
 //! HTTP, with secrets in memory.
 
 use std::sync::atomic::Ordering;
@@ -15,7 +15,7 @@ use crate::connectors::runtime::{CallSession, Connectors, McpFactory, NoCards};
 
 const KEY: &str = "k3y-9d1e";
 
-/// A change to a `connection.create` body.
+/// A change to a `connector.create` body.
 type Edit = fn(&mut Value);
 
 async fn connected_host() -> (Host, Arc<MemorySecrets>) {
@@ -53,17 +53,17 @@ async fn ok(h: &Host, op: &str, body: Value) -> Value {
     value
 }
 
-/// A session that may run every tool the connection lists now.
+/// A session that may run every tool the connector lists now.
 async fn allowed(h: &Host, id: &str) -> CallSession {
     let grant = ok(
         h,
-        "connection.grant.set",
-        json!({ "service_connection_id": id, "default_policy": "ask", "new_tools": "ask" }),
+        "connector.grant.set",
+        json!({ "connector_id": id, "default_policy": "ask", "new_tools": "ask" }),
     )
     .await;
     ok(
         h,
-        "connection.grant.allow_all",
+        "connector.grant.allow_all",
         json!({ "grant_id": grant["grant"]["grant_id"] }),
     )
     .await;
@@ -77,8 +77,8 @@ async fn allowed(h: &Host, id: &str) -> CallSession {
 }
 
 async fn created(h: &Host, server: &HttpServer) -> String {
-    let body = ok(h, "connection.create", create_body(&server.url())).await;
-    body["connection"]["service_connection_id"]
+    let body = ok(h, "connector.create", create_body(&server.url())).await;
+    body["connector"]["connector_id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -91,42 +91,32 @@ async fn a_server_added_by_url_is_connected_listed_and_its_tools_shown() {
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let server = fake.serve_http().await;
     let (h, secrets) = connected_host().await;
-    let body = ok(&h, "connection.create", create_body(&server.url())).await;
+    let body = ok(&h, "connector.create", create_body(&server.url())).await;
     assert_eq!(body["validation_error"], Value::Null);
-    let connection = &body["connection"];
-    assert_eq!(connection["name"], "Fake");
-    assert_eq!(connection["label"], "Work");
-    assert_eq!(connection["slug"], "fake_work");
-    assert_eq!(connection["status"], "active");
-    assert_eq!(connection["credentials"], "keychain");
-    assert_eq!(connection["tool_count"], 1);
+    let connector = &body["connector"];
+    assert_eq!(connector["name"], "Fake");
+    assert_eq!(connector["label"], "Work");
+    assert_eq!(connector["slug"], "fake_work");
+    assert_eq!(connector["status"], "active");
+    assert_eq!(connector["credentials"], "keychain");
+    assert_eq!(connector["tool_count"], 1);
     assert_eq!(
-        connection["endpoints"],
+        connector["endpoints"],
         json!([{ "origin": server.url().trim_end_matches("/mcp"), "credentials": true }])
     );
-    assert!(connection["last_validated_at"].is_string());
-    let uid = connection["service_connection_id"].as_str().unwrap();
+    assert!(connector["last_validated_at"].is_string());
+    let uid = connector["connector_id"].as_str().unwrap();
     assert_eq!(secrets.names(), [format!("connector:{uid}:api_key")]);
 
-    let list = ok(&h, "connection.list", json!({})).await;
-    assert_eq!(list["connections"], json!([connection]));
+    let list = ok(&h, "connector.list", json!({})).await;
+    assert_eq!(list["connectors"], json!([connector]));
 
-    let tools = ok(
-        &h,
-        "connection.tools",
-        json!({ "service_connection_id": uid }),
-    )
-    .await;
+    let tools = ok(&h, "connector.tools", json!({ "connector_id": uid })).await;
     assert_eq!(tools["tools"][0]["name"], "echo");
     assert_eq!(tools["tools"][0]["input_schema"]["type"], "object");
 
     fake.set_tools(vec![tool("search", "Searches")]);
-    let body = ok(
-        &h,
-        "connection.validate",
-        json!({ "service_connection_id": uid }),
-    )
-    .await;
+    let body = ok(&h, "connector.validate", json!({ "connector_id": uid })).await;
     assert_eq!(
         body["changes"],
         json!({ "added": ["search"], "changed": [], "removed": ["echo"] })
@@ -134,7 +124,7 @@ async fn a_server_added_by_url_is_connected_listed_and_its_tools_shown() {
 }
 
 #[tokio::test]
-async fn a_new_key_reconnects_the_same_connection() {
+async fn a_new_key_reconnects_the_same_connector() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let (h, secrets) = connected_host().await;
@@ -142,15 +132,15 @@ async fn a_new_key_reconnects_the_same_connection() {
     let new_key = "n3w-k3y-77";
     let body = ok(
         &h,
-        "connection.set_secret",
-        json!({ "service_connection_id": id, "secret": new_key }),
+        "connector.set_secret",
+        json!({ "connector_id": id, "secret": new_key }),
     )
     .await;
     assert!(!body.to_string().contains(new_key), "the new key came back");
     assert_eq!(body["validation_error"], Value::Null);
-    assert_eq!(body["connection"]["service_connection_id"], id.as_str());
-    assert_eq!(body["connection"]["status"], "active");
-    assert_eq!(body["connection"]["label"], "Work");
+    assert_eq!(body["connector"]["connector_id"], id.as_str());
+    assert_eq!(body["connector"]["status"], "active");
+    assert_eq!(body["connector"]["label"], "Work");
     let last = fake.received().pop().unwrap();
     assert_eq!(
         last.header("authorization"),
@@ -160,29 +150,24 @@ async fn a_new_key_reconnects_the_same_connection() {
 
     let (status, code) = h
         .err(
-            "connection.set_secret",
-            json!({ "service_connection_id": id, "secret": " " }),
+            "connector.set_secret",
+            json!({ "connector_id": id, "secret": " " }),
         )
         .await;
     assert_eq!(
         (status, code.as_str()),
         (StatusCode::BAD_REQUEST, "invalid_input")
     );
-    ok(
-        &h,
-        "connection.revoke",
-        json!({ "service_connection_id": id }),
-    )
-    .await;
+    ok(&h, "connector.revoke", json!({ "connector_id": id })).await;
     let (status, code) = h
         .err(
-            "connection.set_secret",
-            json!({ "service_connection_id": id, "secret": new_key }),
+            "connector.set_secret",
+            json!({ "connector_id": id, "secret": new_key }),
         )
         .await;
     assert_eq!(
         (status, code.as_str()),
-        (StatusCode::CONFLICT, "connection_unavailable")
+        (StatusCode::CONFLICT, "connector_unavailable")
     );
 }
 
@@ -191,21 +176,16 @@ async fn a_server_that_cannot_be_reached_is_kept_as_failed() {
     let (h, _) = connected_host().await;
     let body = ok(
         &h,
-        "connection.create",
+        "connector.create",
         create_body("http://127.0.0.1:9/mcp"),
     )
     .await;
-    assert_eq!(body["connection"]["status"], "error");
+    assert_eq!(body["connector"]["status"], "error");
     assert_eq!(body["validation_error"]["code"], "connection_failed");
-    assert!(body["connection"]["error"].is_string());
-    let uid = body["connection"]["service_connection_id"]
-        .as_str()
-        .unwrap();
+    assert!(body["connector"]["error"].is_string());
+    let uid = body["connector"]["connector_id"].as_str().unwrap();
     let (status, code) = h
-        .err(
-            "connection.validate",
-            json!({ "service_connection_id": uid }),
-        )
+        .err("connector.validate", json!({ "connector_id": uid }))
         .await;
     assert_eq!(
         (status, code.as_str()),
@@ -231,7 +211,7 @@ async fn refused_creations_say_why_and_leave_nothing() {
     for (what, edit) in edits {
         let mut body = create_body(url);
         edit(&mut body);
-        let (status, code) = h.err("connection.create", body).await;
+        let (status, code) = h.err("connector.create", body).await;
         assert_eq!(
             (status, code.as_str()),
             (StatusCode::BAD_REQUEST, "invalid_input"),
@@ -240,56 +220,56 @@ async fn refused_creations_say_why_and_leave_nothing() {
     }
     let mut body = create_body(url);
     body["extra"] = json!(1);
-    let (_, code) = h.err("connection.create", body).await;
+    let (_, code) = h.err("connector.create", body).await;
     assert_eq!(code, "invalid_request");
 
     secrets.broken.store(true, Ordering::SeqCst);
-    let (status, code) = h.err("connection.create", create_body(url)).await;
+    let (status, code) = h.err("connector.create", create_body(url)).await;
     assert_eq!(
         (status, code.as_str()),
         (StatusCode::SERVICE_UNAVAILABLE, "keychain_unavailable")
     );
-    let list = ok(&h, "connection.list", json!({})).await;
-    assert_eq!(list["connections"], json!([]));
+    let list = ok(&h, "connector.list", json!({})).await;
+    assert_eq!(list["connectors"], json!([]));
 }
 
 #[tokio::test]
-async fn revoking_makes_the_connection_unusable_and_retries_a_locked_keychain() {
+async fn revoking_makes_the_connector_unusable_and_retries_a_locked_keychain() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let (h, secrets) = connected_host().await;
     let uid = created(&h, &server).await;
-    let one = json!({ "service_connection_id": uid });
+    let one = json!({ "connector_id": uid });
 
     secrets.broken.store(true, Ordering::SeqCst);
-    let body = ok(&h, "connection.revoke", one.clone()).await;
-    assert_eq!(body["connection"]["status"], "revoking");
-    assert!(body["connection"]["error"].is_string());
-    let (status, code) = h.err("connection.validate", one.clone()).await;
+    let body = ok(&h, "connector.revoke", one.clone()).await;
+    assert_eq!(body["connector"]["status"], "revoking");
+    assert!(body["connector"]["error"].is_string());
+    let (status, code) = h.err("connector.validate", one.clone()).await;
     assert_eq!(
         (status, code.as_str()),
-        (StatusCode::CONFLICT, "connection_unavailable")
+        (StatusCode::CONFLICT, "connector_unavailable")
     );
 
     secrets.broken.store(false, Ordering::SeqCst);
-    let body = ok(&h, "connection.revoke", one.clone()).await;
-    assert_eq!(body["connection"]["status"], "revoked");
-    assert_eq!(body["connection"]["error"], Value::Null);
+    let body = ok(&h, "connector.revoke", one.clone()).await;
+    assert_eq!(body["connector"]["status"], "revoked");
+    assert_eq!(body["connector"]["error"], Value::Null);
     assert!(secrets.names().is_empty());
     // Revoking again is fine.
-    ok(&h, "connection.revoke", one).await;
+    ok(&h, "connector.revoke", one).await;
 }
 
 #[tokio::test]
-async fn unknown_connections_are_not_found() {
+async fn unknown_connectors_are_not_found() {
     let (h, _) = connected_host().await;
     for op in [
-        "connection.validate",
-        "connection.revoke",
-        "connection.tools",
-        "connection.executions",
+        "connector.validate",
+        "connector.revoke",
+        "connector.tools",
+        "connector.executions",
     ] {
-        let (status, code) = h.err(op, json!({ "service_connection_id": "nope" })).await;
+        let (status, code) = h.err(op, json!({ "connector_id": "nope" })).await;
         assert_eq!(
             (status, code.as_str()),
             (StatusCode::NOT_FOUND, "not_found"),
@@ -307,46 +287,42 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
     let device = bearer_device(&h, "dev-1").await;
 
     let (status, body) = h
-        .call_as(&device, "connection.create", create_body(&server.url()))
+        .call_as(&device, "connector.create", create_body(&server.url()))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"]["code"], "permission_denied");
     let (status, body) = h
         .call_as(
             &device,
-            "connection.set_secret",
-            json!({ "service_connection_id": uid, "secret": "k" }),
+            "connector.set_secret",
+            json!({ "connector_id": uid, "secret": "k" }),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"]["code"], "permission_denied");
 
-    let (status, body) = h.call_as(&device, "connection.list", json!({})).await;
+    let (status, body) = h.call_as(&device, "connector.list", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["connections"].as_array().unwrap().len(), 1);
+    assert_eq!(body["connectors"].as_array().unwrap().len(), 1);
     let (status, body) = h
-        .call_as(
-            &device,
-            "connection.revoke",
-            json!({ "service_connection_id": uid }),
-        )
+        .call_as(&device, "connector.revoke", json!({ "connector_id": uid }))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["connection"]["status"], "revoked");
+    assert_eq!(body["connector"]["status"], "revoked");
 }
 
 #[tokio::test]
-async fn grants_say_which_sessions_may_use_a_connection_and_each_tool() {
+async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let server = fake.serve_http().await;
     let (h, _) = connected_host().await;
     let id = created(&h, &server).await;
-    let one = json!({ "service_connection_id": id });
+    let one = json!({ "connector_id": id });
 
     let body = ok(
         &h,
-        "connection.grant.set",
-        json!({ "service_connection_id": id, "default_policy": "ask", "new_tools": "deny" }),
+        "connector.grant.set",
+        json!({ "connector_id": id, "default_policy": "ask", "new_tools": "deny" }),
     )
     .await;
     let grant = &body["grant"];
@@ -358,7 +334,7 @@ async fn grants_say_which_sessions_may_use_a_connection_and_each_tool() {
 
     let body = ok(
         &h,
-        "connection.tool_policy.set",
+        "connector.tool_policy.set",
         json!({ "grant_id": grant_id, "tool": "echo", "policy": "allow" }),
     )
     .await;
@@ -369,12 +345,12 @@ async fn grants_say_which_sessions_may_use_a_connection_and_each_tool() {
 
     // The tool changes: its allow no longer holds, until given again.
     fake.set_tools(vec![tool("echo", "Echoes, now differently")]);
-    ok(&h, "connection.validate", one.clone()).await;
-    let list = ok(&h, "connection.grant.list", one.clone()).await;
+    ok(&h, "connector.validate", one.clone()).await;
+    let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"][0]["tools"][0]["changed"], true);
     let body = ok(
         &h,
-        "connection.grant.allow_all",
+        "connector.grant.allow_all",
         json!({ "grant_id": grant_id }),
     )
     .await;
@@ -382,23 +358,23 @@ async fn grants_say_which_sessions_may_use_a_connection_and_each_tool() {
 
     let scoped = ok(
         &h,
-        "connection.grant.set",
-        json!({ "service_connection_id": id, "workspace_id": h.workspace_id,
+        "connector.grant.set",
+        json!({ "connector_id": id, "workspace_id": h.workspace_id,
                 "agent": "codex", "default_policy": "deny", "new_tools": "deny" }),
     )
     .await;
     assert_eq!(scoped["grant"]["workspace_id"], h.workspace_id.as_str());
     assert_eq!(scoped["grant"]["agent"], "codex");
-    let list = ok(&h, "connection.grant.list", one.clone()).await;
+    let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"].as_array().unwrap().len(), 2);
 
     ok(
         &h,
-        "connection.grant.remove",
+        "connector.grant.remove",
         json!({ "grant_id": scoped["grant"]["grant_id"] }),
     )
     .await;
-    let list = ok(&h, "connection.grant.list", one).await;
+    let list = ok(&h, "connector.grant.list", one).await;
     assert_eq!(list["grants"].as_array().unwrap().len(), 1);
 }
 
@@ -409,7 +385,7 @@ async fn grant_changes_that_cannot_hold_are_refused() {
     let (h, _) = connected_host().await;
     let id = created(&h, &server).await;
     let set = |extra: Value| {
-        let mut body = json!({ "service_connection_id": id, "default_policy": "ask",
+        let mut body = json!({ "connector_id": id, "default_policy": "ask",
                                "new_tools": "ask" });
         body.as_object_mut()
             .unwrap()
@@ -419,14 +395,14 @@ async fn grant_changes_that_cannot_hold_are_refused() {
 
     let (_, code) = h
         .err(
-            "connection.grant.set",
+            "connector.grant.set",
             set(json!({ "default_policy": "allow" })),
         )
         .await;
     assert_eq!(code, "invalid_request", "a fallback never allows");
     let (status, code) = h
         .err(
-            "connection.grant.set",
+            "connector.grant.set",
             set(json!({ "workspace_id": h.wt_workspace_id })),
         )
         .await;
@@ -436,48 +412,48 @@ async fn grant_changes_that_cannot_hold_are_refused() {
     );
     let (_, code) = h
         .err(
-            "connection.grant.set",
+            "connector.grant.set",
             set(json!({ "workspace_id": "nope" })),
         )
         .await;
     assert_eq!(code, "not_found");
     let (_, code) = h
         .err(
-            "connection.grant.set",
-            set(json!({ "service_connection_id": "nope" })),
+            "connector.grant.set",
+            set(json!({ "connector_id": "nope" })),
         )
         .await;
     assert_eq!(code, "not_found");
 
-    let grant = ok(&h, "connection.grant.set", set(json!({}))).await;
+    let grant = ok(&h, "connector.grant.set", set(json!({}))).await;
     let grant_id = grant["grant"]["grant_id"].clone();
     let (_, code) = h
         .err(
-            "connection.tool_policy.set",
+            "connector.tool_policy.set",
             json!({ "grant_id": grant_id, "tool": "drop_db", "policy": "allow" }),
         )
         .await;
     assert_eq!(code, "not_found");
     ok(
         &h,
-        "connection.grant.remove",
+        "connector.grant.remove",
         json!({ "grant_id": grant_id }),
     )
     .await;
     let (_, code) = h
-        .err("connection.grant.remove", json!({ "grant_id": grant_id }))
+        .err("connector.grant.remove", json!({ "grant_id": grant_id }))
         .await;
     assert_eq!(code, "not_found");
 
     let device = bearer_device(&h, "dev-1").await;
     for (op, body) in [
-        ("connection.grant.set", set(json!({}))),
-        ("connection.grant.remove", json!({ "grant_id": 1 })),
+        ("connector.grant.set", set(json!({}))),
+        ("connector.grant.remove", json!({ "grant_id": 1 })),
         (
-            "connection.tool_policy.set",
+            "connector.tool_policy.set",
             json!({ "grant_id": 1, "tool": "echo", "policy": "allow" }),
         ),
-        ("connection.grant.allow_all", json!({ "grant_id": 1 })),
+        ("connector.grant.allow_all", json!({ "grant_id": 1 })),
     ] {
         let (status, body) = h.call_as(&device, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}: {body}");
@@ -485,15 +461,15 @@ async fn grant_changes_that_cannot_hold_are_refused() {
     let (status, _) = h
         .call_as(
             &device,
-            "connection.grant.list",
-            json!({ "service_connection_id": id }),
+            "connector.grant.list",
+            json!({ "connector_id": id }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "a paired device may look");
 }
 
 #[tokio::test]
-async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
+async fn a_connectors_calls_are_listed_newest_first_without_their_arguments() {
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let server = fake.serve_http().await;
     let (h, _) = connected_host().await;
@@ -521,8 +497,8 @@ async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
     let (status, body) = h
         .call_as(
             &device,
-            "connection.executions",
-            json!({ "service_connection_id": id, "limit": 2 }),
+            "connector.executions",
+            json!({ "connector_id": id, "limit": 2 }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -543,8 +519,8 @@ async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
 
     let body = ok(
         &h,
-        "connection.executions",
-        json!({ "service_connection_id": id, "cursor": cursor }),
+        "connector.executions",
+        json!({ "connector_id": id, "cursor": cursor }),
     )
     .await;
     let rest = body["executions"].as_array().unwrap();
@@ -559,8 +535,8 @@ async fn a_connections_calls_are_listed_newest_first_without_their_arguments() {
 
     let (status, code) = h
         .err(
-            "connection.executions",
-            json!({ "service_connection_id": id, "cursor": "nope" }),
+            "connector.executions",
+            json!({ "connector_id": id, "cursor": "nope" }),
         )
         .await;
     assert_eq!(
@@ -601,10 +577,7 @@ async fn each_call_is_published_as_it_starts_and_as_it_ends() {
             }),
         )
         .await;
-    assert_eq!(
-        started["event"]["payload"]["service_connection_id"],
-        id.as_str()
-    );
+    assert_eq!(started["event"]["payload"]["connector_id"], id.as_str());
     let execution_id = started["event"]["payload"]["execution"]["execution_id"].clone();
     let ended = h
         .host_event(
@@ -631,9 +604,9 @@ async fn a_call_that_asks_is_answered_through_its_session() {
     // Granted to the session's root workspace and agent; tools ask.
     ok(
         &h,
-        "connection.grant.set",
+        "connector.grant.set",
         json!({
-            "service_connection_id": id,
+            "connector_id": id,
             "workspace_id": h.workspace_id,
             "agent": "claude_code",
             "default_policy": "ask",
@@ -727,11 +700,6 @@ async fn a_call_that_asks_is_answered_through_its_session() {
     assert_eq!(body["error"]["code"], "already_resolved");
     assert_eq!(body["error"]["details"]["decided_by"], "device");
 
-    let page = ok(
-        &h,
-        "connection.executions",
-        json!({ "service_connection_id": id }),
-    )
-    .await;
+    let page = ok(&h, "connector.executions", json!({ "connector_id": id })).await;
     assert_eq!(page["executions"][0]["state"], "succeeded");
 }

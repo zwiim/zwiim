@@ -9,7 +9,7 @@ pub struct Model {
     pub id: String,
     pub execution_id: String,
     pub session_id: String,
-    pub connection_id: String,
+    pub connector_id: String,
     pub tool_name: String,
     pub schema_hash: String,
     pub args_hash: String,

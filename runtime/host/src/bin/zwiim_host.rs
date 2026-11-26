@@ -619,7 +619,7 @@ async fn async_main() -> Exit {
         ));
         // Their one result and their call count go to the engine.
         listener.set_engine_sessions(state.engine_sessions.clone());
-        // Connector proxies are answered once the Host's connections are
+        // Connector proxies are answered once the Host's connectors are
         // made (finishing revocations a Host exit interrupted, r3 §4.4).
         {
             let listener = listener.clone();

@@ -29,7 +29,7 @@
 //! Connector calls come from the connectors service: each call's record as
 //! it starts and as it ends is published as `connector.execution`. It is
 //! not part of the snapshot; a client that missed some lists them with
-//! `connection.executions`.
+//! `connector.executions`.
 //!
 //! `epoch` names this feed's generation (one per host process) and `seq` is
 //! contiguous within it. There is no replay: a subscriber that falls behind
@@ -51,7 +51,7 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::downloads::{Download, Downloads};
 use crate::connectors::executions::Execution;
-use crate::protocol::connection::ExecutionView;
+use crate::protocol::connector::ExecutionView;
 use crate::conflict_watch::{
     self, ConflictCmd, ConflictResult, ConflictTarget, ConflictWatchConfig,
 };
@@ -580,7 +580,7 @@ fn execution_changed(execution: Execution) -> (&'static str, Value) {
     (
         "connector.execution",
         json!({
-            "service_connection_id": execution.connection_id.clone(),
+            "connector_id": execution.connector_id.clone(),
             "execution": ExecutionView::from(execution),
         }),
     )

@@ -23,7 +23,7 @@
 //! `--disabled-agents` optionally names the built-ins to drop from that
 //! schema so only agents enabled in settings are advertised.
 //! `--connector` makes the launch a connector proxy instead: it serves the
-//! tools of the one connection its token is bound to, and none of its own.
+//! tools of the one connector its token is bound to, and none of its own.
 //! Everything heavyweight lives in the library so it's unit-testable without
 //! spawning a process: the MCP protocol (both eras, on rmcp) in
 //! `zwiim_host::acp::delegation::mcp_server`, and the tools (schemas, UDS
@@ -68,7 +68,7 @@ struct Args {
     /// Comma-joined exact tool names, passed only for automation engine
     /// sessions; narrows the groups to that list.
     tools: Option<String>,
-    /// Serve the token's connection as a connector proxy.
+    /// Serve the token's connector as a connector proxy.
     connector: bool,
 }
 

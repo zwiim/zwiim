@@ -3,7 +3,7 @@ use sea_orm::entity::prelude::*;
 /// Zwiim-owned: one account on one connector definition. See
 /// `crate::connectors::store`.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "connections")]
+#[sea_orm(table_name = "connectors")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,

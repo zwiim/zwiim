@@ -1,7 +1,7 @@
-//! Zwiim-owned: which sessions may use a connection, and how each of its
+//! Zwiim-owned: which sessions may use a connector, and how each of its
 //! tools is treated (connector design r3 §5.1, §9).
 //!
-//! A grant is one connection for a scope: every workspace or one root
+//! A grant is one connector for a scope: every workspace or one root
 //! workspace, any agent or one. `default_policy` covers tools with no row
 //! and `new_tools` tools first seen after the grant was made; neither may
 //! be `allow`. A tool row allows, asks or denies one tool; an `allow` is
@@ -31,7 +31,7 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(ConnectorGrants::ConnectionId)
+                        ColumnDef::new(ConnectorGrants::ConnectorId)
                             .string()
                             .not_null(),
                     )
@@ -63,9 +63,9 @@ impl MigrationTrait for Migration {
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connector_grants_connection_id")
-                            .from(ConnectorGrants::Table, ConnectorGrants::ConnectionId)
-                            .to(Connections::Table, Connections::Id)
+                            .name("fk_connector_grants_connector_id")
+                            .from(ConnectorGrants::Table, ConnectorGrants::ConnectorId)
+                            .to(Connectors::Table, Connectors::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
@@ -77,7 +77,7 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 "CREATE UNIQUE INDEX idx_connector_grants_scope ON connector_grants \
-                 (connection_id, COALESCE(workspace_id, ''), COALESCE(agent, ''))",
+                 (connector_id, COALESCE(workspace_id, ''), COALESCE(agent, ''))",
             )
             .await?;
         manager
@@ -150,7 +150,7 @@ impl MigrationTrait for Migration {
 enum ConnectorGrants {
     Table,
     Id,
-    ConnectionId,
+    ConnectorId,
     WorkspaceId,
     Agent,
     DefaultPolicy,
@@ -170,7 +170,7 @@ enum GrantToolPolicies {
 }
 
 #[derive(DeriveIden)]
-enum Connections {
+enum Connectors {
     Table,
     Id,
 }
@@ -184,7 +184,7 @@ mod tests {
 
     fn grant(scope: &str, default_policy: &str) -> String {
         format!(
-            "INSERT INTO connector_grants (connection_id, workspace_id, agent, \
+            "INSERT INTO connector_grants (connector_id, workspace_id, agent, \
              default_policy, new_tools, created_at, updated_at) VALUES ('c1', {scope}, \
              '{default_policy}', 'ask', {NOW}, {NOW})"
         )
@@ -204,8 +204,8 @@ mod tests {
             .expect("open in-memory sqlite");
         let manager = SchemaManager::new(&conn);
         conn.execute_unprepared(
-            "PRAGMA foreign_keys = ON; CREATE TABLE connections (id TEXT PRIMARY KEY); \
-             INSERT INTO connections (id) VALUES ('c1')",
+            "PRAGMA foreign_keys = ON; CREATE TABLE connectors (id TEXT PRIMARY KEY); \
+             INSERT INTO connectors (id) VALUES ('c1')",
         )
         .await
         .unwrap();
@@ -249,7 +249,7 @@ mod tests {
         conn.execute_unprepared(&row("search", "ask", "NULL"))
             .await
             .expect("ask needs no hash");
-        conn.execute_unprepared("DELETE FROM connections WHERE id = 'c1'")
+        conn.execute_unprepared("DELETE FROM connectors WHERE id = 'c1'")
             .await
             .unwrap();
         let left = conn
@@ -263,7 +263,7 @@ mod tests {
             .unwrap()
             .try_get::<i64>("", "n")
             .unwrap();
-        assert_eq!(left, 0, "grants and rows go with their connection");
+        assert_eq!(left, 0, "grants and rows go with their connector");
 
         Migration.down(&manager).await.expect("run migration down");
         assert!(!manager.has_table("connector_grants").await.unwrap());

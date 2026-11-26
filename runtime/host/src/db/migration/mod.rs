@@ -73,8 +73,8 @@ mod m20261120_000002_playbook_knowledge;
 mod m20261120_000003_item_lane;
 mod m20261121_000001_item_tab;
 mod m20261125_000001_connector_definitions;
-mod m20261125_000002_connections;
-mod m20261125_000003_connection_tools;
+mod m20261125_000002_connectors;
+mod m20261125_000003_connector_tools;
 mod m20261125_000004_connector_grants;
 mod m20261125_000005_connector_executions;
 mod m20261125_000006_connector_approvals;
@@ -156,8 +156,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261120_000003_item_lane::Migration),
             Box::new(m20261121_000001_item_tab::Migration),
             Box::new(m20261125_000001_connector_definitions::Migration),
-            Box::new(m20261125_000002_connections::Migration),
-            Box::new(m20261125_000003_connection_tools::Migration),
+            Box::new(m20261125_000002_connectors::Migration),
+            Box::new(m20261125_000003_connector_tools::Migration),
             Box::new(m20261125_000004_connector_grants::Migration),
             Box::new(m20261125_000005_connector_executions::Migration),
             Box::new(m20261125_000006_connector_approvals::Migration),

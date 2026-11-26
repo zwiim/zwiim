@@ -2,7 +2,7 @@
 //! agents reach through the Host, which owns credentials, egress, permissions,
 //! approvals and audit. Design: `~/zwiim-plans/2026-11-24-connector-platform-design-r3.md`.
 //!
-//! Remote MCP over Streamable HTTP is the only connection kind users can
+//! Remote MCP over Streamable HTTP is the only connector kind users can
 //! create. Local stdio servers stay refused until the Phase 5 sandbox ships;
 //! the stdio transport is only ever run against trusted test servers.
 

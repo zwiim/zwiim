@@ -259,7 +259,7 @@ export function requestTitle(r: AgentRequest): string {
     case "plan_approval":
       return "Approve the plan";
     case "connector_approval":
-      return `Use ${r.tool.title ?? r.tool.name} on ${r.connection.label}`;
+      return `Use ${r.tool.title ?? r.tool.name} on ${r.connector.label}`;
     case "permission":
       if (r.title) return r.title;
       if (r.plan_markdown) return "Approve the plan";

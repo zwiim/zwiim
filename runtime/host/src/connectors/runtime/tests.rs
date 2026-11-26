@@ -1,4 +1,4 @@
-//! Validating connections against the fake MCP server over real HTTP,
+//! Validating connectors against the fake MCP server over real HTTP,
 //! through the stored records, the credential store and egress.
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use crate::connectors::definition::{from_user, Runtime, UserAuth, UserConnector}
 use crate::connectors::egress::{NetworkClass, SystemResolver};
 use crate::connectors::fake_mcp::{tool, Era, FakeMcp, HttpServer};
 use crate::connectors::store::{
-    self, create_connection, record_revocation, save_definition, ConnectionStatus, CredentialStore,
+    self, create_connector, record_revocation, save_definition, ConnectorStatus, CredentialStore,
     RevocationStep,
 };
 use crate::connectors::upstream::ShutdownReason;
@@ -22,11 +22,11 @@ pub(super) struct Setup {
     pub(super) db: AppDatabase,
     pub(super) secrets: Arc<MemorySecrets>,
     pub(super) connectors: Connectors,
-    pub(super) connection: String,
+    pub(super) connector: String,
     _server: Option<HttpServer>,
 }
 
-/// A stored connection to `url` with bearer key `key` saved, if any.
+/// A stored connector to `url` with bearer key `key` saved, if any.
 pub(super) async fn setup_at(url: &str, key: Option<&str>) -> Setup {
     let db = fresh_in_memory_db().await;
     let input = UserConnector {
@@ -37,14 +37,14 @@ pub(super) async fn setup_at(url: &str, key: Option<&str>) -> Setup {
     };
     let def = from_user(input, chrono::Utc::now()).unwrap();
     save_definition(&db.conn, &def).await.unwrap();
-    let connection = create_connection(&db.conn, &def.id, "Work", CredentialStore::Keychain)
+    let connector = create_connector(&db.conn, &def.id, "Work", CredentialStore::Keychain)
         .await
         .unwrap()
         .id;
     let secrets = Arc::new(MemorySecrets::default());
     if let Some(key) = key {
         let values = HashMap::from([("api_key".to_string(), key.to_string())]);
-        save_secrets(&*secrets, &connection, &def.auth, &values).unwrap();
+        save_secrets(&*secrets, &connector, &def.auth, &values).unwrap();
     }
     let connectors = Connectors::new(
         db.conn.clone(),
@@ -55,7 +55,7 @@ pub(super) async fn setup_at(url: &str, key: Option<&str>) -> Setup {
         db,
         secrets,
         connectors,
-        connection,
+        connector,
         _server: None,
     }
 }
@@ -67,8 +67,8 @@ pub(super) async fn setup(fake: &FakeMcp) -> Setup {
     setup
 }
 
-async fn status(setup: &Setup) -> (ConnectionStatus, Option<String>) {
-    let c = store::connection(&setup.db.conn, &setup.connection)
+async fn status(setup: &Setup) -> (ConnectorStatus, Option<String>) {
+    let c = store::connector(&setup.db.conn, &setup.connector)
         .await
         .unwrap()
         .unwrap();
@@ -76,14 +76,14 @@ async fn status(setup: &Setup) -> (ConnectionStatus, Option<String>) {
 }
 
 #[tokio::test]
-async fn validating_lists_and_records_the_tools_and_activates_the_connection() {
+async fn validating_lists_and_records_the_tools_and_activates_the_connector() {
     for era in [Era::Modern, Era::Legacy("2025-06-18")] {
         let fake = FakeMcp::new(era);
         let setup = setup(&fake).await;
-        let changes = setup.connectors.validate(&setup.connection).await.unwrap();
+        let changes = setup.connectors.validate(&setup.connector).await.unwrap();
         assert_eq!(changes.added, ["echo"], "{era:?}");
-        assert_eq!(status(&setup).await, (ConnectionStatus::Active, None));
-        let tools = store::tools(&setup.db.conn, &setup.connection)
+        assert_eq!(status(&setup).await, (ConnectorStatus::Active, None));
+        let tools = store::tools(&setup.db.conn, &setup.connector)
             .await
             .unwrap();
         assert_eq!(tools[0].name, "echo");
@@ -101,9 +101,9 @@ async fn validating_again_reconnects_and_reports_changes() {
     // the validation.
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
     let setup = setup(&fake).await;
-    setup.connectors.validate(&setup.connection).await.unwrap();
+    setup.connectors.validate(&setup.connector).await.unwrap();
     fake.set_tools(vec![tool("search", "Searches")]);
-    let changes = setup.connectors.validate(&setup.connection).await.unwrap();
+    let changes = setup.connectors.validate(&setup.connector).await.unwrap();
     assert_eq!(changes.added, ["search"]);
     assert_eq!(changes.removed, ["echo"]);
     let handshakes = fake
@@ -115,7 +115,7 @@ async fn validating_again_reconnects_and_reports_changes() {
 }
 
 #[tokio::test]
-async fn an_unreachable_service_marks_the_connection_failed() {
+async fn an_unreachable_service_marks_the_connector_failed() {
     // A port nothing listens on: bind, note it, close.
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -125,31 +125,31 @@ async fn an_unreachable_service_marks_the_connection_failed() {
     let setup = setup_at(&format!("http://127.0.0.1:{port}/mcp"), Some("k3y")).await;
     let err = setup
         .connectors
-        .validate(&setup.connection)
+        .validate(&setup.connector)
         .await
         .unwrap_err();
     assert_eq!(err.code(), "connection_failed", "{err}");
     let (state, message) = status(&setup).await;
-    assert_eq!(state, ConnectionStatus::Error);
+    assert_eq!(state, ConnectorStatus::Error);
     assert!(!message.unwrap().contains("k3y"));
-    assert!(store::tools(&setup.db.conn, &setup.connection)
+    assert!(store::tools(&setup.db.conn, &setup.connector)
         .await
         .unwrap()
         .is_empty());
 }
 
 #[tokio::test]
-async fn a_missing_key_fails_the_connection_and_a_locked_store_changes_nothing() {
+async fn a_missing_key_fails_the_connector_and_a_locked_store_changes_nothing() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let missing = setup_at(&server.url(), None).await;
     let err = missing
         .connectors
-        .validate(&missing.connection)
+        .validate(&missing.connector)
         .await
         .unwrap_err();
     assert_eq!(err.code(), "credential_missing");
-    assert_eq!(status(&missing).await.0, ConnectionStatus::Error);
+    assert_eq!(status(&missing).await.0, ConnectorStatus::Error);
 
     let locked = setup_at(&server.url(), Some("k3y")).await;
     let broken = Connectors::new(
@@ -160,9 +160,9 @@ async fn a_missing_key_fails_the_connection_and_a_locked_store_changes_nothing()
             ..Default::default()
         }),
     );
-    let err = broken.validate(&locked.connection).await.unwrap_err();
+    let err = broken.validate(&locked.connector).await.unwrap_err();
     assert_eq!(err.code(), "credential_store_unavailable");
-    assert_eq!(status(&locked).await, (ConnectionStatus::Validating, None));
+    assert_eq!(status(&locked).await, (ConnectorStatus::Validating, None));
     assert!(fake.received().is_empty(), "nothing was sent");
 }
 
@@ -170,7 +170,7 @@ async fn a_missing_key_fails_the_connection_and_a_locked_store_changes_nothing()
 async fn a_changed_definition_must_be_confirmed_before_anything_is_sent() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = setup(&fake).await;
-    let conn = store::connection(&setup.db.conn, &setup.connection)
+    let conn = store::connector(&setup.db.conn, &setup.connector)
         .await
         .unwrap()
         .unwrap();
@@ -189,7 +189,7 @@ async fn a_changed_definition_must_be_confirmed_before_anything_is_sent() {
 
     let err = setup
         .connectors
-        .validate(&setup.connection)
+        .validate(&setup.connector)
         .await
         .unwrap_err();
     assert!(matches!(err, ValidateError::DefinitionChanged), "{err}");
@@ -197,32 +197,32 @@ async fn a_changed_definition_must_be_confirmed_before_anything_is_sent() {
 }
 
 #[tokio::test]
-async fn a_revoked_or_blocked_connection_is_never_contacted() {
+async fn a_revoked_or_blocked_connector_is_never_contacted() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = setup(&fake).await;
     setup
         .connectors
-        .runtime(&setup.connection)
+        .runtime(&setup.connector)
         .shutdown_all(ShutdownReason::Revoked)
         .await;
     let err = setup
         .connectors
-        .validate(&setup.connection)
+        .validate(&setup.connector)
         .await
         .unwrap_err();
-    assert_eq!(err.code(), "connection_unavailable");
+    assert_eq!(err.code(), "connector_unavailable");
 
     let other = setup_at("http://127.0.0.1:9/mcp", Some("k")).await;
-    for status in [ConnectionStatus::Revoking, ConnectionStatus::Revoked] {
-        store::set_status(&other.db.conn, &other.connection, status, None)
+    for status in [ConnectorStatus::Revoking, ConnectorStatus::Revoked] {
+        store::set_status(&other.db.conn, &other.connector, status, None)
             .await
             .unwrap();
         let err = other
             .connectors
-            .validate(&other.connection)
+            .validate(&other.connector)
             .await
             .unwrap_err();
-        assert_eq!(err.code(), "connection_unavailable");
+        assert_eq!(err.code(), "connector_unavailable");
     }
     assert!(fake.received().is_empty());
 }
@@ -230,7 +230,7 @@ async fn a_revoked_or_blocked_connection_is_never_contacted() {
 #[tokio::test]
 async fn the_factory_refuses_local_servers() {
     let setup = setup_at("http://127.0.0.1:9/mcp", None).await;
-    let conn = store::connection(&setup.db.conn, &setup.connection)
+    let conn = store::connector(&setup.db.conn, &setup.connector)
         .await
         .unwrap()
         .unwrap();
@@ -253,82 +253,78 @@ const ALL_STEPS: [RevocationStep; 4] = [
     RevocationStep::SecretsDeleted,
 ];
 
-async fn connection(setup: &Setup) -> store::Connection {
-    store::connection(&setup.db.conn, &setup.connection)
+async fn connector(setup: &Setup) -> store::Connector {
+    store::connector(&setup.db.conn, &setup.connector)
         .await
         .unwrap()
         .unwrap()
 }
 
 #[tokio::test]
-async fn revoking_closes_the_connection_and_deletes_its_key() {
+async fn revoking_closes_the_connector_and_deletes_its_key() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = setup(&fake).await;
-    setup.connectors.validate(&setup.connection).await.unwrap();
+    setup.connectors.validate(&setup.connector).await.unwrap();
     assert_eq!(setup.secrets.names().len(), 1);
 
-    setup.connectors.revoke(&setup.connection).await.unwrap();
-    let revoked = connection(&setup).await;
-    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    setup.connectors.revoke(&setup.connector).await.unwrap();
+    let revoked = connector(&setup).await;
+    assert_eq!(revoked.status, ConnectorStatus::Revoked);
     assert_eq!(revoked.revocation, ALL_STEPS);
     assert_eq!(revoked.last_error, None);
     assert!(setup.secrets.names().is_empty());
-    assert!(setup.connectors.runtime(&setup.connection).is_blocked());
+    assert!(setup.connectors.runtime(&setup.connector).is_blocked());
 
     let sent = fake.received().len();
     let err = setup
         .connectors
-        .validate(&setup.connection)
+        .validate(&setup.connector)
         .await
         .unwrap_err();
-    assert_eq!(err.code(), "connection_unavailable");
+    assert_eq!(err.code(), "connector_unavailable");
     assert_eq!(fake.received().len(), sent, "nothing sent after revoking");
     // Again is fine.
-    setup.connectors.revoke(&setup.connection).await.unwrap();
+    setup.connectors.revoke(&setup.connector).await.unwrap();
     let err = setup.connectors.revoke("missing").await.unwrap_err();
-    assert_eq!(err.code(), "connection_not_found");
+    assert_eq!(err.code(), "connector_not_found");
 }
 
-/// The connection is unusable from the first step; a locked keychain only
+/// The connector is unusable from the first step; a locked keychain only
 /// delays the cleanup, which the next start finishes.
 #[tokio::test]
 async fn a_locked_keychain_leaves_the_revocation_waiting_until_it_opens() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = setup(&fake).await;
-    setup.connectors.validate(&setup.connection).await.unwrap();
+    setup.connectors.validate(&setup.connector).await.unwrap();
     setup
         .secrets
         .broken
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let err = setup
-        .connectors
-        .revoke(&setup.connection)
-        .await
-        .unwrap_err();
+    let err = setup.connectors.revoke(&setup.connector).await.unwrap_err();
     assert_eq!(err.code(), "credential_store_unavailable");
-    let waiting = connection(&setup).await;
-    assert_eq!(waiting.status, ConnectionStatus::Revoking);
+    let waiting = connector(&setup).await;
+    assert_eq!(waiting.status, ConnectorStatus::Revoking);
     assert_eq!(waiting.revocation, ALL_STEPS[..3]);
     assert!(waiting.last_error.unwrap().contains("keychain"));
     let err = setup
         .connectors
-        .validate(&setup.connection)
+        .validate(&setup.connector)
         .await
         .unwrap_err();
-    assert_eq!(err.code(), "connection_unavailable");
+    assert_eq!(err.code(), "connector_unavailable");
 
     // Still locked: still waiting.
     setup.connectors.resume_revocations().await.unwrap();
-    assert_eq!(connection(&setup).await.status, ConnectionStatus::Revoking);
+    assert_eq!(connector(&setup).await.status, ConnectorStatus::Revoking);
 
     setup
         .secrets
         .broken
         .store(false, std::sync::atomic::Ordering::SeqCst);
     setup.connectors.resume_revocations().await.unwrap();
-    let revoked = connection(&setup).await;
-    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    let revoked = connector(&setup).await;
+    assert_eq!(revoked.status, ConnectorStatus::Revoked);
     assert_eq!(revoked.revocation, ALL_STEPS);
     assert!(setup.secrets.names().is_empty());
 }
@@ -340,15 +336,15 @@ async fn an_interrupted_revocation_resumes_after_its_last_step() {
     let setup = setup_at("http://127.0.0.1:9/mcp", Some("k3y")).await;
     store::set_status(
         &setup.db.conn,
-        &setup.connection,
-        ConnectionStatus::Revoking,
+        &setup.connector,
+        ConnectorStatus::Revoking,
         None,
     )
     .await
     .unwrap();
     record_revocation(
         &setup.db.conn,
-        &setup.connection,
+        &setup.connector,
         &[RevocationStep::Blocked],
         None,
     )
@@ -356,8 +352,8 @@ async fn an_interrupted_revocation_resumes_after_its_last_step() {
     .unwrap();
 
     setup.connectors.resume_revocations().await.unwrap();
-    let revoked = connection(&setup).await;
-    assert_eq!(revoked.status, ConnectionStatus::Revoked);
+    let revoked = connector(&setup).await;
+    assert_eq!(revoked.status, ConnectorStatus::Revoked);
     assert_eq!(revoked.revocation, ALL_STEPS);
     assert!(setup.secrets.names().is_empty());
 }
@@ -380,7 +376,7 @@ pub(super) fn service(db: &AppDatabase, secrets: &Arc<MemorySecrets>) -> Connect
 }
 
 #[tokio::test]
-async fn creating_a_connection_stores_its_key_and_validates_it() {
+async fn creating_a_connector_stores_its_key_and_validates_it() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let db = fresh_in_memory_db().await;
@@ -395,12 +391,12 @@ async fn creating_a_connection_stores_its_key_and_validates_it() {
         .await
         .unwrap();
     assert_eq!(created.validation.unwrap().added, ["echo"]);
-    let connection = store::connection(&db.conn, &created.id)
+    let connector = store::connector(&db.conn, &created.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(connection.status, ConnectionStatus::Active);
-    assert_eq!(connection.label, "Work");
+    assert_eq!(connector.status, ConnectorStatus::Active);
+    assert_eq!(connector.label, "Work");
     assert_eq!(
         secrets.names(),
         [format!("connector:{}:api_key", created.id)]
@@ -412,7 +408,7 @@ async fn creating_a_connection_stores_its_key_and_validates_it() {
 }
 
 #[tokio::test]
-async fn a_connection_that_fails_validation_is_kept_as_failed() {
+async fn a_connector_that_fails_validation_is_kept_as_failed() {
     let db = fresh_in_memory_db().await;
     let secrets = Arc::new(MemorySecrets::default());
     let connectors = service(&db, &secrets);
@@ -425,11 +421,11 @@ async fn a_connection_that_fails_validation_is_kept_as_failed() {
         .await
         .unwrap();
     assert_eq!(created.validation.unwrap_err().code(), "connection_failed");
-    let connection = store::connection(&db.conn, &created.id)
+    let connector = store::connector(&db.conn, &created.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(connection.status, ConnectionStatus::Error);
+    assert_eq!(connector.status, ConnectorStatus::Error);
 }
 
 #[tokio::test]
@@ -456,7 +452,7 @@ async fn a_refused_creation_leaves_nothing_behind() {
             .err()
             .unwrap();
         assert_eq!(err.code(), code, "{label:?} {secret:?}");
-        assert!(store::connections(&db.conn).await.unwrap().is_empty());
+        assert!(store::connectors(&db.conn).await.unwrap().is_empty());
         assert!(secrets.names().is_empty());
         assert!(crate::db::entities::connector_definition::Entity::find()
             .all(&db.conn)
@@ -486,30 +482,30 @@ async fn a_refused_creation_leaves_nothing_behind() {
         .err()
         .unwrap();
     assert_eq!(err.code(), "credential_store_unavailable");
-    assert!(store::connections(&db.conn).await.unwrap().is_empty());
+    assert!(store::connectors(&db.conn).await.unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn a_new_key_fixes_the_same_connection() {
+async fn a_new_key_fixes_the_same_connector() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let setup = setup_at(&server.url(), Some("old")).await;
-    let id = &setup.connection;
+    let id = &setup.connector;
     setup.connectors.validate(id).await.unwrap();
 
     let blank = setup.connectors.set_secret(id, " ").await.unwrap_err();
     assert_eq!(blank.code(), "credential_missing");
     setup.connectors.set_secret(id, " new ").await.unwrap();
     setup.connectors.validate(id).await.unwrap();
-    assert_eq!(status(&setup).await, (ConnectionStatus::Active, None));
+    assert_eq!(status(&setup).await, (ConnectorStatus::Active, None));
     assert_eq!(setup.secrets.names(), [format!("connector:{id}:api_key")]);
     let last = fake.received().pop().unwrap();
     assert_eq!(last.header("authorization"), Some("Bearer new"));
 
     setup.connectors.revoke(id).await.unwrap();
     let revoked = setup.connectors.set_secret(id, "again").await.unwrap_err();
-    assert_eq!(revoked.code(), "connection_unavailable");
+    assert_eq!(revoked.code(), "connector_unavailable");
     assert!(setup.secrets.names().is_empty(), "a revoked key stays gone");
     let unknown = setup.connectors.set_secret("nope", "k").await.unwrap_err();
-    assert_eq!(unknown.code(), "connection_not_found");
+    assert_eq!(unknown.code(), "connector_not_found");
 }

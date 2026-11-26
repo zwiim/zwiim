@@ -1,10 +1,10 @@
-//! What a connector proxy asks of a connection (design r3 §3.3): the tools
+//! What a connector proxy asks of a connector (design r3 §3.3): the tools
 //! an agent sees, when they change, and calls. Every refusal is a line for
 //! the agent, delivered as a tool error.
 //!
 //! Every call is recorded (r3 §4.3), and decided by policy, asking the
 //! user where it says to (r3 §5.1, §5.2). A session gets a proxy only for
-//! the connections it is offered.
+//! the connectors it is offered.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use crate::connectors::executions::{
 };
 use crate::connectors::grants;
 use crate::connectors::policy::{self, AllowedBy, Decision, DenyReason, Facts, ToolState};
-use crate::connectors::store::{self, ConnectionStatus};
+use crate::connectors::store::{self, ConnectorStatus};
 use crate::connectors::upstream::{
     CallFailure, CallOutput, DispatchMark, ToolDefinition, UnknownCause, Upstream, UpstreamCall,
 };
@@ -30,23 +30,23 @@ use crate::connectors::upstream::{
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl Connectors {
-    /// The tools agents see on connection `id`, and the revision they are
-    /// at. None while the connection isn't active.
+    /// The tools agents see on connector `id`, and the revision they are
+    /// at. None while the connector isn't active.
     pub async fn exposed_tools(&self, id: &str) -> Result<(u64, Vec<ToolDefinition>), String> {
         // Read first: a change after this is a later revision.
         let revision = self.runtime(id).revision();
-        let connection = store::connection(&self.db, id)
+        let connector = store::connector(&self.db, id)
             .await
             .map_err(internal)?
             .ok_or_else(gone)?;
-        if connection.status != ConnectionStatus::Active || self.runtime(id).is_blocked() {
+        if connector.status != ConnectorStatus::Active || self.runtime(id).is_blocked() {
             return Ok((revision, Vec::new()));
         }
         let tools = store::tools(&self.db, id).await.map_err(internal)?;
         Ok((revision, tools))
     }
 
-    /// The connections a new agent session in `working_dir` run by `agent`
+    /// The connectors a new agent session in `working_dir` run by `agent`
     /// gets a proxy for: active ones whose grant for it leaves at least one
     /// current tool not denied. Engine sessions get none. Only the start
     /// is decided here; each call is decided again. A store failure offers
@@ -56,7 +56,7 @@ impl Connectors {
         working_dir: &Path,
         agent: &str,
         engine: bool,
-    ) -> Vec<store::Connection> {
+    ) -> Vec<store::Connector> {
         if engine {
             return Vec::new();
         }
@@ -73,31 +73,31 @@ impl Connectors {
         &self,
         working_dir: &Path,
         agent: &str,
-    ) -> Result<Vec<store::Connection>, String> {
+    ) -> Result<Vec<store::Connector>, String> {
         let workspace_id =
             crate::workspace::root_workspace_id_for_dir(&self.db, &working_dir.to_string_lossy())
                 .await
                 .map_err(|e| e.to_string())?;
         let mut offered = Vec::new();
-        for connection in store::connections(&self.db).await.map_err(internal)? {
-            if connection.status != ConnectionStatus::Active
-                || self.runtime(&connection.id).is_blocked()
+        for connector in store::connectors(&self.db).await.map_err(internal)? {
+            if connector.status != ConnectorStatus::Active
+                || self.runtime(&connector.id).is_blocked()
             {
                 continue;
             }
             let Some(grant) =
-                grants::grant_for(&self.db, &connection.id, workspace_id.as_deref(), agent)
+                grants::grant_for(&self.db, &connector.id, workspace_id.as_deref(), agent)
                     .await
                     .map_err(internal)?
             else {
                 continue;
             };
             let mut usable = false;
-            for tool in store::tools(&self.db, &connection.id)
+            for tool in store::tools(&self.db, &connector.id)
                 .await
                 .map_err(internal)?
             {
-                let Some(first_seen_at) = store::first_seen(&self.db, &connection.id, &tool.name)
+                let Some(first_seen_at) = store::first_seen(&self.db, &connector.id, &tool.name)
                     .await
                     .map_err(internal)?
                 else {
@@ -105,7 +105,7 @@ impl Connectors {
                 };
                 let hash = tool.hash();
                 let decision = policy::decide(Facts {
-                    connection_active: true,
+                    connector_active: true,
                     engine_session: false,
                     tool: Some(ToolState {
                         name: &tool.name,
@@ -121,13 +121,13 @@ impl Connectors {
                 }
             }
             if usable {
-                offered.push(connection);
+                offered.push(connector);
             }
         }
         Ok(offered)
     }
 
-    /// Runs `tool` on connection `id`, with a record of the call (r3 §4.3).
+    /// Runs `tool` on connector `id`, with a record of the call (r3 §4.3).
     /// Anything that keeps it from running, or leaves its outcome unknown,
     /// comes back as a tool error that says so. A call whose request left
     /// the Host is never retried.
@@ -139,8 +139,8 @@ impl Connectors {
         arguments: Map<String, Value>,
     ) -> CallOutput {
         let started = Instant::now();
-        let connection = match store::connection(&self.db, id).await {
-            Ok(Some(connection)) => connection,
+        let connector = match store::connector(&self.db, id).await {
+            Ok(Some(connector)) => connector,
             Ok(None) => return refusal(&gone()),
             Err(e) => return refusal(&internal(e)),
         };
@@ -153,7 +153,7 @@ impl Connectors {
         let record = executions::receive(
             &self.db,
             NewCall {
-                connection_id: id,
+                connector_id: id,
                 session_id: Some(&session.session_id),
                 tool_name: tool,
                 schema_hash: hash.as_deref(),
@@ -170,7 +170,7 @@ impl Connectors {
             Err(e) => return refusal(&unrecorded(e)),
         };
         let (outcome, upstream_ms, output) = self
-            .run(session, &connection, listed, tool, arguments, &record)
+            .run(session, &connector, listed, tool, arguments, &record)
             .await;
         let detail = output.is_error.then(|| first_text(&output));
         record.end(outcome, detail.as_deref(), upstream_ms).await;
@@ -182,21 +182,19 @@ impl Connectors {
     async fn run(
         &self,
         session: &CallSession,
-        connection: &store::Connection,
+        connector: &store::Connector,
         listed: Option<&ToolDefinition>,
         tool: &str,
         arguments: Map<String, Value>,
         record: &Record,
     ) -> (Outcome, Option<Duration>, CallOutput) {
         let rejected = |reason, line: String| (Outcome::Rejected(reason), None, refusal(&line));
-        if connection.status != ConnectionStatus::Active
-            || self.runtime(&connection.id).is_blocked()
-        {
+        if connector.status != ConnectorStatus::Active || self.runtime(&connector.id).is_blocked() {
             return rejected(
                 RejectReason::Unavailable,
                 format!(
-                    "The {} connection is {}; nothing was sent.",
-                    connection.slug, connection.status
+                    "The {} connector is {}; nothing was sent.",
+                    connector.slug, connector.status
                 ),
             );
         }
@@ -204,13 +202,13 @@ impl Connectors {
             return rejected(
                 RejectReason::NotExposed,
                 format!(
-                    "The {} connection has no tool named {tool:?}; nothing was sent.",
-                    connection.slug
+                    "The {} connector has no tool named {tool:?}; nothing was sent.",
+                    connector.slug
                 ),
             );
         };
         let decided_by = match self
-            .permit(session, connection, listed, &arguments, &record.id)
+            .permit(session, connector, listed, &arguments, &record.id)
             .await
         {
             Ok(by) => by,
@@ -219,7 +217,7 @@ impl Connectors {
         if let Err(e) = executions::decided(&self.db, &record.id, &decided_by).await {
             return rejected(RejectReason::NotSent, unrecorded(e));
         }
-        let upstream = match self.shared_upstream(connection).await {
+        let upstream = match self.shared_upstream(connector).await {
             Ok(upstream) => upstream,
             Err((reason, line)) => return rejected(reason, line),
         };
@@ -237,7 +235,7 @@ impl Connectors {
                 Outcome::Unknown(cause),
                 refusal(&format!(
                     "This call may have run on {}. Check before trying again.",
-                    connection.slug
+                    connector.slug
                 )),
             )
         };
@@ -251,15 +249,15 @@ impl Connectors {
                 Outcome::Rejected(RejectReason::NotSent),
                 refusal(&format!(
                     "The call wasn't sent: {}",
-                    self.redacted(connection, &e.to_string()).await
+                    self.redacted(connector, &e.to_string()).await
                 )),
             ),
             Ok(Err(CallFailure::Rejected { message, .. })) => (
                 Outcome::Failed,
                 refusal(&format!(
                     "{} refused the call: {}",
-                    connection.slug,
-                    self.redacted(connection, &message).await
+                    connector.slug,
+                    self.redacted(connector, &message).await
                 )),
             ),
             Ok(Err(CallFailure::OutcomeUnknown(cause))) => unknown(cause),
@@ -277,18 +275,18 @@ impl Connectors {
     async fn permit(
         &self,
         session: &CallSession,
-        connection: &store::Connection,
+        connector: &store::Connector,
         tool: &ToolDefinition,
         arguments: &Map<String, Value>,
         execution_id: &str,
     ) -> Result<String, Refusal> {
         let hash = tool.hash();
-        let first_seen = store::first_seen(&self.db, &connection.id, &tool.name)
+        let first_seen = store::first_seen(&self.db, &connector.id, &tool.name)
             .await
             .map_err(store_failed)?;
         let grant = grants::grant_for(
             &self.db,
-            &connection.id,
+            &connector.id,
             session.workspace_id.as_deref(),
             &session.agent,
         )
@@ -296,9 +294,9 @@ impl Connectors {
         .map_err(store_failed)?;
         let allowed = self
             .asking
-            .session_allowed(&session.session_id, &connection.id, &tool.name);
+            .session_allowed(&session.session_id, &connector.id, &tool.name);
         let decision = policy::decide(Facts {
-            connection_active: true,
+            connector_active: true,
             engine_session: session.engine,
             tool: first_seen.map(|first_seen_at| ToolState {
                 name: &tool.name,
@@ -324,7 +322,7 @@ impl Connectors {
                 let grant = grant.expect("asking needs a grant");
                 self.ask(
                     session,
-                    connection,
+                    connector,
                     tool,
                     &hash,
                     grant.id,
@@ -349,25 +347,25 @@ impl Connectors {
         }
     }
 
-    /// The connection's shared upstream, opened on first use (after a Host
-    /// restart the connection is active but nothing is open yet).
+    /// The connector's shared upstream, opened on first use (after a Host
+    /// restart the connector is active but nothing is open yet).
     async fn shared_upstream(
         &self,
-        connection: &store::Connection,
+        connector: &store::Connector,
     ) -> Result<std::sync::Arc<dyn Upstream>, (RejectReason, String)> {
-        let runtime = self.runtime(&connection.id);
+        let runtime = self.runtime(&connector.id);
         let mut shared = runtime.shared.lock().await;
         if let Some(upstream) = shared.as_ref() {
             return Ok(upstream.clone());
         }
-        let upstream = self.open(connection).await.map_err(|e| match e {
+        let upstream = self.open(connector).await.map_err(|e| match e {
             ValidateError::Failed(message) => (
                 RejectReason::NotSent,
                 format!("Couldn't reach the service: {message}"),
             ),
             other => (
                 RejectReason::Unavailable,
-                format!("The connection can't be used: {other}"),
+                format!("The connector can't be used: {other}"),
             ),
         })?;
         if runtime.is_blocked() {
@@ -376,18 +374,18 @@ impl Connectors {
                 .await;
             return Err((
                 RejectReason::Unavailable,
-                format!("The {} connection was revoked.", connection.slug),
+                format!("The {} connector was revoked.", connector.slug),
             ));
         }
         *shared = Some(upstream.clone());
         drop(shared);
-        self.follow(&connection.id, &upstream);
+        self.follow(&connector.id, &upstream);
         Ok(upstream)
     }
 
-    async fn redacted(&self, connection: &store::Connection, text: &str) -> String {
+    async fn redacted(&self, connector: &store::Connector, text: &str) -> String {
         // Without the auth there is no secret to look for; say nothing.
-        self.redact(connection, text)
+        self.redact(connector, text)
             .await
             .unwrap_or_else(|_| "the service's answer can't be shown".into())
     }
@@ -512,12 +510,12 @@ fn unrecorded(e: impl std::fmt::Display) -> String {
 }
 
 fn gone() -> String {
-    "This connection no longer exists.".into()
+    "This connector no longer exists.".into()
 }
 
 fn internal(e: impl std::fmt::Display) -> String {
     tracing::warn!("[connectors] gateway: {e}");
-    "Zwiim couldn't read this connection; nothing was sent.".into()
+    "Zwiim couldn't read this connector; nothing was sent.".into()
 }
 
 #[cfg(test)]

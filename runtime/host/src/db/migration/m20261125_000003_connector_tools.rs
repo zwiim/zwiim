@@ -1,4 +1,4 @@
-//! Zwiim-owned: each connection's tool snapshot (connector design r3 §9).
+//! Zwiim-owned: each connector's tool snapshot (connector design r3 §9).
 //! The tools a service last listed, with the hash Zwiim computed for each,
 //! so grants can be pinned to a hash and a changed tool can be noticed.
 //! A tool the service stops listing is kept as `removed`.
@@ -14,67 +14,67 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(ConnectionTools::Table)
+                    .table(ConnectorTools::Table)
                     .col(
-                        ColumnDef::new(ConnectionTools::Id)
+                        ColumnDef::new(ConnectorTools::Id)
                             .integer()
                             .not_null()
                             .auto_increment()
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionTools::ConnectionId)
+                        ColumnDef::new(ConnectorTools::ConnectorId)
                             .string()
                             .not_null(),
                     )
                     // The service's own name for the tool.
-                    .col(ColumnDef::new(ConnectionTools::Name).string().not_null())
-                    .col(ColumnDef::new(ConnectionTools::Title).string().null())
-                    .col(ColumnDef::new(ConnectionTools::Description).text().null())
+                    .col(ColumnDef::new(ConnectorTools::Name).string().not_null())
+                    .col(ColumnDef::new(ConnectorTools::Title).string().null())
+                    .col(ColumnDef::new(ConnectorTools::Description).text().null())
                     .col(
-                        ColumnDef::new(ConnectionTools::InputSchemaJson)
+                        ColumnDef::new(ConnectorTools::InputSchemaJson)
                             .text()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionTools::OutputSchemaJson)
+                        ColumnDef::new(ConnectorTools::OutputSchemaJson)
                             .text()
                             .null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionTools::AnnotationsJson)
+                        ColumnDef::new(ConnectorTools::AnnotationsJson)
                             .text()
                             .null(),
                     )
                     // `sha256:…` over every field.
                     .col(
-                        ColumnDef::new(ConnectionTools::SchemaHash)
+                        ColumnDef::new(ConnectorTools::SchemaHash)
                             .string()
                             .not_null(),
                     )
                     // `active` or `removed`.
-                    .col(ColumnDef::new(ConnectionTools::Status).string().not_null())
+                    .col(ColumnDef::new(ConnectorTools::Status).string().not_null())
                     .col(
-                        ColumnDef::new(ConnectionTools::FirstSeenAt)
+                        ColumnDef::new(ConnectorTools::FirstSeenAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionTools::LastSeenAt)
+                        ColumnDef::new(ConnectorTools::LastSeenAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     // When the hash last changed; null if never.
                     .col(
-                        ColumnDef::new(ConnectionTools::ChangedAt)
+                        ColumnDef::new(ConnectorTools::ChangedAt)
                             .timestamp_with_time_zone()
                             .null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connection_tools_connection_id")
-                            .from(ConnectionTools::Table, ConnectionTools::ConnectionId)
-                            .to(Connections::Table, Connections::Id)
+                            .name("fk_connector_tools_connector_id")
+                            .from(ConnectorTools::Table, ConnectorTools::ConnectorId)
+                            .to(Connectors::Table, Connectors::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
@@ -83,10 +83,10 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("idx_connection_tools_name")
-                    .table(ConnectionTools::Table)
-                    .col(ConnectionTools::ConnectionId)
-                    .col(ConnectionTools::Name)
+                    .name("idx_connector_tools_name")
+                    .table(ConnectorTools::Table)
+                    .col(ConnectorTools::ConnectorId)
+                    .col(ConnectorTools::Name)
                     .unique()
                     .to_owned(),
             )
@@ -95,16 +95,16 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(ConnectionTools::Table).to_owned())
+            .drop_table(Table::drop().table(ConnectorTools::Table).to_owned())
             .await
     }
 }
 
 #[derive(DeriveIden)]
-enum ConnectionTools {
+enum ConnectorTools {
     Table,
     Id,
-    ConnectionId,
+    ConnectorId,
     Name,
     Title,
     Description,
@@ -119,7 +119,7 @@ enum ConnectionTools {
 }
 
 #[derive(DeriveIden)]
-enum Connections {
+enum Connectors {
     Table,
     Id,
 }
@@ -130,24 +130,24 @@ mod tests {
     use sea_orm_migration::sea_orm::Database;
 
     #[tokio::test]
-    async fn one_row_per_tool_name_per_connection_and_down_drops_them() {
+    async fn one_row_per_tool_name_per_connector_and_down_drops_them() {
         let conn = Database::connect("sqlite::memory:")
             .await
             .expect("open in-memory sqlite");
         let manager = SchemaManager::new(&conn);
         // The foreign key's target, minimal.
         conn.execute_unprepared(
-            "CREATE TABLE connections (id TEXT PRIMARY KEY); \
-             INSERT INTO connections (id) VALUES ('c1'), ('c2')",
+            "CREATE TABLE connectors (id TEXT PRIMARY KEY); \
+             INSERT INTO connectors (id) VALUES ('c1'), ('c2')",
         )
         .await
         .unwrap();
         Migration.up(&manager).await.expect("run migration up");
 
-        let insert = |connection: &str| {
+        let insert = |connector: &str| {
             format!(
-                "INSERT INTO connection_tools (connection_id, name, input_schema_json, \
-                 schema_hash, status, first_seen_at, last_seen_at) VALUES ('{connection}', \
+                "INSERT INTO connector_tools (connector_id, name, input_schema_json, \
+                 schema_hash, status, first_seen_at, last_seen_at) VALUES ('{connector}', \
                  'echo', '{{}}', 'sha256:0', 'active', '2026-11-25T00:00:00Z', \
                  '2026-11-25T00:00:00Z')"
             )
@@ -158,9 +158,9 @@ mod tests {
         assert!(conn.execute_unprepared(&insert("c1")).await.is_err());
         conn.execute_unprepared(&insert("c2"))
             .await
-            .expect("same name, another connection");
+            .expect("same name, another connector");
 
         Migration.down(&manager).await.expect("run migration down");
-        assert!(!manager.has_table("connection_tools").await.unwrap());
+        assert!(!manager.has_table("connector_tools").await.unwrap());
     }
 }

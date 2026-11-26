@@ -58,7 +58,7 @@ async fn a_session_shows_one_card_at_a_time_oldest_first() {
     assert_eq!(head["request_id"], "a1");
     assert_eq!(head["binding_hash"], "sha256:a1");
     assert_eq!(head["tool"]["title"], "Create issue");
-    assert_eq!(head["connection"]["slug"], "linear_work");
+    assert_eq!(head["connector"]["slug"], "linear_work");
     assert_eq!(head["risk"], "write");
 
     cards.clear("a1").await;

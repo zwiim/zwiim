@@ -2,13 +2,13 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Map, Value};
 
 use super::{
-    answer, approval, args_hash, binding_hash, consume, create, end, end_for_connection,
-    expire_due, sweep, Approval, ApprovalError, ApprovalStatus, NewApproval, Risk, VoidReason,
+    answer, approval, args_hash, binding_hash, consume, create, end, end_for_connector, expire_due,
+    sweep, Approval, ApprovalError, ApprovalStatus, NewApproval, Risk, VoidReason,
 };
 use crate::connectors::definition::{from_user, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
 use crate::connectors::executions::{receive, NewCall};
-use crate::connectors::store::{create_connection, save_definition, CredentialStore};
+use crate::connectors::store::{create_connector, save_definition, CredentialStore};
 use crate::db::test_helpers::fresh_in_memory_db;
 use crate::db::AppDatabase;
 
@@ -22,7 +22,7 @@ async fn connected() -> (AppDatabase, String) {
     };
     let def = from_user(input, Utc::now()).unwrap();
     save_definition(&db.conn, &def).await.unwrap();
-    let id = create_connection(&db.conn, &def.id, "Work", CredentialStore::Keychain)
+    let id = create_connector(&db.conn, &def.id, "Work", CredentialStore::Keychain)
         .await
         .unwrap()
         .id;
@@ -36,7 +36,7 @@ fn args() -> Map<String, Value> {
 /// A pending approval for a fresh call, made at `now`.
 async fn asked(
     db: &AppDatabase,
-    connection: &str,
+    connector: &str,
     risk: Risk,
     now: chrono::DateTime<Utc>,
 ) -> Approval {
@@ -44,7 +44,7 @@ async fn asked(
     let execution = receive(
         &db.conn,
         NewCall {
-            connection_id: connection,
+            connector_id: connector,
             session_id: Some("s1"),
             tool_name: "create_issue",
             schema_hash: Some("sha256:tool"),
@@ -58,7 +58,7 @@ async fn asked(
         NewApproval {
             execution_id: &execution.id,
             session_id: "s1",
-            connection_id: connection,
+            connector_id: connector,
             tool_name: "create_issue",
             schema_hash: "sha256:tool",
             arguments: &arguments,
@@ -202,7 +202,7 @@ async fn revocation_cancels_what_waits_and_voids_what_was_approved() {
     .await
     .unwrap();
 
-    let mut ended = end_for_connection(&db.conn, &id, now).await.unwrap();
+    let mut ended = end_for_connector(&db.conn, &id, now).await.unwrap();
     ended.sort_by_key(|a| a.status as u8);
     let states: Vec<_> = ended.iter().map(|a| (a.status, a.void_reason)).collect();
     assert!(states.contains(&(ApprovalStatus::Cancelled, None)));
