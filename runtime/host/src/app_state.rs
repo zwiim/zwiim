@@ -124,7 +124,7 @@ pub struct AppState {
     pub browser_streams: Arc<tokio::sync::OnceCell<Arc<crate::browser::stream::StreamHub>>>,
     /// The Host's connections to outside services, made on first use (see
     /// [`AppState::connectors`]).
-    pub connectors: Arc<tokio::sync::OnceCell<Arc<crate::connectors::runtime::Connectors>>>,
+    pub connectors: crate::connectors::runtime::SharedConnectors,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -151,6 +151,7 @@ pub fn build_delegation_stack(
     db_conn: sea_orm::DatabaseConnection,
     data_dir: PathBuf,
     instructions_path: PathBuf,
+    connectors: crate::connectors::runtime::SharedConnectors,
 ) -> (
     Arc<DelegationBroker>,
     Arc<TokenRegistry>,
@@ -243,6 +244,7 @@ pub fn build_delegation_stack(
             manager: Arc::new(connection_manager.clone_ref()),
         }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
         user_instructions,
+        connectors,
     });
 
     (
@@ -377,6 +379,7 @@ impl AppState {
         let emitter = EventEmitter::web_only(broadcaster.clone(), acp_event_bus.clone());
 
         let connection_manager = default_connection_manager();
+        let connectors = crate::connectors::runtime::SharedConnectors::default();
         let (
             delegation_broker,
             delegation_tokens,
@@ -391,6 +394,7 @@ impl AppState {
             db.conn.clone(),
             data_dir.clone(),
             data_dir.join("instructions.json"),
+            connectors.clone(),
         );
 
         Self {
@@ -439,7 +443,7 @@ impl AppState {
             github_auth: Default::default(),
             browser: Default::default(),
             browser_streams: Default::default(),
-            connectors: Default::default(),
+            connectors,
         }
     }
 }

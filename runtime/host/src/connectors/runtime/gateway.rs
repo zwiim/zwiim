@@ -2,10 +2,11 @@
 //! an agent sees, when they change, and calls. Every refusal is a line for
 //! the agent, delivered as a tool error.
 //!
-//! Every call is recorded (r3 §4.3). Policy and approvals (r3 §5.1, §5.2)
-//! come before anything reaches this: no proxy token names a connection
-//! until then.
+//! Every call is recorded (r3 §4.3), and decided by policy, asking the
+//! user where it says to (r3 §5.1, §5.2). A session gets a proxy only for
+//! the connections it is offered.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,87 @@ impl Connectors {
         }
         let tools = store::tools(&self.db, id).await.map_err(internal)?;
         Ok((revision, tools))
+    }
+
+    /// The connections a new agent session in `working_dir` run by `agent`
+    /// gets a proxy for: active ones whose grant for it leaves at least one
+    /// current tool not denied. Engine sessions get none. Only the start
+    /// is decided here; each call is decided again. A store failure offers
+    /// nothing.
+    pub async fn offered(
+        &self,
+        working_dir: &Path,
+        agent: &str,
+        engine: bool,
+    ) -> Vec<store::Connection> {
+        if engine {
+            return Vec::new();
+        }
+        match self.offered_or_err(working_dir, agent).await {
+            Ok(offered) => offered,
+            Err(e) => {
+                tracing::warn!("[connectors] couldn't decide what to offer {agent}: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn offered_or_err(
+        &self,
+        working_dir: &Path,
+        agent: &str,
+    ) -> Result<Vec<store::Connection>, String> {
+        let workspace_id =
+            crate::workspace::root_workspace_id_for_dir(&self.db, &working_dir.to_string_lossy())
+                .await
+                .map_err(|e| e.to_string())?;
+        let mut offered = Vec::new();
+        for connection in store::connections(&self.db).await.map_err(internal)? {
+            if connection.status != ConnectionStatus::Active
+                || self.runtime(&connection.id).is_blocked()
+            {
+                continue;
+            }
+            let Some(grant) =
+                grants::grant_for(&self.db, &connection.id, workspace_id.as_deref(), agent)
+                    .await
+                    .map_err(internal)?
+            else {
+                continue;
+            };
+            let mut usable = false;
+            for tool in store::tools(&self.db, &connection.id)
+                .await
+                .map_err(internal)?
+            {
+                let Some(first_seen_at) = store::first_seen(&self.db, &connection.id, &tool.name)
+                    .await
+                    .map_err(internal)?
+                else {
+                    continue;
+                };
+                let hash = tool.hash();
+                let decision = policy::decide(Facts {
+                    connection_active: true,
+                    engine_session: false,
+                    tool: Some(ToolState {
+                        name: &tool.name,
+                        hash: &hash,
+                        first_seen_at,
+                    }),
+                    grant: Some(&grant),
+                    session_allowed: None,
+                });
+                if !matches!(decision, Decision::Deny(_)) {
+                    usable = true;
+                    break;
+                }
+            }
+            if usable {
+                offered.push(connection);
+            }
+        }
+        Ok(offered)
     }
 
     /// Runs `tool` on connection `id`, with a record of the call (r3 §4.3).

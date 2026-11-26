@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key, revoke it, grant it to workspaces and agents tool by tool, approve calls that ask (once, for the session, or always) and see every call made through it, through `connection.*` protocol operations. Building; no UI yet, and agents can't use connections yet.
+- Connections to outside MCP servers: add a remote server by URL with its key (kept in the keychain), see its tools, check it again, replace its key, revoke it, grant it to workspaces and agents tool by tool, approve calls that ask (once, for the session, or always) and see every call made through it, through `connection.*` protocol operations. An agent session gets each connection it may use some tool of as an MCP server named by the connection, from when it starts or resumes until it ends. Building; no UI yet.
 - Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 
 ### Changed

@@ -2680,6 +2680,8 @@ pub async fn spawn_agent_connection(
             if let Some(tok) = token {
                 inj.tokens.revoke(&tok).await;
             }
+            // Its connector proxies' tokens, and what it was allowed.
+            crate::acp::connector_proxies::end(&inj, &conn_id).await;
             inj.broker.cancel_by_parent(&conn_id).await;
             // Reclaim a parked `ask_user_question` instead of waiting for the
             // companion's ask socket to close (which a reparented/hard-killed
@@ -5124,6 +5126,10 @@ pub struct DelegationInjection {
     /// The user's own instructions for the session's root workspace, read at
     /// launch so an edit applies to new and resumed sessions.
     pub user_instructions: Arc<dyn UserInstructionsLookup>,
+    /// The Host's connections, once made: read at launch for the connector
+    /// proxies a session is offered, and at teardown to end what it was
+    /// allowed. A session launched before they are made gets none.
+    pub connectors: crate::connectors::runtime::SharedConnectors,
 }
 
 /// The user's instructions that apply to an agent launched in `cwd`.
@@ -6354,6 +6360,28 @@ async fn run_connection(
             } else {
                 None
             };
+            // One proxy per connection this session may use (connector
+            // design r3 §3.3), under the same gate as the companion.
+            if agent_supports_mcp && agent_delivers_wire_mcp(agent_type) {
+                if let Some(inj) = delegation_injection.as_ref() {
+                    let slugs = crate::acp::connector_proxies::inject(
+                        &mut mcp_servers,
+                        inj,
+                        &conn_id,
+                        &cwd,
+                        agent_type,
+                        engine_launch.is_some(),
+                        locate_zwiim_mcp_binary,
+                    )
+                    .await;
+                    if !slugs.is_empty() {
+                        tracing::info!(
+                            "[connectors] connection {conn_id} gets {}",
+                            slugs.join(", ")
+                        );
+                    }
+                }
+            }
             {
                 let mut s = state.write().await;
                 // Native steering is independent of the MCP companion — set it
@@ -16083,6 +16111,10 @@ pub(crate) async fn emit_conversation_update(
         }
     }
 }
+
+/// For tests of the launch pieces kept beside this file.
+#[cfg(test)]
+pub(crate) use tests::{test_delegation_injection, TestAllAgentsAvailable};
 
 #[cfg(test)]
 mod tests {
@@ -26383,7 +26415,7 @@ mod tests {
         async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
     }
 
-    struct TestAllAgentsAvailable;
+    pub(crate) struct TestAllAgentsAvailable;
 
     #[async_trait::async_trait]
     impl AgentAvailabilityLookup for TestAllAgentsAvailable {
@@ -26392,7 +26424,7 @@ mod tests {
         }
     }
 
-    fn test_delegation_injection(
+    pub(crate) fn test_delegation_injection(
         agent_availability: Arc<dyn AgentAvailabilityLookup>,
     ) -> DelegationInjection {
         use crate::acp::delegation::broker::DelegationBroker;
@@ -26419,6 +26451,7 @@ mod tests {
             plan_approvals: Arc::new(TestNoPlanApprovals)
                 as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
             user_instructions: Arc::new(TestNoUserInstructions),
+            connectors: Default::default(),
         }
     }
 

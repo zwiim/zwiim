@@ -236,6 +236,10 @@ pub struct Connectors {
     asking: Arc<ask::Asking>,
 }
 
+/// The Host's connections, made on first use and shared with whatever
+/// must see them once they are (agent launches, the delegation listener).
+pub type SharedConnectors = Arc<tokio::sync::OnceCell<Arc<Connectors>>>;
+
 /// Records a slow listener may fall behind by; it re-lists after that.
 const EXECUTION_EVENTS: usize = 256;
 

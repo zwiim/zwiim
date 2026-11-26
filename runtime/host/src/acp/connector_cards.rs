@@ -106,10 +106,7 @@ impl crate::acp::delegation::listener::ConnectorSessionLookup for ConnectorSessi
         engine: bool,
     ) -> Option<CallSession> {
         let state = self.manager.get_state(parent_connection_id).await?;
-        let agent = match serde_json::to_value(state.read().await.agent_type) {
-            Ok(serde_json::Value::String(name)) => name,
-            _ => return None,
-        };
+        let agent = agent_name(state.read().await.agent_type)?;
         let workspace_id =
             crate::workspace::root_workspace_id_for_dir(&self.db, &working_dir.to_string_lossy())
                 .await
@@ -125,6 +122,14 @@ impl crate::acp::delegation::listener::ConnectorSessionLookup for ConnectorSessi
                 connection_id: parent_connection_id.into(),
             }),
         })
+    }
+}
+
+/// The protocol's name for `agent_type`, the one grants are scoped by.
+pub(crate) fn agent_name(agent_type: crate::models::agent::AgentType) -> Option<String> {
+    match serde_json::to_value(agent_type) {
+        Ok(serde_json::Value::String(name)) => Some(name),
+        _ => None,
     }
 }
 
