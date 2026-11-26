@@ -76,17 +76,25 @@ impl UpstreamFactory for McpFactory {
 }
 
 /// Everything live for one connector.
-#[derive(Default)]
 pub struct ConnectorRuntime {
     shared: tokio::sync::Mutex<Option<Arc<dyn Upstream>>>,
     /// Set by revocation and Host exit: nothing new starts from here on.
     blocked: AtomicBool,
-    /// Bumped whenever what agents see of the connector may have changed:
-    /// its tools or whether it is usable. Proxies wait on it.
-    revision: tokio::sync::watch::Sender<u64>,
+    /// Bumped whenever what agents see may have changed: a connector's
+    /// tools, whether it is usable, or a grant. Every connector shares it,
+    /// so one change makes every proxy list again. Proxies wait on it.
+    revision: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl ConnectorRuntime {
+    fn new(revision: Arc<tokio::sync::watch::Sender<u64>>) -> Self {
+        Self {
+            shared: Default::default(),
+            blocked: Default::default(),
+            revision,
+        }
+    }
+
     /// Tells waiting proxies to list the connector's tools again.
     fn changed(&self) {
         self.revision.send_modify(|r| *r += 1);
@@ -234,6 +242,8 @@ pub struct Connectors {
     executions: tokio::sync::broadcast::Sender<Execution>,
     /// Calls waiting on the user, and what sessions allowed.
     asking: Arc<ask::Asking>,
+    /// What agents see, shared by every [`ConnectorRuntime`].
+    revision: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// The Host's connectors, made on first use and shared with whatever
@@ -256,7 +266,14 @@ impl Connectors {
             runtimes: Mutex::default(),
             executions: tokio::sync::broadcast::channel(EXECUTION_EVENTS).0,
             asking: Arc::default(),
+            revision: Arc::new(tokio::sync::watch::channel(0).0),
         }
+    }
+
+    /// What agents may see changed outside a connector's own runtime (a
+    /// grant): proxies list their tools again.
+    pub fn exposure_changed(&self) {
+        self.revision.send_modify(|r| *r += 1);
     }
 
     /// Each call's record as it starts and as it ends.
@@ -270,7 +287,7 @@ impl Connectors {
             .lock()
             .unwrap()
             .entry(id.to_string())
-            .or_default()
+            .or_insert_with(|| Arc::new(ConnectorRuntime::new(self.revision.clone())))
             .clone()
     }
 

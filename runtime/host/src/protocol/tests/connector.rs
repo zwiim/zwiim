@@ -311,6 +311,15 @@ async fn a_paired_device_lists_and_revokes_but_adds_nothing() {
     assert_eq!(body["connector"]["status"], "revoked");
 }
 
+/// Runs grant op `op`, which makes every proxy list its tools again.
+async fn changed(h: &Host, id: &str, op: &str, body: Value) -> Value {
+    let connectors = h.state.connectors().await;
+    let before = connectors.runtime(id).revision();
+    let result = ok(h, op, body).await;
+    assert!(connectors.runtime(id).revision() > before, "{op}");
+    result
+}
+
 #[tokio::test]
 async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let fake = FakeMcp::new(Era::Legacy("2025-06-18"));
@@ -319,8 +328,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let id = created(&h, &server).await;
     let one = json!({ "connector_id": id });
 
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.grant.set",
         json!({ "connector_id": id, "default_policy": "ask", "new_tools": "deny" }),
     )
@@ -332,8 +342,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     assert_eq!(grant["new_tools"], "deny");
     let grant_id = grant["grant_id"].clone();
 
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.tool_policy.set",
         json!({ "grant_id": grant_id, "tool": "echo", "policy": "allow" }),
     )
@@ -348,16 +359,18 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     ok(&h, "connector.validate", one.clone()).await;
     let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"][0]["tools"][0]["changed"], true);
-    let body = ok(
+    let body = changed(
         &h,
+        &id,
         "connector.grant.allow_all",
         json!({ "grant_id": grant_id }),
     )
     .await;
     assert_eq!(body["grant"]["tools"][0]["changed"], false);
 
-    let scoped = ok(
+    let scoped = changed(
         &h,
+        &id,
         "connector.grant.set",
         json!({ "connector_id": id, "workspace_id": h.workspace_id,
                 "agent": "codex", "default_policy": "deny", "new_tools": "deny" }),
@@ -368,8 +381,9 @@ async fn grants_say_which_sessions_may_use_a_connector_and_each_tool() {
     let list = ok(&h, "connector.grant.list", one.clone()).await;
     assert_eq!(list["grants"].as_array().unwrap().len(), 2);
 
-    ok(
+    changed(
         &h,
+        &id,
         "connector.grant.remove",
         json!({ "grant_id": scoped["grant"]["grant_id"] }),
     )

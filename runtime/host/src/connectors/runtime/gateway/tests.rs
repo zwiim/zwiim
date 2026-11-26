@@ -837,3 +837,22 @@ async fn a_session_is_offered_a_connector_it_may_use_some_tool_of() {
     setup.connectors.revoke(&id).await.unwrap();
     assert!(offered(&setup, "codex", false).await.is_empty(), "revoked");
 }
+
+#[tokio::test]
+async fn a_change_to_any_connector_or_grant_wakes_every_proxy() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = active(&fake).await;
+    let (one, other) = (
+        setup.connectors.runtime(&setup.connector),
+        setup.connectors.runtime("another"),
+    );
+    let seen = other.revision();
+    one.changed();
+    let next = tokio::time::timeout(Duration::from_secs(5), other.changed_since(seen))
+        .await
+        .expect("another connector's proxies list again");
+    setup.connectors.exposure_changed();
+    tokio::time::timeout(Duration::from_secs(5), one.changed_since(next))
+        .await
+        .expect("a grant change makes them list again");
+}

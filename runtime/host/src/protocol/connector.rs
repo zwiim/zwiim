@@ -627,6 +627,7 @@ pub async fn connector_grant_set(
     )
     .await
     .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))
@@ -652,6 +653,7 @@ pub async fn connector_grant_remove(
     grants::remove_grant(&state.db.conn, p.grant_id)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(Empty {}))
 }
 
@@ -675,6 +677,7 @@ pub async fn connector_tool_policy_set(
     let grant = grants::set_tool_policy(&state.db.conn, p.grant_id, &p.tool, p.policy)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))
@@ -691,6 +694,7 @@ pub async fn connector_grant_allow_all(
     let grant = grants::allow_all(&state.db.conn, p.grant_id)
         .await
         .map_err(grant_error)?;
+    state.connectors().await.exposure_changed();
     Ok(Json(GrantResult {
         grant: grant_view(&state, grant).await?,
     }))
