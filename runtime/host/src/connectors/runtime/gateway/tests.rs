@@ -784,3 +784,56 @@ async fn with_no_one_to_ask_nothing_is_sent() {
     );
     assert_eq!(calls(&fake), 0);
 }
+
+/// The ids of what a session outside every workspace is offered.
+async fn offered(setup: &Setup, agent: &str, engine: bool) -> Vec<String> {
+    setup
+        .connectors
+        .offered(std::path::Path::new("/nowhere"), agent, engine)
+        .await
+        .into_iter()
+        .map(|c| c.id)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_session_is_offered_a_connection_it_may_use_some_tool_of() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = asking(&fake).await;
+    let id = setup.connection.clone();
+    assert!(offered(&setup, "codex", false).await.is_empty(), "no grant");
+
+    let grant = grants::set_grant(
+        &setup.db.conn,
+        &id,
+        Scope {
+            workspace_id: None,
+            agent: Some("codex".into()),
+        },
+        Fallback::Deny,
+        Fallback::Deny,
+    )
+    .await
+    .unwrap()
+    .id;
+    assert!(
+        offered(&setup, "codex", false).await.is_empty(),
+        "every tool denied"
+    );
+
+    grants::set_tool_policy(&setup.db.conn, grant, "echo", Some(ToolPolicy::Ask))
+        .await
+        .unwrap();
+    assert_eq!(offered(&setup, "codex", false).await, [id.clone()]);
+    assert!(
+        offered(&setup, "claude", false).await.is_empty(),
+        "the grant is Codex's"
+    );
+    assert!(
+        offered(&setup, "codex", true).await.is_empty(),
+        "engine sessions get none"
+    );
+
+    setup.connectors.revoke(&id).await.unwrap();
+    assert!(offered(&setup, "codex", false).await.is_empty(), "revoked");
+}
