@@ -759,11 +759,14 @@ impl DelegationListener {
             // Only a connector proxy's token names a connector, and the
             // connector comes from the token, never from the proxy.
             BrokerMessage::ConnectorTools(req) => {
-                let Some((connectors, id)) = self.connector_of(&req.token).await else {
+                let (Some((connectors, id)), Some(session)) = (
+                    self.connector_of(&req.token).await,
+                    self.call_session(&req.token).await,
+                ) else {
                     write_frame(conn, &no_connector_response()).await?;
                     return Ok(());
                 };
-                match connectors.exposed_tools(&id).await {
+                match connectors.exposed_tools(&session, &id).await {
                     Ok((revision, tools)) => encode(&ConnectorTools { revision, tools })?,
                     Err(note) => BrokerResponse {
                         outcome: serde_json::json!({ "error": "unavailable", "note": note }),

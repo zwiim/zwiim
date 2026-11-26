@@ -609,8 +609,10 @@ async fn timeout<T>(
 
 mod ask;
 mod gateway;
+mod offer;
 
 pub use ask::{AnswerError, ApprovalAnswer, ApprovalCard, ApprovalCards, CallSession, NoCards};
+pub use offer::Offered;
 
 #[cfg(test)]
 mod tests;

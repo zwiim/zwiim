@@ -6,7 +6,6 @@
 //! user where it says to (r3 §5.1, §5.2). A session gets a proxy only for
 //! the connectors it is offered.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -30,103 +29,6 @@ use crate::connectors::upstream::{
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl Connectors {
-    /// The tools agents see on connector `id`, and the revision they are
-    /// at. None while the connector isn't active.
-    pub async fn exposed_tools(&self, id: &str) -> Result<(u64, Vec<ToolDefinition>), String> {
-        // Read first: a change after this is a later revision.
-        let revision = self.runtime(id).revision();
-        let connector = store::connector(&self.db, id)
-            .await
-            .map_err(internal)?
-            .ok_or_else(gone)?;
-        if connector.status != ConnectorStatus::Active || self.runtime(id).is_blocked() {
-            return Ok((revision, Vec::new()));
-        }
-        let tools = store::tools(&self.db, id).await.map_err(internal)?;
-        Ok((revision, tools))
-    }
-
-    /// The connectors a new agent session in `working_dir` run by `agent`
-    /// gets a proxy for: active ones whose grant for it leaves at least one
-    /// current tool not denied. Engine sessions get none. Only the start
-    /// is decided here; each call is decided again. A store failure offers
-    /// nothing.
-    pub async fn offered(
-        &self,
-        working_dir: &Path,
-        agent: &str,
-        engine: bool,
-    ) -> Vec<store::Connector> {
-        if engine {
-            return Vec::new();
-        }
-        match self.offered_or_err(working_dir, agent).await {
-            Ok(offered) => offered,
-            Err(e) => {
-                tracing::warn!("[connectors] couldn't decide what to offer {agent}: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    async fn offered_or_err(
-        &self,
-        working_dir: &Path,
-        agent: &str,
-    ) -> Result<Vec<store::Connector>, String> {
-        let workspace_id =
-            crate::workspace::root_workspace_id_for_dir(&self.db, &working_dir.to_string_lossy())
-                .await
-                .map_err(|e| e.to_string())?;
-        let mut offered = Vec::new();
-        for connector in store::connectors(&self.db).await.map_err(internal)? {
-            if connector.status != ConnectorStatus::Active
-                || self.runtime(&connector.id).is_blocked()
-            {
-                continue;
-            }
-            let Some(grant) =
-                grants::grant_for(&self.db, &connector.id, workspace_id.as_deref(), agent)
-                    .await
-                    .map_err(internal)?
-            else {
-                continue;
-            };
-            let mut usable = false;
-            for tool in store::tools(&self.db, &connector.id)
-                .await
-                .map_err(internal)?
-            {
-                let Some(first_seen_at) = store::first_seen(&self.db, &connector.id, &tool.name)
-                    .await
-                    .map_err(internal)?
-                else {
-                    continue;
-                };
-                let hash = tool.hash();
-                let decision = policy::decide(Facts {
-                    connector_active: true,
-                    engine_session: false,
-                    tool: Some(ToolState {
-                        name: &tool.name,
-                        hash: &hash,
-                        first_seen_at,
-                    }),
-                    grant: Some(&grant),
-                    session_allowed: None,
-                });
-                if !matches!(decision, Decision::Deny(_)) {
-                    usable = true;
-                    break;
-                }
-            }
-            if usable {
-                offered.push(connector);
-            }
-        }
-        Ok(offered)
-    }
-
     /// Runs `tool` on connector `id`, with a record of the call (r3 §4.3).
     /// Anything that keeps it from running, or leaves its outcome unknown,
     /// comes back as a tool error that says so. A call whose request left
@@ -144,12 +46,12 @@ impl Connectors {
             Ok(None) => return refusal(&gone()),
             Err(e) => return refusal(&internal(e)),
         };
-        let tools = match store::tools(&self.db, id).await {
+        let tools = match store::listed(&self.db, id).await {
             Ok(tools) => tools,
             Err(e) => return refusal(&internal(e)),
         };
-        let listed = tools.iter().find(|t| t.name == tool);
-        let hash = listed.map(ToolDefinition::hash);
+        let listed = tools.iter().find(|t| t.tool.name == tool);
+        let hash = listed.map(|t| t.tool.hash());
         let record = executions::receive(
             &self.db,
             NewCall {
@@ -183,7 +85,7 @@ impl Connectors {
         &self,
         session: &CallSession,
         connector: &store::Connector,
-        listed: Option<&ToolDefinition>,
+        listed: Option<&store::ListedTool>,
         tool: &str,
         arguments: Map<String, Value>,
         record: &Record,
@@ -207,6 +109,16 @@ impl Connectors {
                 ),
             );
         };
+        if !listed.enabled {
+            return rejected(
+                RejectReason::NotExposed,
+                format!(
+                    "The {} connector's {tool:?} tool is turned off; nothing was sent.",
+                    connector.slug
+                ),
+            );
+        }
+        let listed = &listed.tool;
         let decided_by = match self
             .permit(session, connector, listed, &arguments, &record.id)
             .await

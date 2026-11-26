@@ -154,6 +154,7 @@ runtime/host/src/connectors/runtime.rs
 runtime/host/src/connectors/runtime/tests.rs
 runtime/host/src/connectors/runtime/gateway.rs
 runtime/host/src/connectors/runtime/gateway/tests.rs
+runtime/host/src/connectors/runtime/offer.rs
 runtime/host/src/connectors/grants.rs
 runtime/host/src/connectors/grants/tests.rs
 runtime/host/src/db/migration/m20261125_000004_connector_grants.rs
