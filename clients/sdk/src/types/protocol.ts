@@ -136,11 +136,11 @@ export type HostErrorCode =
   | "file_too_large"
   /** `playbook.file.set`: the path is not a file on the Host's computer. */
   | "file_not_found"
-  /** `connection.create` / `connection.validate`: the server could not be reached or listed (revision 46). */
+  /** `connector.create` / `connector.validate`: the server could not be reached or listed (revision 46). */
   | "connection_failed"
-  /** `connection.validate`: the connection is revoking or revoked. */
-  | "connection_unavailable"
-  /** `connection.validate`: the connector changed since it was connected; connect it again. */
+  /** `connector.validate`: the connector is revoking or revoked. */
+  | "connector_unavailable"
+  /** `connector.validate`: the connector's definition changed since it was connected; connect it again. */
   | "definition_changed"
   /** `session.respond` `connector_approval`: the answer names another call (revision 49). */
   | "approval_mismatch"
@@ -1464,7 +1464,7 @@ export type AgentRequest =
   | ConnectorApprovalRequest;
 
 /**
- * Revision 49: a call through a connection waits for the user. Answer with
+ * Revision 49: a call through a connector waits for the user. Answer with
  * `session.respond` kind `connector_approval`, carrying `binding_hash` back.
  * One card per session at a time; the next shows when this one comes down.
  */
@@ -1472,7 +1472,7 @@ export interface ConnectorApprovalRequest {
   kind: "connector_approval";
   request_id: string;
   binding_hash: string;
-  connection: { label: string; slug: string };
+  connector: { label: string; slug: string };
   tool: { name: string; title: string | null };
   /** What the tool says of itself; it never decides anything. */
   risk: "read" | "write" | "destructive" | "unknown";
@@ -1959,10 +1959,10 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "download.changed"; payload: { download: HostDownload } }
   | { type: "download.removed"; payload: { download_id: string } }
   /**
-   * Revision 48: a connection's tool call started or ended. Not in the
-   * snapshot; list what was missed with `connection.executions`.
+   * Revision 48: a connector's tool call started or ended. Not in the
+   * snapshot; list what was missed with `connector.executions`.
    */
-  | { type: "connector.execution"; payload: { service_connection_id: string; execution: ConnectorExecution } }
+  | { type: "connector.execution"; payload: { connector_id: string; execution: ConnectorExecution } }
   /** Capability `playbooks`: an item parked on an outward approval (spec 8.5.1). */
   | { type: "run.approval_requested"; payload: PendingApproval }
   /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
@@ -2263,14 +2263,14 @@ export interface StoredPlaybookFile {
 }
 
 /**
- * A connection to an outside MCP server (revision 46). Named by
- * `service_connection_id`; keys never come back from the Host.
+ * A connector to an outside MCP server (revision 46). Named by
+ * `connector_id`; keys never come back from the Host.
  */
-export interface ServiceConnection {
-  service_connection_id: string;
-  /** The connector's name, e.g. `Linear`. */
+export interface Connector {
+  connector_id: string;
+  /** The service's name, from its definition, e.g. `Linear`. */
   name: string;
-  /** The user's name for this connection, e.g. `Work`. */
+  /** The user's name for this connector, e.g. `Work`. */
   label: string;
   /** The server name agents see, e.g. `linear_work`. */
   slug: string;
@@ -2288,8 +2288,8 @@ export interface ServiceConnection {
   tool_count: number;
 }
 
-/** What `connection.create` takes: a remote server added by URL. */
-export interface NewServiceConnection {
+/** What `connector.create` takes: a remote server added by URL. */
+export interface NewConnector {
   name: string;
   url: string;
   auth: { kind: "none" } | { kind: "bearer" } | { kind: "header"; header: string };
@@ -2301,10 +2301,10 @@ export interface NewServiceConnection {
 }
 
 /**
- * Which sessions may use a connection, and how each tool is treated there
+ * Which sessions may use a connector, and how each tool is treated there
  * (revision 47). `workspace_id` null is every workspace; `agent` null any.
  */
-export interface ConnectionGrant {
+export interface ConnectorGrant {
   grant_id: number;
   workspace_id: string | null;
   agent: AgentType | null;
@@ -2313,10 +2313,10 @@ export interface ConnectionGrant {
   /** For tools first seen after the grant was made. Never `allow`. */
   new_tools: "ask" | "deny";
   created_at: string;
-  tools: ConnectionToolPolicy[];
+  tools: ConnectorToolPolicy[];
 }
 
-export interface ConnectionToolPolicy {
+export interface ConnectorToolPolicy {
   name: string;
   policy: "allow" | "ask" | "deny";
   /** An `allow` given for an earlier version of the tool: it asks again. */
@@ -2324,7 +2324,7 @@ export interface ConnectionToolPolicy {
 }
 
 /**
- * One tool call an agent made through a connection (revision 48). Its
+ * One tool call an agent made through a connector (revision 48). Its
  * arguments are never kept, only their top-level keys.
  */
 export interface ConnectorExecution {
@@ -2366,8 +2366,8 @@ export type ConnectorExecutionState =
   | "failed"
   | "outcome_unknown";
 
-/** A tool a connection's server listed. */
-export interface ServiceTool {
+/** A tool a connector's server listed. */
+export interface ConnectorTool {
   name: string;
   title: string | null;
   description: string | null;
@@ -2377,8 +2377,8 @@ export interface ServiceTool {
   annotations: Record<string, unknown> | null;
 }
 
-/** What a validation changed in a connection's tools, by name. */
-export interface ServiceToolChanges {
+/** What a validation changed in a connector's tools, by name. */
+export interface ConnectorToolChanges {
   added: string[];
   changed: string[];
   removed: string[];
@@ -2882,57 +2882,57 @@ export interface Operations {
   "session.follow_up_remove": [{ session_id: string; follow_up_id: string }, Record<string, never>];
   /** Send a queued follow-up now when idle (resuming a held queue), else move it first. */
   "session.follow_up_send": [{ session_id: string; follow_up_id: string }, { outcome: FollowUpOutcome }];
-  /** Connections to outside MCP servers, oldest first (revision 46). */
-  "connection.list": [Record<string, never>, { connections: ServiceConnection[] }];
+  /** Connectors to outside MCP servers, oldest first (revision 46). */
+  "connector.list": [Record<string, never>, { connectors: Connector[] }];
   /**
    * Add a remote server, keep its key in the keychain, and connect at once.
-   * A first validation that fails keeps the connection as `error`, with
+   * A first validation that fails keeps the connector as `error`, with
    * `validation_error`. Only on the Host itself (`permission_denied`).
    */
-  "connection.create": [
-    NewServiceConnection,
-    { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
+  "connector.create": [
+    NewConnector,
+    { connector: Connector; validation_error: { code: string; message: string } | null },
   ];
   /** Connect afresh and list the server's tools. */
-  "connection.validate": [{ service_connection_id: string }, { connection: ServiceConnection; changes: ServiceToolChanges }];
+  "connector.validate": [{ connector_id: string }, { connector: Connector; changes: ConnectorToolChanges }];
   /**
-   * Replace a wrong, expired or rotated key on the same connection and
-   * connect again; answers like `connection.create`. Only on the Host itself.
+   * Replace a wrong, expired or rotated key on the same connector and
+   * connect again; answers like `connector.create`. Only on the Host itself.
    */
-  "connection.set_secret": [
-    { service_connection_id: string; secret: string },
-    { connection: ServiceConnection; validation_error: { code: string; message: string } | null },
+  "connector.set_secret": [
+    { connector_id: string; secret: string },
+    { connector: Connector; validation_error: { code: string; message: string } | null },
   ];
   /** Unusable at once; still `revoking` while the keychain is locked, and calling again retries. */
-  "connection.revoke": [{ service_connection_id: string }, { connection: ServiceConnection }];
+  "connector.revoke": [{ connector_id: string }, { connector: Connector }];
   /** What the server listed at the last validation, by name. */
-  "connection.tools": [{ service_connection_id: string }, { tools: ServiceTool[] }];
-  /** The connection's grants (revision 47). */
-  "connection.grant.list": [{ service_connection_id: string }, { grants: ConnectionGrant[] }];
+  "connector.tools": [{ connector_id: string }, { tools: ConnectorTool[] }];
+  /** The connector's grants (revision 47). */
+  "connector.grant.list": [{ connector_id: string }, { grants: ConnectorGrant[] }];
   /**
-   * Grant the connection to a scope, or change that scope's grant (its rows
+   * Grant the connector to a scope, or change that scope's grant (its rows
    * kept). A workspace must be a root workspace. Only on the Host itself.
    */
-  "connection.grant.set": [
+  "connector.grant.set": [
     {
-      service_connection_id: string;
+      connector_id: string;
       workspace_id?: string;
       agent?: AgentType;
       default_policy: "ask" | "deny";
       new_tools: "ask" | "deny";
     },
-    { grant: ConnectionGrant },
+    { grant: ConnectorGrant },
   ];
-  "connection.grant.remove": [{ grant_id: number }, Record<string, never>];
+  "connector.grant.remove": [{ grant_id: number }, Record<string, never>];
   /** Set one tool's row; `null` removes it. `allow` holds for the tool as listed now. */
-  "connection.tool_policy.set": [
+  "connector.tool_policy.set": [
     { grant_id: number; tool: string; policy: "allow" | "ask" | "deny" | null },
-    { grant: ConnectionGrant },
+    { grant: ConnectorGrant },
   ];
   /** Allow every tool listed now, each as it is now; denied tools stay denied. */
-  "connection.grant.allow_all": [{ grant_id: number }, { grant: ConnectionGrant }];
-  "connection.executions": [
-    { service_connection_id: string; cursor?: string; limit?: number },
+  "connector.grant.allow_all": [{ grant_id: number }, { grant: ConnectorGrant }];
+  "connector.executions": [
+    { connector_id: string; cursor?: string; limit?: number },
     { executions: ConnectorExecution[]; next_cursor: string | null },
   ];
   /**
@@ -3295,14 +3295,14 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.clone_cancel",
   "github.sign_in",
   "github.cancel_sign_in",
-  "connection.create",
-  "connection.validate",
-  "connection.set_secret",
-  "connection.revoke",
-  "connection.grant.set",
-  "connection.grant.remove",
-  "connection.tool_policy.set",
-  "connection.grant.allow_all",
+  "connector.create",
+  "connector.validate",
+  "connector.set_secret",
+  "connector.revoke",
+  "connector.grant.set",
+  "connector.grant.remove",
+  "connector.tool_policy.set",
+  "connector.grant.allow_all",
   "playbook.create",
   "playbook.save",
   "playbook.file.set",

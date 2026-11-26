@@ -1,5 +1,5 @@
 //! `zwiim-mcp --connector`: the agent-facing leg of a connector (r3 §3.1,
-//! leg A). One launch serves the tools of the one connection its token is
+//! leg A). One launch serves the tools of the one connector its token is
 //! bound to. The Host decides everything (which tools, policy, approvals,
 //! the upstream call); this side only speaks MCP to the agent, in both eras,
 //! and shapes tools and results for the agent's protocol version.
@@ -38,7 +38,7 @@ use crate::connectors::upstream::{CallOutput, ToolDefinition};
 /// results carry `structuredContent`.
 const STRUCTURED_SINCE: &str = "2025-06-18";
 
-/// Serves the token's connection on `read` / `write` until the agent closes
+/// Serves the token's connector on `read` / `write` until the agent closes
 /// the stream.
 pub async fn serve_connector<R, W>(
     socket_path: String,

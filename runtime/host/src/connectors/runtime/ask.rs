@@ -8,7 +8,7 @@
 //!                                               └─ proxy hung up ── cancelled
 //! ```
 //!
-//! After an approval the call checks again that the connection is active,
+//! After an approval the call checks again that the connector is active,
 //! a grant still applies and the tool is the one approved; anything else
 //! voids the approval and nothing is sent.
 
@@ -27,7 +27,7 @@ use crate::connectors::approvals::{
 };
 use crate::connectors::executions::{self, Outcome, RejectReason};
 use crate::connectors::grants::{self, GrantError, ToolPolicy};
-use crate::connectors::store::{self, ConnectionStatus};
+use crate::connectors::store::{self, ConnectorStatus};
 use crate::connectors::upstream::ToolDefinition;
 
 /// Who is calling. Built by the Host from the proxy's token, never from
@@ -52,7 +52,7 @@ pub struct ApprovalCard {
     pub approval_id: String,
     /// An answer must carry it back.
     pub binding_hash: String,
-    /// The connection's label, e.g. `Work`.
+    /// The connector's label, e.g. `Work`.
     pub label: String,
     /// The server name agents see, e.g. `linear_work`.
     pub slug: String,
@@ -155,7 +155,7 @@ pub(super) struct Waiter {
 #[derive(Default)]
 pub(super) struct Asking {
     waiters: std::sync::Mutex<HashMap<String, Waiter>>,
-    /// (session, connection, tool) → the tool hash it was allowed at.
+    /// (session, connector, tool) → the tool hash it was allowed at.
     session_allows: std::sync::Mutex<HashMap<(String, String, String), String>>,
 }
 
@@ -163,13 +163,13 @@ impl Asking {
     pub(super) fn session_allowed(
         &self,
         session: &str,
-        connection: &str,
+        connector: &str,
         tool: &str,
     ) -> Option<String> {
         self.session_allows
             .lock()
             .unwrap()
-            .get(&(session.into(), connection.into(), tool.into()))
+            .get(&(session.into(), connector.into(), tool.into()))
             .cloned()
     }
 
@@ -226,7 +226,7 @@ impl Connectors {
     pub(super) async fn ask(
         &self,
         session: &CallSession,
-        connection: &store::Connection,
+        connector: &store::Connector,
         tool: &ToolDefinition,
         hash: &str,
         grant_id: i32,
@@ -247,7 +247,7 @@ impl Connectors {
         }
         let shown =
             serde_json::to_string_pretty(&Value::Object(arguments.clone())).unwrap_or_default();
-        let preview = match self.redact(connection, &shown).await {
+        let preview = match self.redact(connector, &shown).await {
             Ok(text) => crate::redact::scrub_secrets(&text).into_owned(),
             Err(e) => return Err(store_failed(e)),
         };
@@ -257,7 +257,7 @@ impl Connectors {
             NewApproval {
                 execution_id,
                 session_id: &session.session_id,
-                connection_id: &connection.id,
+                connector_id: &connector.id,
                 tool_name: &tool.name,
                 schema_hash: hash,
                 arguments,
@@ -289,8 +289,8 @@ impl Connectors {
         let card = ApprovalCard {
             approval_id: approval.id.clone(),
             binding_hash: approval.binding_hash.clone(),
-            label: connection.label.clone(),
-            slug: connection.slug.clone(),
+            label: connector.label.clone(),
+            slug: connector.slug.clone(),
             tool: tool.name.clone(),
             tool_title: tool.title.clone(),
             risk,
@@ -309,7 +309,7 @@ impl Connectors {
         session.cards.clear(&approval.id).await;
         let answered = answered?;
         if let Some(reason) = self
-            .changed_since_approval(session, connection, &answered)
+            .changed_since_approval(session, connector, &answered)
             .await
         {
             let _ = approvals::end(
@@ -369,7 +369,7 @@ impl Connectors {
                 ApprovalStatus::Cancelled => {
                     return Err((
                         Outcome::Rejected(RejectReason::Unavailable),
-                        "The connection was revoked; nothing was sent.".into(),
+                        "The connector was revoked; nothing was sent.".into(),
                     ))
                 }
                 ApprovalStatus::Void | ApprovalStatus::Consumed => {
@@ -391,21 +391,21 @@ impl Connectors {
     async fn changed_since_approval(
         &self,
         session: &CallSession,
-        connection: &store::Connection,
+        connector: &store::Connector,
         approval: &Approval,
     ) -> Option<VoidReason> {
-        let Ok(Some(now)) = store::connection(&self.db, &connection.id).await else {
+        let Ok(Some(now)) = store::connector(&self.db, &connector.id).await else {
             return Some(VoidReason::Unavailable);
         };
-        if self.runtime(&connection.id).is_blocked() {
+        if self.runtime(&connector.id).is_blocked() {
             return Some(VoidReason::Revoked);
         }
-        if now.status != ConnectionStatus::Active {
+        if now.status != ConnectorStatus::Active {
             return Some(VoidReason::Unavailable);
         }
         let grant = grants::grant_for(
             &self.db,
-            &connection.id,
+            &connector.id,
             session.workspace_id.as_deref(),
             &session.agent,
         )
@@ -413,7 +413,7 @@ impl Connectors {
         if !matches!(grant, Ok(Some(_))) {
             return Some(VoidReason::GrantRemoved);
         }
-        let current = match store::tools(&self.db, &connection.id).await {
+        let current = match store::tools(&self.db, &connector.id).await {
             Ok(tools) => tools
                 .into_iter()
                 .find(|t| t.name == approval.tool_name)
@@ -461,7 +461,7 @@ impl Connectors {
                 self.asking.session_allows.lock().unwrap().insert(
                     (
                         approval.session_id.clone(),
-                        approval.connection_id.clone(),
+                        approval.connector_id.clone(),
                         approval.tool_name.clone(),
                     ),
                     approval.schema_hash.clone(),
@@ -496,10 +496,10 @@ impl Connectors {
             .retain(|(session, _, _), _| session != session_id);
     }
 
-    /// Connection `id` is being revoked: what waits is cancelled, what was
+    /// Connector `id` is being revoked: what waits is cancelled, what was
     /// approved is void, and the calls waiting on them are told.
     pub(super) async fn end_approvals_for(&self, id: &str) {
-        match approvals::end_for_connection(&self.db, id, Utc::now()).await {
+        match approvals::end_for_connector(&self.db, id, Utc::now()).await {
             Ok(ended) => ended.iter().for_each(|a| self.asking.wake(&a.id)),
             Err(e) => tracing::warn!("[connectors] couldn't end approvals of {id}: {e}"),
         }
@@ -507,7 +507,7 @@ impl Connectors {
             .session_allows
             .lock()
             .unwrap()
-            .retain(|(_, connection, _), _| connection != id);
+            .retain(|(_, connector, _), _| connector != id);
     }
 
     /// Expires every approval past its time and tells its call.
@@ -539,10 +539,10 @@ fn void(reason: VoidReason) -> Refusal {
     let line = match reason {
         VoidReason::ToolChanged => "The tool changed after it was approved; nothing was sent.",
         VoidReason::GrantRemoved => {
-            "This session may no longer use this connection; nothing was sent."
+            "This session may no longer use this connector; nothing was sent."
         }
-        VoidReason::Revoked => "The connection was revoked; nothing was sent.",
-        VoidReason::Unavailable => "The connection is unavailable; nothing was sent.",
+        VoidReason::Revoked => "The connector was revoked; nothing was sent.",
+        VoidReason::Unavailable => "The connector is unavailable; nothing was sent.",
         VoidReason::HostRestart => "Zwiim restarted before the call was sent; nothing was sent.",
     };
     (Outcome::ApprovalVoid(reason), line.into())

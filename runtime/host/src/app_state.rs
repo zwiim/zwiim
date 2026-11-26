@@ -122,7 +122,7 @@ pub struct AppState {
     pub browser: Arc<tokio::sync::OnceCell<Arc<crate::browser::service::BrowserService>>>,
     /// The browser's tab streams, made with their first view.
     pub browser_streams: Arc<tokio::sync::OnceCell<Arc<crate::browser::stream::StreamHub>>>,
-    /// The Host's connections to outside services, made on first use (see
+    /// The Host's connectors to outside services, made on first use (see
     /// [`AppState::connectors`]).
     pub connectors: crate::connectors::runtime::SharedConnectors,
 }
@@ -329,7 +329,7 @@ impl AppState {
             .clone())
     }
 
-    /// The Host's connections to outside services, made on first use.
+    /// The Host's connectors to outside services, made on first use.
     /// Making it finishes the revocations a Host exit interrupted.
     pub async fn connectors(&self) -> Arc<crate::connectors::runtime::Connectors> {
         use crate::connectors::{credentials::Keychain, egress::SystemResolver, runtime};

@@ -1,10 +1,10 @@
-//! Live connections (design r3 §4.1, §4.2). [`Connectors`] holds one
-//! [`ConnectionRuntime`] per connection in use and opens upstreams through
+//! Live connectors (design r3 §4.1, §4.2). [`Connectors`] holds one
+//! [`ConnectorRuntime`] per connector in use and opens upstreams through
 //! an [`UpstreamFactory`], the only place that matches on a definition's
 //! runtime kind. Nothing here is persisted: MCP sessions don't survive the
 //! Host.
 //!
-//! Only the connection scope exists so far. Session-scoped upstreams (legacy
+//! Only the connector scope exists so far. Session-scoped upstreams (legacy
 //! MCP sessions per Zwiim session) come with the gateway that serves agents.
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use super::definition::{self, Auth, ConnectorDefinition, DefinitionError, Runtim
 use super::egress::{Credential, EgressGuard, EgressHttpClient, EndpointRule, Resolver};
 use super::executions::Execution;
 use super::mcp::McpUpstream;
-use super::store::{self, ConnectionStatus, RevocationStep, SnapshotChanges, StoreError};
+use super::store::{self, ConnectorStatus, RevocationStep, SnapshotChanges, StoreError};
 use super::upstream::{ConnectorError, ShutdownReason, Upstream};
 
 /// How long connecting to a service, or one listing, may take.
@@ -38,7 +38,7 @@ pub trait UpstreamFactory: Send + Sync {
     ) -> Result<Arc<dyn Upstream>, ConnectorError>;
 }
 
-/// Remote MCP over Streamable HTTP, through the connection's egress rules.
+/// Remote MCP over Streamable HTTP, through the connector's egress rules.
 /// Local (stdio) servers are refused: there is no sandbox to run them in.
 pub struct McpFactory {
     resolver: Arc<dyn Resolver>,
@@ -75,19 +75,19 @@ impl UpstreamFactory for McpFactory {
     }
 }
 
-/// Everything live for one connection.
+/// Everything live for one connector.
 #[derive(Default)]
-pub struct ConnectionRuntime {
+pub struct ConnectorRuntime {
     shared: tokio::sync::Mutex<Option<Arc<dyn Upstream>>>,
     /// Set by revocation and Host exit: nothing new starts from here on.
     blocked: AtomicBool,
-    /// Bumped whenever what agents see of the connection may have changed:
+    /// Bumped whenever what agents see of the connector may have changed:
     /// its tools or whether it is usable. Proxies wait on it.
     revision: tokio::sync::watch::Sender<u64>,
 }
 
-impl ConnectionRuntime {
-    /// Tells waiting proxies to list the connection's tools again.
+impl ConnectorRuntime {
+    /// Tells waiting proxies to list the connector's tools again.
     fn changed(&self) {
         self.revision.send_modify(|r| *r += 1);
     }
@@ -136,20 +136,20 @@ impl ConnectionRuntime {
     }
 }
 
-/// Why validating a connection failed. `code()` is the stable name clients
+/// Why validating a connector failed. `code()` is the stable name clients
 /// see.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidateError {
-    #[error("no connection {0}")]
+    #[error("no connector {0}")]
     NotFound(String),
-    #[error("the connection is {0}")]
-    Unavailable(ConnectionStatus),
+    #[error("the connector is {0}")]
+    Unavailable(ConnectorStatus),
     #[error("the connector's definition changed; confirm it again")]
     DefinitionChanged,
     #[error(transparent)]
     Credential(CredentialError),
     /// The service couldn't be reached or listed; recorded on the
-    /// connection as `error`.
+    /// connector as `error`.
     #[error("{0}")]
     Failed(String),
     #[error(transparent)]
@@ -159,8 +159,8 @@ pub enum ValidateError {
 impl ValidateError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::NotFound(_) => "connection_not_found",
-            Self::Unavailable(_) => "connection_unavailable",
+            Self::NotFound(_) => "connector_not_found",
+            Self::Unavailable(_) => "connector_unavailable",
             Self::DefinitionChanged => "definition_changed",
             Self::Credential(e) => e.code(),
             Self::Failed(_) => "connection_failed",
@@ -169,7 +169,7 @@ impl ValidateError {
     }
 }
 
-/// Why a connection couldn't be created. Nothing of it is left behind.
+/// Why a connector couldn't be created. Nothing of it is left behind.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateError {
     #[error(transparent)]
@@ -191,18 +191,18 @@ impl CreateError {
     }
 }
 
-/// A new connection and how its first validation went. A validation that
-/// failed leaves the connection in place, recorded as `error`.
+/// A new connector and how its first validation went. A validation that
+/// failed leaves the connector in place, recorded as `error`.
 pub struct Created {
     pub id: String,
     pub validation: Result<SnapshotChanges, ValidateError>,
 }
 
-/// Why a revocation hasn't finished. The connection is unusable whatever
+/// Why a revocation hasn't finished. The connector is unusable whatever
 /// this says; only the cleanup is outstanding.
 #[derive(Debug, thiserror::Error)]
 pub enum RevokeError {
-    #[error("no connection {0}")]
+    #[error("no connector {0}")]
     NotFound(String),
     /// Retried on the next start, or the next revoke.
     #[error("{WAITING_FOR_STORE}: {0}")]
@@ -214,29 +214,29 @@ pub enum RevokeError {
 impl RevokeError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::NotFound(_) => "connection_not_found",
+            Self::NotFound(_) => "connector_not_found",
             Self::WaitingForStore(_) => "credential_store_unavailable",
             Self::Store(_) => "internal",
         }
     }
 }
 
-/// Shown on a connection whose secrets couldn't be deleted yet.
+/// Shown on a connector whose secrets couldn't be deleted yet.
 const WAITING_FOR_STORE: &str = "Waiting for the keychain to remove credentials";
 
-/// The Host's live connections.
+/// The Host's live connectors.
 pub struct Connectors {
     db: DatabaseConnection,
     factory: Arc<dyn UpstreamFactory>,
     secrets: Arc<dyn SecretStore>,
-    runtimes: Mutex<HashMap<String, Arc<ConnectionRuntime>>>,
+    runtimes: Mutex<HashMap<String, Arc<ConnectorRuntime>>>,
     /// Each call's record as it starts and as it ends.
     executions: tokio::sync::broadcast::Sender<Execution>,
     /// Calls waiting on the user, and what sessions allowed.
     asking: Arc<ask::Asking>,
 }
 
-/// The Host's connections, made on first use and shared with whatever
+/// The Host's connectors, made on first use and shared with whatever
 /// must see them once they are (agent launches, the delegation listener).
 pub type SharedConnectors = Arc<tokio::sync::OnceCell<Arc<Connectors>>>;
 
@@ -264,8 +264,8 @@ impl Connectors {
         self.executions.subscribe()
     }
 
-    /// Connection `id`'s runtime, made on first use.
-    pub fn runtime(&self, id: &str) -> Arc<ConnectionRuntime> {
+    /// Connector `id`'s runtime, made on first use.
+    pub fn runtime(&self, id: &str) -> Arc<ConnectorRuntime> {
         self.runtimes
             .lock()
             .unwrap()
@@ -274,24 +274,24 @@ impl Connectors {
             .clone()
     }
 
-    /// Connects to connection `id`'s service afresh, lists its tools and
-    /// records them. Success makes the connection `active`; a service that
+    /// Connects to connector `id`'s service afresh, lists its tools and
+    /// records them. Success makes the connector `active`; a service that
     /// can't be reached, refuses the credential or can't be listed makes it
     /// `error`. A credential store that won't open changes nothing: the
     /// keychain may only be locked.
     pub async fn validate(&self, id: &str) -> Result<SnapshotChanges, ValidateError> {
-        let connection = store::connection(&self.db, id)
+        let connector = store::connector(&self.db, id)
             .await?
             .ok_or_else(|| ValidateError::NotFound(id.into()))?;
         let runtime = self.runtime(id);
         if matches!(
-            connection.status,
-            ConnectionStatus::Revoking | ConnectionStatus::Revoked
+            connector.status,
+            ConnectorStatus::Revoking | ConnectorStatus::Revoked
         ) || runtime.is_blocked()
         {
-            return Err(ValidateError::Unavailable(connection.status));
+            return Err(ValidateError::Unavailable(connector.status));
         }
-        let upstream = match self.open(&connection).await {
+        let upstream = match self.open(&connector).await {
             Ok(upstream) => upstream,
             Err(e) => {
                 // A credential store that won't open may only be locked.
@@ -302,7 +302,7 @@ impl Connectors {
                     _ => None,
                 };
                 if let Some(message) = recorded {
-                    self.set_status(&connection, ConnectionStatus::Error, Some(&message))
+                    self.set_status(&connector, ConnectorStatus::Error, Some(&message))
                         .await?;
                 }
                 return Err(e);
@@ -312,14 +312,14 @@ impl Connectors {
             Ok(listing) => listing,
             Err(e) => {
                 let _ = upstream.shutdown(ShutdownReason::Idle).await;
-                let message = self.redact(&connection, &e.to_string()).await?;
-                self.set_status(&connection, ConnectionStatus::Error, Some(&message))
+                let message = self.redact(&connector, &e.to_string()).await?;
+                self.set_status(&connector, ConnectorStatus::Error, Some(&message))
                     .await?;
                 return Err(ValidateError::Failed(message));
             }
         };
         let changes = store::save_tool_snapshot(&self.db, id, &listing.tools).await?;
-        self.set_status(&connection, ConnectionStatus::Active, None)
+        self.set_status(&connector, ConnectorStatus::Active, None)
             .await?;
         runtime
             .replace(Some(upstream.clone()), ShutdownReason::Idle)
@@ -331,7 +331,7 @@ impl Connectors {
         Ok(changes)
     }
 
-    /// Keeps connection `id`'s snapshot in step with what `upstream`'s
+    /// Keeps connector `id`'s snapshot in step with what `upstream`'s
     /// service reports (`list_changed`), while it is the shared upstream:
     /// each report lists the tools again, and a changed list moves the
     /// revision. A listing that fails keeps the snapshot as it was.
@@ -367,68 +367,61 @@ impl Connectors {
         });
     }
 
-    /// Opens a new upstream for `connection` as the user confirmed it: its
+    /// Opens a new upstream for `connector` as the user confirmed it: its
     /// definition unchanged, its credential, its endpoints. Changes nothing.
-    async fn open(
-        &self,
-        connection: &store::Connection,
-    ) -> Result<Arc<dyn Upstream>, ValidateError> {
-        let definition = store::definition(&self.db, &connection.definition_id)
+    async fn open(&self, connector: &store::Connector) -> Result<Arc<dyn Upstream>, ValidateError> {
+        let definition = store::definition(&self.db, &connector.definition_id)
             .await?
             .ok_or_else(|| ValidateError::Failed("the connector's definition is gone".into()))?;
-        if definition.hash() != connection.definition_hash {
+        if definition.hash() != connector.definition_hash {
             return Err(ValidateError::DefinitionChanged);
         }
-        let credential = credentials::credential(&*self.secrets, &connection.id, &definition.auth)
+        let credential = credentials::credential(&*self.secrets, &connector.id, &definition.auth)
             .map_err(ValidateError::Credential)?;
-        let endpoints = store::endpoint_rules(&self.db, &connection.id).await?;
+        let endpoints = store::endpoint_rules(&self.db, &connector.id).await?;
         timeout(self.factory.open(&definition, endpoints, credential))
             .await
             .map_err(|e| {
                 ValidateError::Failed(credentials::redact(
                     &*self.secrets,
-                    &connection.id,
+                    &connector.id,
                     &definition.auth,
                     &e.to_string(),
                 ))
             })
     }
 
-    /// `text` without `connection`'s secrets.
-    async fn redact(
-        &self,
-        connection: &store::Connection,
-        text: &str,
-    ) -> Result<String, StoreError> {
-        let auth = store::definition_auth(&self.db, &connection.definition_id)
+    /// `text` without `connector`'s secrets.
+    async fn redact(&self, connector: &store::Connector, text: &str) -> Result<String, StoreError> {
+        let auth = store::definition_auth(&self.db, &connector.definition_id)
             .await?
-            .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+            .ok_or_else(|| StoreError::DefinitionNotFound(connector.definition_id.clone()))?;
         Ok(credentials::redact(
             &*self.secrets,
-            &connection.id,
+            &connector.id,
             &auth,
             text,
         ))
     }
 
-    /// Moves `connection` to `status`, telling proxies when that changes
+    /// Moves `connector` to `status`, telling proxies when that changes
     /// whether it is usable.
     async fn set_status(
         &self,
-        connection: &store::Connection,
-        status: ConnectionStatus,
+        connector: &store::Connector,
+        status: ConnectorStatus,
         last_error: Option<&str>,
     ) -> Result<(), StoreError> {
-        store::set_status(&self.db, &connection.id, status, last_error).await?;
-        if (connection.status == ConnectionStatus::Active) != (status == ConnectionStatus::Active) {
-            self.runtime(&connection.id).changed();
+        store::set_status(&self.db, &connector.id, status, last_error).await?;
+        if (connector.status == ConnectorStatus::Active) != (status == ConnectorStatus::Active) {
+            self.runtime(&connector.id).changed();
         }
         Ok(())
     }
 }
 
 impl Connectors {
-    /// Connects a server the user added by URL: its definition, a connection
+    /// Connects a server the user added by URL: its definition, a connector
     /// labelled `label` confirming it, and `secret` stored for its one
     /// credential field. Then validated at once. Everything is checked before
     /// anything is written, and a failure while writing undoes the rest.
@@ -442,55 +435,55 @@ impl Connectors {
         let values = secret_values(&definition.auth, secret);
         credentials::check_secrets(&definition.auth, &values).map_err(CreateError::Credential)?;
         store::save_definition(&self.db, &definition).await?;
-        let connection =
-            match store::create_connection(&self.db, &definition.id, label, self.secrets.kind())
+        let connector =
+            match store::create_connector(&self.db, &definition.id, label, self.secrets.kind())
                 .await
             {
-                Ok(connection) => connection,
+                Ok(connector) => connector,
                 Err(e) => {
                     self.discard(&definition.id, None, &definition.auth).await;
                     return Err(e.into());
                 }
             };
         if let Err(e) =
-            credentials::save_secrets(&*self.secrets, &connection.id, &definition.auth, &values)
+            credentials::save_secrets(&*self.secrets, &connector.id, &definition.auth, &values)
         {
-            self.discard(&definition.id, Some(&connection.id), &definition.auth)
+            self.discard(&definition.id, Some(&connector.id), &definition.auth)
                 .await;
             return Err(CreateError::Credential(e));
         }
-        let validation = self.validate(&connection.id).await;
+        let validation = self.validate(&connector.id).await;
         Ok(Created {
-            id: connection.id,
+            id: connector.id,
             validation,
         })
     }
 
-    /// Replaces connection `id`'s key with `secret`, for a key that was
-    /// wrong, expired or rotated. Validate it afterwards: the connection is
+    /// Replaces connector `id`'s key with `secret`, for a key that was
+    /// wrong, expired or rotated. Validate it afterwards: the connector is
     /// the same one, its tools and label kept. Refused once it is revoking.
     pub async fn set_secret(&self, id: &str, secret: &str) -> Result<(), ValidateError> {
-        let connection = store::connection(&self.db, id)
+        let connector = store::connector(&self.db, id)
             .await?
             .ok_or_else(|| ValidateError::NotFound(id.into()))?;
         if matches!(
-            connection.status,
-            ConnectionStatus::Revoking | ConnectionStatus::Revoked
+            connector.status,
+            ConnectorStatus::Revoking | ConnectorStatus::Revoked
         ) || self.runtime(id).is_blocked()
         {
-            return Err(ValidateError::Unavailable(connection.status));
+            return Err(ValidateError::Unavailable(connector.status));
         }
-        let auth = store::definition_auth(&self.db, &connection.definition_id)
+        let auth = store::definition_auth(&self.db, &connector.definition_id)
             .await?
-            .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+            .ok_or_else(|| StoreError::DefinitionNotFound(connector.definition_id.clone()))?;
         let values = secret_values(&auth, Some(secret));
         credentials::save_secrets(&*self.secrets, id, &auth, &values)
             .map_err(ValidateError::Credential)
     }
 
     /// Undoes a creation that failed part way.
-    async fn discard(&self, definition_id: &str, connection_id: Option<&str>, auth: &Auth) {
-        if let Some(id) = connection_id {
+    async fn discard(&self, definition_id: &str, connector_id: Option<&str>, auth: &Auth) {
+        if let Some(id) = connector_id {
             let _ = credentials::delete_secrets(&*self.secrets, id, auth);
         }
         if let Err(e) = store::discard_definition(&self.db, definition_id).await {
@@ -513,16 +506,16 @@ fn secret_values(auth: &Auth, secret: Option<&str>) -> HashMap<String, String> {
 }
 
 impl Connectors {
-    /// Revokes connection `id` (design r3 §4.4): refused at once, then its
+    /// Revokes connector `id` (design r3 §4.4): refused at once, then its
     /// upstreams closed and its secrets deleted, each step recorded so an
     /// interrupted revocation resumes where it stopped. Running it again is
-    /// fine. A credential store that won't open leaves the connection
+    /// fine. A credential store that won't open leaves the connector
     /// `revoking`, waiting for it.
     pub async fn revoke(&self, id: &str) -> Result<(), RevokeError> {
-        let connection = store::connection(&self.db, id)
+        let connector = store::connector(&self.db, id)
             .await?
             .ok_or_else(|| RevokeError::NotFound(id.into()))?;
-        if connection.status == ConnectionStatus::Revoked {
+        if connector.status == ConnectorStatus::Revoked {
             return Ok(());
         }
         let runtime = self.runtime(id);
@@ -530,10 +523,10 @@ impl Connectors {
         runtime.block();
         runtime.changed();
         self.end_approvals_for(id).await;
-        let mut done = connection.revocation;
+        let mut done = connector.revocation;
         if !done.contains(&RevocationStep::Blocked) {
-            if connection.status != ConnectionStatus::Revoking {
-                store::set_status(&self.db, id, ConnectionStatus::Revoking, None).await?;
+            if connector.status != ConnectorStatus::Revoking {
+                store::set_status(&self.db, id, ConnectorStatus::Revoking, None).await?;
             }
             self.finished(id, &mut done, RevocationStep::Blocked)
                 .await?;
@@ -550,9 +543,9 @@ impl Connectors {
                 .await?;
         }
         if !done.contains(&RevocationStep::SecretsDeleted) {
-            let auth = store::definition_auth(&self.db, &connection.definition_id)
+            let auth = store::definition_auth(&self.db, &connector.definition_id)
                 .await?
-                .ok_or_else(|| StoreError::DefinitionNotFound(connection.definition_id.clone()))?;
+                .ok_or_else(|| StoreError::DefinitionNotFound(connector.definition_id.clone()))?;
             if let Err(e) = credentials::delete_secrets(&*self.secrets, id, &auth) {
                 store::record_revocation(&self.db, id, &done, Some(WAITING_FOR_STORE)).await?;
                 return Err(RevokeError::WaitingForStore(e.to_string()));
@@ -560,7 +553,7 @@ impl Connectors {
             self.finished(id, &mut done, RevocationStep::SecretsDeleted)
                 .await?;
         }
-        store::set_status(&self.db, id, ConnectionStatus::Revoked, None).await?;
+        store::set_status(&self.db, id, ConnectorStatus::Revoked, None).await?;
         Ok(())
     }
 
@@ -577,12 +570,12 @@ impl Connectors {
     /// Finishes every revocation a Host exit interrupted. Run at start; one
     /// that still waits for the credential store stays `revoking`.
     pub async fn resume_revocations(&self) -> Result<(), StoreError> {
-        for connection in store::connections(&self.db).await? {
-            if connection.status != ConnectionStatus::Revoking {
+        for connector in store::connectors(&self.db).await? {
+            if connector.status != ConnectorStatus::Revoking {
                 continue;
             }
-            if let Err(e) = self.revoke(&connection.id).await {
-                tracing::warn!("[connectors] revocation of {} waits: {e}", connection.id);
+            if let Err(e) = self.revoke(&connector.id).await {
+                tracing::warn!("[connectors] revocation of {} waits: {e}", connector.id);
             }
         }
         Ok(())

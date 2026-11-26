@@ -247,14 +247,14 @@ pub struct BrokerPlaybookAttachRequest {
     pub element_ref: String,
 }
 
-/// The tools of the connection a connector proxy's token is bound to
+/// The tools of the connector a connector proxy's token is bound to
 /// (`zwiim-mcp --connector`). Answered with a [`ConnectorTools`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerConnectorToolsRequest {
     pub token: String,
 }
 
-/// Wait until the exposed tools of the proxy's connection differ from
+/// Wait until the exposed tools of the proxy's connector differ from
 /// `revision`. Answered with a [`ConnectorRevision`]; the proxy holds the
 /// socket for the whole wait and closes it to stop waiting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,7 +263,7 @@ pub struct BrokerConnectorWatchRequest {
     pub revision: u64,
 }
 
-/// Run one tool of the proxy's connection. Answered with a
+/// Run one tool of the proxy's connector. Answered with a
 /// [`crate::connectors::upstream::CallOutput`]; anything the Host refuses
 /// comes back as one with `is_error`. The proxy closes the socket to cancel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,7 +274,7 @@ pub struct BrokerConnectorCallRequest {
     pub arguments: serde_json::Map<String, Value>,
 }
 
-/// The exposed tools of one connection at `revision`.
+/// The exposed tools of one connector at `revision`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectorTools {
     pub revision: u64,
@@ -667,7 +667,7 @@ pub async fn client_playbook_attach_round_trip(
     message_round_trip(socket_path, &BrokerMessage::PlaybookAttach(req.clone())).await
 }
 
-/// Read the tools of the proxy's connection.
+/// Read the tools of the proxy's connector.
 pub async fn client_connector_tools_round_trip(
     socket_path: &str,
     req: &BrokerConnectorToolsRequest,

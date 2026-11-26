@@ -103,15 +103,15 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
-  it("speaks revision 49 and answers a connection's approvals", () => {
+  it("speaks revision 49 and answers a connector's approvals", () => {
     expect(CLIENT_REVISION).toBe(49);
   });
 
-  it("speaks revision 48 and lists a connection's calls", () => {
+  it("speaks revision 48 and lists a connector's calls", () => {
     expect(CLIENT_REVISION).toBeGreaterThanOrEqual(48);
   });
 
-  it("speaks revision 47 and grants connections", () => {
+  it("speaks revision 47 and grants connectors", () => {
     expect(CLIENT_REVISION).toBeGreaterThanOrEqual(47);
   });
 

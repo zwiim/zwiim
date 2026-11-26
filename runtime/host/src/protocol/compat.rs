@@ -576,37 +576,37 @@ use serde::{Deserialize, Serialize};
 /// event, and one typed into a protected field never reaches a recording.
 /// Older clients never call the new operations.
 ///
-/// 46 (`connection.*`): connections to outside MCP servers (connector design
-/// r3, phase 1), each named by `service_connection_id`. `connection.create
+/// 46 (`connector.*`): connectors to outside MCP servers (connector design
+/// r3, phase 1), each named by `connector_id`. `connector.create
 /// {name, url, auth, network?, label, secret?}` adds a remote server by URL
 /// (`auth` `{kind: "none" | "bearer"}` or `{kind: "header", header}`,
 /// `network` `public` (default, https only) or `local`), keeps `secret` in
 /// the keychain, connects and lists its tools at once, and returns
-/// `{connection, validation_error}`: a connection whose first validation
+/// `{connector, validation_error}`: a connector whose first validation
 /// failed is kept as `error`, with `validation_error {code, message}`.
-/// `connection.set_secret {service_connection_id, secret}` replaces a wrong,
-/// expired or rotated key on the same connection and connects again,
-/// answering like `connection.create`. Only the Host itself may create one
-/// or set its key (`permission_denied`). `connection.list {}` returns
-/// `{connections}`, `connection.validate {service_connection_id}` connects
-/// afresh and returns `{connection, changes: {added, changed, removed}}`,
-/// `connection.revoke {service_connection_id}` makes it unusable at once and
-/// deletes its key, returning `{connection}` (still `revoking`, with
+/// `connector.set_secret {connector_id, secret}` replaces a wrong,
+/// expired or rotated key on the same connector and connects again,
+/// answering like `connector.create`. Only the Host itself may create one
+/// or set its key (`permission_denied`). `connector.list {}` returns
+/// `{connectors}`, `connector.validate {connector_id}` connects
+/// afresh and returns `{connector, changes: {added, changed, removed}}`,
+/// `connector.revoke {connector_id}` makes it unusable at once and
+/// deletes its key, returning `{connector}` (still `revoking`, with
 /// `error`, while the keychain is locked; revoking again retries), and
-/// `connection.tools {service_connection_id}` returns `{tools}`, each
+/// `connector.tools {connector_id}` returns `{tools}`, each
 /// `{name, title, description, input_schema, output_schema, annotations}`.
-/// A connection is `{service_connection_id, name, label, slug, url, status,
+/// A connector is `{connector_id, name, label, slug, url, status,
 /// error, last_validated_at, created_at, credentials, endpoints,
 /// tool_count}`: `status` one of `validating`, `active`, `needs_reauth`,
 /// `error`, `revoking` and `revoked`, `credentials` `keychain`, `file`
 /// (stored unencrypted on a headless Host) or null for a server without a
 /// key, and `endpoints` `[{origin, credentials}]`. Refused with
-/// `connection_failed`, `connection_unavailable`, `definition_changed`,
+/// `connection_failed`, `connector_unavailable`, `definition_changed`,
 /// `keychain_unavailable`, `invalid_input` or `not_found`. Older clients
 /// never call them.
 ///
-/// 47 (`connection.grant.*`): grants say which sessions may use a
-/// connection and how each tool is treated there (connector design r3
+/// 47 (`connector.grant.*`): grants say which sessions may use a
+/// connector and how each tool is treated there (connector design r3
 /// §5.1). A grant is `{grant_id, workspace_id, agent, default_policy,
 /// new_tools, created_at, tools}`: for every workspace (`workspace_id`
 /// null) or one root workspace and its worktrees, any agent (`agent` null)
@@ -614,20 +614,20 @@ use serde::{Deserialize, Serialize};
 /// first seen after the grant was made) are `ask` or `deny`, never
 /// `allow`. Each tool row is `{name, policy, changed}`: `allow`, `ask` or
 /// `deny`, and `changed` when an `allow` was given for an earlier version
-/// of the tool, which then asks again. `connection.grant.list
-/// {service_connection_id}` returns `{grants}`. `connection.grant.set
-/// {service_connection_id, workspace_id?, agent?, default_policy,
-/// new_tools}` grants the connection to that scope or changes the scope's
+/// of the tool, which then asks again. `connector.grant.list
+/// {connector_id}` returns `{grants}`. `connector.grant.set
+/// {connector_id, workspace_id?, agent?, default_policy,
+/// new_tools}` grants the connector to that scope or changes the scope's
 /// grant, keeping its rows, and returns `{grant}` (a worktree is
-/// `invalid_input`). `connection.grant.remove {grant_id}` returns `{}`.
-/// `connection.tool_policy.set {grant_id, tool, policy}` sets one tool's
+/// `invalid_input`). `connector.grant.remove {grant_id}` returns `{}`.
+/// `connector.tool_policy.set {grant_id, tool, policy}` sets one tool's
 /// row (null removes it; `allow` holds for the tool as listed now), and
-/// `connection.grant.allow_all {grant_id}` allows every tool listed now,
+/// `connector.grant.allow_all {grant_id}` allows every tool listed now,
 /// keeping denied ones; both return `{grant}`. Only the Host itself may
 /// change grants (`permission_denied`). Unknown grants and tools are
 /// `not_found`. Older clients never call them.
 ///
-/// 48 (`connection.executions`): the audit trail of a connection's tool
+/// 48 (`connector.executions`): the audit trail of a connector's tool
 /// calls (connector design r3 §4.3). An execution is `{execution_id, tool,
 /// state, reason, detail, arg_keys, received_at, dispatched_at,
 /// finished_at, upstream_ms, overhead_ms}`. `state` is `received`,
@@ -639,17 +639,17 @@ use serde::{Deserialize, Serialize};
 /// `dispatched_at` is set only for a call that reached the service.
 /// Arguments are never kept: only their top-level keys. `upstream_ms` is
 /// the service's round trip and `overhead_ms` the rest of the Host's time.
-/// `connection.executions {service_connection_id, cursor?, limit?}` returns
+/// `connector.executions {connector_id, cursor?, limit?}` returns
 /// `{executions, next_cursor}`, newest first, 50 a page by default and 200
 /// at most; an unknown cursor is `invalid_input`. The host feed publishes
-/// `connector.execution {service_connection_id, execution}` as each call
+/// `connector.execution {connector_id, execution}` as each call
 /// starts and as it ends; it is not in the snapshot. Older clients never
 /// call the operation and ignore the event.
 ///
-/// 49 (connector approvals): a call through a connection that policy says
+/// 49 (connector approvals): a call through a connector that policy says
 /// to ask about waits for the user (connector design r3 §5.1, §5.2). It is
 /// an `agent.request` of kind `connector_approval` on the session: `{request_id,
-/// binding_hash, connection {label, slug}, tool {name, title}, risk,
+/// binding_hash, connector {label, slug}, tool {name, title}, risk,
 /// preview, expires_at, answers}`, on the snapshot's `pending_request` too,
 /// one per session at a time (the next shows when this one comes down with
 /// `agent.request_resolved`). `risk` is what the tool says of itself and
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn connections_are_revision_46() {
+    fn connectors_are_revision_46() {
         assert!(PROTOCOL_REVISION >= 46);
     }
 

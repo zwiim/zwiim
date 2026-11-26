@@ -1,6 +1,6 @@
 //! The Zwiim Connector Definition (ZCD; design r3 §4.5, ADR-14): the one
-//! normalized, stored record of what a connector is, how to reach it and how
-//! it authenticates. It is a stored record, not a protocol, and never goes to
+//! normalized, stored record of what a service is, how to reach it and how
+//! it authenticates; a connector is made from one. It is a stored record, not a protocol, and never goes to
 //! agents. Importers (the user's form here; catalog and `server.json` later)
 //! all produce one, and [`ConnectorDefinition::validate`] is the single gate
 //! every definition passes before it is stored or used.
@@ -213,8 +213,8 @@ impl ConnectorDefinition {
         Ok(definition)
     }
 
-    /// `sha256:<hex>` over `runtime`, `auth` and `security`: the parts a
-    /// connection's user confirmed. A change to any of them needs their
+    /// `sha256:<hex>` over `runtime`, `auth` and `security`: the parts the
+    /// user confirmed when connecting. A change to any of them needs their
     /// confirmation again; a new name or description doesn't.
     pub fn hash(&self) -> String {
         sha256_of(&json!({

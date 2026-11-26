@@ -3,7 +3,7 @@
 //! shows, decides whether the call may run.
 //!
 //! `binding_hash` ties an answer to exactly this call: its execution,
-//! connection, tool, tool hash and arguments. `expires_at` is fixed when
+//! connector, tool, tool hash and arguments. `expires_at` is fixed when
 //! the approval is made. `preview` is what the card shows of the arguments,
 //! redacted and short, and is cleared once the approval can't be used.
 
@@ -38,7 +38,7 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectorApprovals::ConnectionId)
+                        ColumnDef::new(ConnectorApprovals::ConnectorId)
                             .string()
                             .not_null(),
                     )
@@ -133,9 +133,9 @@ impl MigrationTrait for Migration {
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connector_approvals_connection_id")
-                            .from(ConnectorApprovals::Table, ConnectorApprovals::ConnectionId)
-                            .to(Connections::Table, Connections::Id)
+                            .name("fk_connector_approvals_connector_id")
+                            .from(ConnectorApprovals::Table, ConnectorApprovals::ConnectorId)
+                            .to(Connectors::Table, Connectors::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
@@ -177,7 +177,7 @@ enum ConnectorApprovals {
     Id,
     ExecutionId,
     SessionId,
-    ConnectionId,
+    ConnectorId,
     ToolName,
     SchemaHash,
     ArgsHash,
@@ -200,7 +200,7 @@ enum ConnectorExecutions {
 }
 
 #[derive(DeriveIden)]
-enum Connections {
+enum Connectors {
     Table,
     Id,
 }
@@ -214,7 +214,7 @@ mod tests {
 
     fn insert(id: &str, execution: &str, status: &str, void: &str, consumed: &str) -> String {
         format!(
-            "INSERT INTO connector_approvals (id, execution_id, session_id, connection_id, \
+            "INSERT INTO connector_approvals (id, execution_id, session_id, connector_id, \
              tool_name, schema_hash, args_hash, binding_hash, risk, status, void_reason, \
              created_at, expires_at, consumed_at) VALUES ('{id}', '{execution}', 's1', 'c1', \
              'echo', 'sha256:0', 'sha256:1', 'sha256:2', 'write', '{status}', {void}, {NOW}, \
@@ -229,9 +229,9 @@ mod tests {
             .expect("open in-memory sqlite");
         let manager = SchemaManager::new(&conn);
         conn.execute_unprepared(
-            "PRAGMA foreign_keys = ON; CREATE TABLE connections (id TEXT PRIMARY KEY); \
+            "PRAGMA foreign_keys = ON; CREATE TABLE connectors (id TEXT PRIMARY KEY); \
              CREATE TABLE connector_executions (id TEXT PRIMARY KEY); \
-             INSERT INTO connections (id) VALUES ('c1'); \
+             INSERT INTO connectors (id) VALUES ('c1'); \
              INSERT INTO connector_executions (id) VALUES ('e1'), ('e2'), ('e3')",
         )
         .await
@@ -284,7 +284,7 @@ mod tests {
             );
         }
 
-        conn.execute_unprepared("DELETE FROM connections WHERE id = 'c1'")
+        conn.execute_unprepared("DELETE FROM connectors WHERE id = 'c1'")
             .await
             .unwrap();
         let left = conn
@@ -297,7 +297,7 @@ mod tests {
             .unwrap()
             .try_get::<i64>("", "n")
             .unwrap();
-        assert_eq!(left, 0, "approvals go with their connection");
+        assert_eq!(left, 0, "approvals go with their connector");
 
         Migration.down(&manager).await.expect("run migration down");
         assert!(!manager.has_table("connector_approvals").await.unwrap());

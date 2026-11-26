@@ -1,5 +1,5 @@
-//! Connector records in the Host database: definitions, connections, the
-//! endpoints each connection may reach and each connection's tool snapshot. Credentials are never here; they
+//! Connector records in the Host database: definitions, connectors, the
+//! endpoints each connector may reach and each connector's tool snapshot. Credentials are never here; they
 //! live in the OS keychain.
 
 use chrono::{DateTime, Utc};
@@ -13,7 +13,7 @@ use url::Url;
 use super::definition::{ConnectorDefinition, DefinitionError, Purpose, Runtime, Trust};
 use super::egress::{EndpointRule, NetworkClass};
 use super::upstream::ToolDefinition;
-use crate::db::entities::{connection, connection_endpoint, connection_tool, connector_definition};
+use crate::db::entities::{connector, connector_definition, connector_endpoint, connector_tool};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -21,18 +21,18 @@ pub enum StoreError {
     Definition(#[from] DefinitionError),
     #[error("no connector definition {0}")]
     DefinitionNotFound(String),
-    #[error("no connection {0}")]
-    ConnectionNotFound(String),
+    #[error("no connector {0}")]
+    ConnectorNotFound(String),
     #[error("a label is 1-40 characters")]
     InvalidLabel,
-    #[error("this connector already has a connection labelled {0:?}")]
+    #[error("this service already has a connector labelled {0:?}")]
     LabelTaken(String),
-    #[error("a {from} connection can't become {to}")]
+    #[error("a {from} connector can't become {to}")]
     InvalidTransition {
-        from: ConnectionStatus,
-        to: ConnectionStatus,
+        from: ConnectorStatus,
+        to: ConnectorStatus,
     },
-    #[error("stored connection data is unreadable: {0}")]
+    #[error("stored connector data is unreadable: {0}")]
     Corrupt(String),
     #[error("database: {0}")]
     Db(#[from] DbErr),
@@ -75,7 +75,7 @@ pub async fn save_definition(
 }
 
 /// How stored definition `id` authenticates, read without validating the
-/// rest, so a connection whose definition no longer passes the rules can
+/// rest, so a connector whose definition no longer passes the rules can
 /// still have its secrets deleted.
 pub async fn definition_auth(
     conn: &DatabaseConnection,
@@ -111,7 +111,7 @@ pub async fn definition(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConnectionStatus {
+pub enum ConnectorStatus {
     /// Created; the first listing hasn't succeeded yet.
     Validating,
     Active,
@@ -122,7 +122,7 @@ pub enum ConnectionStatus {
     Revoked,
 }
 
-impl ConnectionStatus {
+impl ConnectorStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Validating => "validating",
@@ -138,7 +138,7 @@ impl ConnectionStatus {
         serde_json::from_value(serde_json::Value::String(value.into())).ok()
     }
 
-    /// Revocation only moves forward: once it starts, the connection never
+    /// Revocation only moves forward: once it starts, the connector never
     /// becomes usable again.
     fn can_become(self, next: Self) -> bool {
         match self {
@@ -149,13 +149,13 @@ impl ConnectionStatus {
     }
 }
 
-impl std::fmt::Display for ConnectionStatus {
+impl std::fmt::Display for ConnectorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-/// Where a connection's credentials are kept.
+/// Where a connector's credentials are kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialStore {
@@ -174,7 +174,7 @@ impl CredentialStore {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Connection {
+pub struct Connector {
     pub id: String,
     pub definition_id: String,
     /// The definition hash the user confirmed when connecting.
@@ -182,7 +182,7 @@ pub struct Connection {
     pub label: String,
     /// The MCP server name agents see, e.g. `linear_work`.
     pub slug: String,
-    pub status: ConnectionStatus,
+    pub status: ConnectorStatus,
     pub store: CredentialStore,
     pub last_error: Option<String>,
     pub last_validated_at: Option<DateTime<Utc>>,
@@ -191,7 +191,7 @@ pub struct Connection {
     pub revocation: Vec<RevocationStep>,
 }
 
-/// One step of revoking a connection (design r3 §4.4). Each is recorded once
+/// One step of revoking a connector (design r3 §4.4). Each is recorded once
 /// done, so a revocation interrupted by a Host exit resumes after the last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,15 +214,15 @@ struct Revocation {
 const MAX_LABEL: usize = 40;
 const MAX_SLUG: usize = 32;
 
-/// A new connection to the stored definition `definition_id`, in
+/// A new connector of the stored definition `definition_id`, in
 /// `validating`, with the definition's endpoints as its own. The definition
-/// is confirmed as it is now: its hash is recorded with the connection.
-pub async fn create_connection(
+/// is confirmed as it is now: its hash is recorded with the connector.
+pub async fn create_connector(
     conn: &DatabaseConnection,
     definition_id: &str,
     label: &str,
     store: CredentialStore,
-) -> Result<Connection, StoreError> {
+) -> Result<Connector, StoreError> {
     let definition = definition(conn, definition_id)
         .await?
         .ok_or_else(|| StoreError::DefinitionNotFound(definition_id.into()))?;
@@ -231,9 +231,9 @@ pub async fn create_connection(
         return Err(StoreError::InvalidLabel);
     }
     let txn = conn.begin().await?;
-    let taken = connection::Entity::find()
-        .filter(connection::Column::DefinitionId.eq(definition_id))
-        .filter(connection::Column::Label.eq(label))
+    let taken = connector::Entity::find()
+        .filter(connector::Column::DefinitionId.eq(definition_id))
+        .filter(connector::Column::Label.eq(label))
         .one(&txn)
         .await?;
     if taken.is_some() {
@@ -242,8 +242,8 @@ pub async fn create_connection(
     let base = slug(&format!("{} {label}", definition.display.name));
     let mut slug = base.clone();
     for n in 2.. {
-        let used = connection::Entity::find()
-            .filter(connection::Column::Slug.eq(&slug))
+        let used = connector::Entity::find()
+            .filter(connector::Column::Slug.eq(&slug))
             .one(&txn)
             .await?;
         if used.is_none() {
@@ -253,13 +253,13 @@ pub async fn create_connection(
         slug = format!("{}{suffix}", truncate(&base, MAX_SLUG - suffix.len()));
     }
     let now = Utc::now();
-    let row = connection::ActiveModel {
+    let row = connector::ActiveModel {
         id: Set(uuid::Uuid::new_v4().simple().to_string()),
         definition_id: Set(definition_id.into()),
         definition_hash: Set(definition.hash()),
         label: Set(label.into()),
         slug: Set(slug),
-        status: Set(ConnectionStatus::Validating.as_str().into()),
+        status: Set(ConnectorStatus::Validating.as_str().into()),
         store: Set(store.as_str().into()),
         revocation_json: Set(None),
         last_error: Set(None),
@@ -273,8 +273,8 @@ pub async fn create_connection(
         let origin = Url::parse(&endpoint.origin)
             .map(|url| url.origin().ascii_serialization())
             .map_err(|_| StoreError::Corrupt(format!("endpoint {:?}", endpoint.origin)))?;
-        connection_endpoint::ActiveModel {
-            connection_id: Set(row.id.clone()),
+        connector_endpoint::ActiveModel {
+            connector_id: Set(row.id.clone()),
             origin: Set(origin),
             purpose: Set(name_of(&endpoint.purpose)?),
             credentials: Set(endpoint.credentials),
@@ -287,42 +287,42 @@ pub async fn create_connection(
         .await?;
     }
     txn.commit().await?;
-    to_connection(row)
+    to_connector(row)
 }
 
-pub async fn connection(
+pub async fn connector(
     conn: &DatabaseConnection,
     id: &str,
-) -> Result<Option<Connection>, StoreError> {
-    connection::Entity::find_by_id(id.to_string())
+) -> Result<Option<Connector>, StoreError> {
+    connector::Entity::find_by_id(id.to_string())
         .one(conn)
         .await?
-        .map(to_connection)
+        .map(to_connector)
         .transpose()
 }
 
-/// Every connection, oldest first.
-pub async fn connections(conn: &DatabaseConnection) -> Result<Vec<Connection>, StoreError> {
-    connection::Entity::find()
-        .order_by_asc(connection::Column::CreatedAt)
-        .order_by_asc(connection::Column::Id)
+/// Every connector, oldest first.
+pub async fn connectors(conn: &DatabaseConnection) -> Result<Vec<Connector>, StoreError> {
+    connector::Entity::find()
+        .order_by_asc(connector::Column::CreatedAt)
+        .order_by_asc(connector::Column::Id)
         .all(conn)
         .await?
         .into_iter()
-        .map(to_connection)
+        .map(to_connector)
         .collect()
 }
 
-/// Deletes definition `definition_id` with its connections, their endpoints
-/// and tool snapshots. Only for undoing a connection that failed while it
+/// Deletes definition `definition_id` with its connectors, their endpoints
+/// and tool snapshots. Only for undoing a connector that failed while it
 /// was being created: nothing has used it yet.
 pub async fn discard_definition(
     conn: &DatabaseConnection,
     definition_id: &str,
 ) -> Result<(), StoreError> {
     let txn = conn.begin().await?;
-    connection::Entity::delete_many()
-        .filter(connection::Column::DefinitionId.eq(definition_id))
+    connector::Entity::delete_many()
+        .filter(connector::Column::DefinitionId.eq(definition_id))
         .exec(&txn)
         .await?;
     connector_definition::Entity::delete_by_id(definition_id.to_string())
@@ -332,17 +332,17 @@ pub async fn discard_definition(
     Ok(())
 }
 
-/// Moves connection `id` to `status`. `last_error` must already be
-/// redacted; it is cleared when the connection becomes active.
+/// Moves connector `id` to `status`. `last_error` must already be
+/// redacted; it is cleared when the connector becomes active.
 pub async fn set_status(
     conn: &DatabaseConnection,
     id: &str,
-    status: ConnectionStatus,
+    status: ConnectorStatus,
     last_error: Option<&str>,
-) -> Result<Connection, StoreError> {
-    let current = connection(conn, id)
+) -> Result<Connector, StoreError> {
+    let current = connector(conn, id)
         .await?
-        .ok_or_else(|| StoreError::ConnectionNotFound(id.into()))?;
+        .ok_or_else(|| StoreError::ConnectorNotFound(id.into()))?;
     if !current.status.can_become(status) {
         return Err(StoreError::InvalidTransition {
             from: current.status,
@@ -350,27 +350,27 @@ pub async fn set_status(
         });
     }
     let now = Utc::now();
-    let mut row = connection::ActiveModel {
+    let mut row = connector::ActiveModel {
         id: Set(id.into()),
         status: Set(status.as_str().into()),
         last_error: Set(last_error.map(str::to_string)),
         updated_at: Set(now),
         ..Default::default()
     };
-    if status == ConnectionStatus::Active {
+    if status == ConnectorStatus::Active {
         row.last_validated_at = Set(Some(now));
     }
-    to_connection(row.update(conn).await?)
+    to_connector(row.update(conn).await?)
 }
 
-/// The egress rules for connection `id`'s endpoints.
+/// The egress rules for connector `id`'s endpoints.
 pub async fn endpoint_rules(
     conn: &DatabaseConnection,
     id: &str,
 ) -> Result<Vec<EndpointRule>, StoreError> {
-    let rows = connection_endpoint::Entity::find()
-        .filter(connection_endpoint::Column::ConnectionId.eq(id))
-        .order_by_asc(connection_endpoint::Column::Id)
+    let rows = connector_endpoint::Entity::find()
+        .filter(connector_endpoint::Column::ConnectorId.eq(id))
+        .order_by_asc(connector_endpoint::Column::Id)
         .all(conn)
         .await?;
     rows.into_iter()
@@ -383,7 +383,7 @@ pub async fn endpoint_rules(
         .collect()
 }
 
-/// What a new listing changed in a connection's snapshot, by tool name.
+/// What a new listing changed in a connector's snapshot, by tool name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SnapshotChanges {
     /// New, or listed again after being removed.
@@ -403,7 +403,7 @@ impl SnapshotChanges {
 const TOOL_ACTIVE: &str = "active";
 const TOOL_REMOVED: &str = "removed";
 
-/// Records `tools` as connection `id`'s current listing, in one
+/// Records `tools` as connector `id`'s current listing, in one
 /// transaction. A tool no longer listed stays as `removed`, so a grant
 /// pinned to it isn't silently lost.
 pub async fn save_tool_snapshot(
@@ -412,16 +412,16 @@ pub async fn save_tool_snapshot(
     tools: &[ToolDefinition],
 ) -> Result<SnapshotChanges, StoreError> {
     let txn = conn.begin().await?;
-    let existing = connection_tool::Entity::find()
-        .filter(connection_tool::Column::ConnectionId.eq(id))
+    let existing = connector_tool::Entity::find()
+        .filter(connector_tool::Column::ConnectorId.eq(id))
         .all(&txn)
         .await?;
     let now = Utc::now();
     let mut changes = SnapshotChanges::default();
     for tool in tools {
         let hash = tool.hash();
-        let mut row = connection_tool::ActiveModel {
-            connection_id: Set(id.into()),
+        let mut row = connector_tool::ActiveModel {
+            connector_id: Set(id.into()),
             name: Set(tool.name.clone()),
             title: Set(tool.title.clone()),
             description: Set(tool.description.clone()),
@@ -456,7 +456,7 @@ pub async fn save_tool_snapshot(
     }
     for old in &existing {
         if old.status != TOOL_REMOVED && !tools.iter().any(|t| t.name == old.name) {
-            connection_tool::ActiveModel {
+            connector_tool::ActiveModel {
                 id: Set(old.id),
                 status: Set(TOOL_REMOVED.into()),
                 ..Default::default()
@@ -470,12 +470,12 @@ pub async fn save_tool_snapshot(
     Ok(changes)
 }
 
-/// Connection `id`'s currently listed tools, by name.
+/// Connector `id`'s currently listed tools, by name.
 pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefinition>, StoreError> {
-    let rows = connection_tool::Entity::find()
-        .filter(connection_tool::Column::ConnectionId.eq(id))
-        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
-        .order_by_asc(connection_tool::Column::Name)
+    let rows = connector_tool::Entity::find()
+        .filter(connector_tool::Column::ConnectorId.eq(id))
+        .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
+        .order_by_asc(connector_tool::Column::Name)
         .all(conn)
         .await?;
     let json = |text: &str| {
@@ -495,22 +495,22 @@ pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefini
         .collect()
 }
 
-/// When connection `id` first listed `tool`, if it lists it now.
+/// When connector `id` first listed `tool`, if it lists it now.
 pub async fn first_seen(
     conn: &DatabaseConnection,
     id: &str,
     tool: &str,
 ) -> Result<Option<DateTime<Utc>>, StoreError> {
-    Ok(connection_tool::Entity::find()
-        .filter(connection_tool::Column::ConnectionId.eq(id))
-        .filter(connection_tool::Column::Name.eq(tool))
-        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
+    Ok(connector_tool::Entity::find()
+        .filter(connector_tool::Column::ConnectorId.eq(id))
+        .filter(connector_tool::Column::Name.eq(tool))
+        .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
         .one(conn)
         .await?
         .map(|row| row.first_seen_at))
 }
 
-/// Records the revocation steps connection `id` has finished, and why the
+/// Records the revocation steps connector `id` has finished, and why the
 /// next one waits, if it does. The status stays as it is.
 pub async fn record_revocation(
     conn: &DatabaseConnection,
@@ -522,7 +522,7 @@ pub async fn record_revocation(
         done: done.to_vec(),
     })
     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-    connection::ActiveModel {
+    connector::ActiveModel {
         id: Set(id.into()),
         revocation_json: Set(Some(json)),
         last_error: Set(waiting.map(str::to_string)),
@@ -534,8 +534,8 @@ pub async fn record_revocation(
     Ok(())
 }
 
-fn to_connection(row: connection::Model) -> Result<Connection, StoreError> {
-    let status = ConnectionStatus::parse(&row.status)
+fn to_connector(row: connector::Model) -> Result<Connector, StoreError> {
+    let status = ConnectorStatus::parse(&row.status)
         .ok_or_else(|| StoreError::Corrupt(format!("status {:?}", row.status)))?;
     let revocation = match row.revocation_json.as_deref() {
         None => Vec::new(),
@@ -545,7 +545,7 @@ fn to_connection(row: connection::Model) -> Result<Connection, StoreError> {
                 .done
         }
     };
-    Ok(Connection {
+    Ok(Connector {
         revocation,
         status,
         store: parse_name(&row.store)?,

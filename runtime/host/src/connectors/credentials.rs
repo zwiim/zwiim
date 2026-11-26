@@ -1,6 +1,6 @@
-//! A connection's credentials (design r3 §5.5). Secret values live only in
+//! A connector's credentials (design r3 §5.5). Secret values live only in
 //! the OS keychain (or a headless Host's opted-in file store), under
-//! `connector:<connection id>:<field>`; the database and the definition hold
+//! `connector:<connector id>:<field>`; the database and the definition hold
 //! only which header carries them. A store that won't open is an error of
 //! its own, never read as "no secret", and nothing falls back to another
 //! store.
@@ -22,7 +22,7 @@ pub trait SecretStore: Send + Sync {
     fn set(&self, name: &str, value: &str) -> Result<(), String>;
     /// Deleting what isn't there is fine.
     fn delete(&self, name: &str) -> Result<(), String>;
-    /// Where the values end up, recorded with each connection.
+    /// Where the values end up, recorded with each connector.
     fn kind(&self) -> CredentialStore;
 }
 
@@ -127,8 +127,8 @@ impl CredentialError {
     }
 }
 
-fn secret_name(connection_id: &str, field: &str) -> String {
-    format!("connector:{connection_id}:{field}")
+fn secret_name(connector_id: &str, field: &str) -> String {
+    format!("connector:{connector_id}:{field}")
 }
 
 fn fields(auth: &Auth) -> &[StaticField] {
@@ -149,13 +149,13 @@ fn header(field: &StaticField, value: &str) -> Result<Credential, CredentialErro
 /// value that can't go in a header stores nothing.
 pub fn save_secrets(
     store: &dyn SecretStore,
-    connection_id: &str,
+    connector_id: &str,
     auth: &Auth,
     values: &HashMap<String, String>,
 ) -> Result<(), CredentialError> {
     for (field, value) in checked(auth, values)? {
         store
-            .set(&secret_name(connection_id, &field.name), value)
+            .set(&secret_name(connector_id, &field.name), value)
             .map_err(CredentialError::StoreUnavailable)?;
     }
     Ok(())
@@ -191,18 +191,18 @@ fn checked<'a>(
     Ok(checked)
 }
 
-/// The credential to send to the connection's credentialed endpoints, or
+/// The credential to send to the connector's credentialed endpoints, or
 /// `None` when it needs none. Egress sends it only to those endpoints.
 pub fn credential(
     store: &dyn SecretStore,
-    connection_id: &str,
+    connector_id: &str,
     auth: &Auth,
 ) -> Result<Option<Credential>, CredentialError> {
     let Some(field) = fields(auth).first() else {
         return Ok(None);
     };
     let value = store
-        .get(&secret_name(connection_id, &field.name))
+        .get(&secret_name(connector_id, &field.name))
         .map_err(CredentialError::StoreUnavailable)?
         .ok_or_else(|| CredentialError::Missing(field.name.clone()))?;
     header(field, &value).map(Some)
@@ -212,24 +212,24 @@ pub fn credential(
 /// fine, so revocation can run this step again.
 pub fn delete_secrets(
     store: &dyn SecretStore,
-    connection_id: &str,
+    connector_id: &str,
     auth: &Auth,
 ) -> Result<(), CredentialError> {
     for field in fields(auth) {
         store
-            .delete(&secret_name(connection_id, &field.name))
+            .delete(&secret_name(connector_id, &field.name))
             .map_err(CredentialError::StoreUnavailable)?;
     }
     Ok(())
 }
 
-/// `text` with this connection's own secret values replaced, for errors and
+/// `text` with this connector's own secret values replaced, for errors and
 /// logs that may echo what a service was sent. Best effort: a store that
 /// won't open leaves the text as it is.
-pub fn redact(store: &dyn SecretStore, connection_id: &str, auth: &Auth, text: &str) -> String {
+pub fn redact(store: &dyn SecretStore, connector_id: &str, auth: &Auth, text: &str) -> String {
     let mut text = text.to_string();
     for field in fields(auth) {
-        if let Ok(Some(value)) = store.get(&secret_name(connection_id, &field.name)) {
+        if let Ok(Some(value)) = store.get(&secret_name(connector_id, &field.name)) {
             if !value.is_empty() {
                 text = text.replace(&value, "[redacted]");
             }

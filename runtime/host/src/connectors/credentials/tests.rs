@@ -100,7 +100,7 @@ fn deleting_secrets_can_run_again() {
 }
 
 #[test]
-fn a_connections_own_secret_is_scrubbed_from_text() {
+fn a_connectors_own_secret_is_scrubbed_from_text() {
     let store = MemorySecrets::default();
     save_secrets(&store, "c1", &bearer(), &values(&[("api_key", "lin_123")])).unwrap();
     assert_eq!(

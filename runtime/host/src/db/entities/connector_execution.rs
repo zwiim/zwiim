@@ -1,13 +1,13 @@
 use sea_orm::entity::prelude::*;
 
-/// Zwiim-owned: one tool call made through a connection. See
+/// Zwiim-owned: one tool call made through a connector. See
 /// `crate::connectors::executions`.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "connector_executions")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,
-    pub connection_id: String,
+    pub connector_id: String,
     pub session_id: Option<String>,
     pub tool_name: String,
     pub schema_hash: Option<String>,

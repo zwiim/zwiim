@@ -4,7 +4,7 @@
 //! a server or agent sends are never among them.
 //!
 //! Precedence, first match wins:
-//! 1. Connection not active → deny.
+//! 1. Connector not active → deny.
 //! 2. Engine session → deny (until playbooks declare connectors).
 //! 3. Tool not exposed, or no longer listed → deny.
 //! 4. No grant → deny.
@@ -35,7 +35,7 @@ pub struct ToolState<'a> {
 /// Everything [`decide`] reads.
 #[derive(Clone, Copy, Debug)]
 pub struct Facts<'a> {
-    pub connection_active: bool,
+    pub connector_active: bool,
     pub engine_session: bool,
     /// `None` when the tool isn't exposed to the session or isn't listed.
     pub tool: Option<ToolState<'a>>,
@@ -82,10 +82,10 @@ impl DenyReason {
     /// The line for the agent; nothing was sent.
     pub fn line(self) -> &'static str {
         match self {
-            Self::Unavailable => "This connection is unavailable; nothing was sent.",
-            Self::EngineSession => "Automation sessions can't use connections; nothing was sent.",
+            Self::Unavailable => "This connector is unavailable; nothing was sent.",
+            Self::EngineSession => "Automation sessions can't use connectors; nothing was sent.",
             Self::NotExposed => "This tool isn't available in this session; nothing was sent.",
-            Self::NoGrant => "This session isn't allowed to use this connection; nothing was sent.",
+            Self::NoGrant => "This session isn't allowed to use this connector; nothing was sent.",
             Self::ToolRow | Self::Fallback | Self::NewTool => {
                 "The user doesn't allow this tool here; nothing was sent."
             }
@@ -94,7 +94,7 @@ impl DenyReason {
 }
 
 pub fn decide(facts: Facts<'_>) -> Decision {
-    if !facts.connection_active {
+    if !facts.connector_active {
         return Decision::Deny(DenyReason::Unavailable);
     }
     if facts.engine_session {

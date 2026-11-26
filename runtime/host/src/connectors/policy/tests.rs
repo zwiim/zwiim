@@ -12,7 +12,7 @@ fn made() -> chrono::DateTime<Utc> {
 fn grant(rows: &[(ToolPolicy, Option<&str>)]) -> Grant {
     Grant {
         id: 1,
-        connection_id: "c1".into(),
+        connector_id: "c1".into(),
         scope: Scope::default(),
         default_policy: Fallback::Deny,
         new_tools: Fallback::Ask,
@@ -39,7 +39,7 @@ fn tool(first_seen_after_grant: bool) -> ToolState<'static> {
 
 fn facts(grant: Option<&Grant>) -> Facts<'_> {
     Facts {
-        connection_active: true,
+        connector_active: true,
         engine_session: false,
         tool: Some(tool(false)),
         grant,
@@ -59,7 +59,7 @@ fn each_rule_in_order() {
         (
             "inactive beats an allow",
             Facts {
-                connection_active: false,
+                connector_active: false,
                 ..facts(Some(&allow))
             },
             Decision::Deny(DenyReason::Unavailable),

@@ -89,9 +89,9 @@ impl Risk {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VoidReason {
-    /// The connection was revoked.
+    /// The connector was revoked.
     Revoked,
-    /// The connection isn't active any more.
+    /// The connector isn't active any more.
     Unavailable,
     /// The grant that applied is gone.
     GrantRemoved,
@@ -106,7 +106,7 @@ pub struct Approval {
     pub id: String,
     pub execution_id: String,
     pub session_id: String,
-    pub connection_id: String,
+    pub connector_id: String,
     pub tool_name: String,
     pub schema_hash: String,
     pub args_hash: String,
@@ -127,7 +127,7 @@ pub struct Approval {
 pub struct NewApproval<'a> {
     pub execution_id: &'a str,
     pub session_id: &'a str,
-    pub connection_id: &'a str,
+    pub connector_id: &'a str,
     pub tool_name: &'a str,
     pub schema_hash: &'a str,
     pub arguments: &'a Map<String, Value>,
@@ -185,14 +185,14 @@ pub fn args_hash(arguments: &Map<String, Value>) -> String {
 /// Ties an answer to one call (r3 §5.2).
 pub fn binding_hash(
     execution_id: &str,
-    connection_id: &str,
+    connector_id: &str,
     tool_name: &str,
     schema_hash: &str,
     args_hash: &str,
 ) -> String {
     sha256_of(&json!([
         execution_id,
-        connection_id,
+        connector_id,
         tool_name,
         schema_hash,
         args_hash
@@ -207,7 +207,7 @@ fn to_approval(row: connector_approval::Model) -> Result<Approval, ApprovalError
         id: row.id,
         execution_id: row.execution_id,
         session_id: row.session_id,
-        connection_id: row.connection_id,
+        connector_id: row.connector_id,
         tool_name: row.tool_name,
         schema_hash: row.schema_hash,
         args_hash: row.args_hash,
@@ -230,7 +230,7 @@ pub async fn create(
     let args = args_hash(new.arguments);
     let binding = binding_hash(
         new.execution_id,
-        new.connection_id,
+        new.connector_id,
         new.tool_name,
         new.schema_hash,
         &args,
@@ -239,7 +239,7 @@ pub async fn create(
         id: Set(uuid::Uuid::new_v4().to_string()),
         execution_id: Set(new.execution_id.into()),
         session_id: Set(new.session_id.into()),
-        connection_id: Set(new.connection_id.into()),
+        connector_id: Set(new.connector_id.into()),
         tool_name: Set(new.tool_name.into()),
         schema_hash: Set(new.schema_hash.into()),
         args_hash: Set(args),
@@ -453,15 +453,15 @@ pub async fn expire_due(
     end_all(conn, due, ApprovalStatus::Expired, None, now).await
 }
 
-/// A connection is being revoked: what waits is cancelled and what was
+/// A connector is being revoked: what waits is cancelled and what was
 /// approved can no longer be sent. Returns what ended.
-pub async fn end_for_connection(
+pub async fn end_for_connector(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<Approval>, ApprovalError> {
     let of =
-        |status| status_is(status).add(connector_approval::Column::ConnectionId.eq(connection_id));
+        |status| status_is(status).add(connector_approval::Column::ConnectorId.eq(connector_id));
     let pending = with_status(conn, of(ApprovalStatus::Pending)).await?;
     let mut ended = end_all(conn, pending, ApprovalStatus::Cancelled, None, now).await?;
     let approved = with_status(conn, of(ApprovalStatus::Approved)).await?;

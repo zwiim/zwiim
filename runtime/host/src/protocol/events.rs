@@ -568,7 +568,7 @@ fn connector_request(card: &ApprovalCard) -> Value {
         "kind": "connector_approval",
         "request_id": card.approval_id,
         "binding_hash": card.binding_hash,
-        "connection": { "label": card.label, "slug": card.slug },
+        "connector": { "label": card.label, "slug": card.slug },
         "tool": { "name": card.tool, "title": card.tool_title },
         "risk": card.risk,
         "preview": scrub(&card.preview),

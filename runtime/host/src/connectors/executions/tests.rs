@@ -6,7 +6,7 @@ use super::{
 };
 use crate::connectors::definition::{from_user, UserAuth, UserConnector};
 use crate::connectors::egress::NetworkClass;
-use crate::connectors::store::{create_connection, save_definition, CredentialStore};
+use crate::connectors::store::{create_connector, save_definition, CredentialStore};
 use crate::connectors::upstream::UnknownCause;
 use crate::db::test_helpers::fresh_in_memory_db;
 use crate::db::AppDatabase;
@@ -21,7 +21,7 @@ async fn connected() -> (AppDatabase, String) {
     };
     let def = from_user(input, chrono::Utc::now()).unwrap();
     save_definition(&db.conn, &def).await.unwrap();
-    let id = create_connection(&db.conn, &def.id, "Work", CredentialStore::Keychain)
+    let id = create_connector(&db.conn, &def.id, "Work", CredentialStore::Keychain)
         .await
         .unwrap()
         .id;
@@ -35,9 +35,9 @@ fn args(value: Value) -> Map<String, Value> {
     }
 }
 
-fn call<'a>(connection_id: &'a str, arguments: &'a Map<String, Value>) -> NewCall<'a> {
+fn call<'a>(connector_id: &'a str, arguments: &'a Map<String, Value>) -> NewCall<'a> {
     NewCall {
-        connection_id,
+        connector_id,
         session_id: None,
         tool_name: "create_issue",
         schema_hash: Some("sha256:0"),
@@ -119,7 +119,7 @@ async fn only_a_dispatched_call_can_have_run() {
         &db.conn,
         &unsent.id,
         Outcome::Rejected(RejectReason::Unavailable),
-        Some("The linear connection is revoking; nothing was sent."),
+        Some("The linear connector is revoking; nothing was sent."),
         TIMED,
     )
     .await

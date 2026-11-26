@@ -1116,7 +1116,7 @@ pub enum RequestAnswer {
     },
     /// A connector call waiting on the user (connector design r3 §5.2).
     /// Answered by the connectors service, not the agent: see
-    /// `protocol::connection::connector_respond`.
+    /// `protocol::connector::connector_respond`.
     ConnectorApproval {
         decision: crate::connectors::runtime::ApprovalAnswer,
         binding_hash: String,

@@ -1,8 +1,8 @@
-//! Grants (connector design r3 §5.1): which sessions may use a connection,
+//! Grants (connector design r3 §5.1): which sessions may use a connector,
 //! and how each of its tools is treated there. Only rows the user made can
 //! allow anything; nothing a server or an agent sends is read here.
 //!
-//! A grant is one connection for a [`Scope`]. Tools with no row fall to the
+//! A grant is one connector for a [`Scope`]. Tools with no row fall to the
 //! grant's `default_policy`, or to `new_tools` when first seen after the
 //! grant was made; both are `ask` or `deny`. An `allow` row is pinned to the
 //! tool's hash when it was given, and stops applying once the tool changes.
@@ -14,7 +14,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::db::entities::{connection, connection_tool, connector_grant, grant_tool_policy};
+use crate::db::entities::{connector, connector_grant, connector_tool, grant_tool_policy};
 
 /// How one tool is treated under a grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ pub struct Scope {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Grant {
     pub id: i32,
-    pub connection_id: String,
+    pub connector_id: String,
     pub scope: Scope,
     pub default_policy: Fallback,
     pub new_tools: Fallback,
@@ -71,11 +71,11 @@ impl Grant {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GrantError {
-    #[error("no connection {0}")]
-    ConnectionNotFound(String),
+    #[error("no connector {0}")]
+    ConnectorNotFound(String),
     #[error("no grant {0}")]
     GrantNotFound(i32),
-    #[error("the connection has no tool {0:?}")]
+    #[error("the connector has no tool {0:?}")]
     ToolNotFound(String),
     #[error("stored grant data is unreadable: {0}")]
     Corrupt(String),
@@ -97,21 +97,21 @@ fn parse<T: for<'de> Deserialize<'de>>(name: &str) -> Result<T, GrantError> {
         .map_err(|_| GrantError::Corrupt(format!("policy {name:?}")))
 }
 
-/// Grants connection `connection_id` to `scope`, or changes the fallbacks
+/// Grants connector `connector_id` to `scope`, or changes the fallbacks
 /// of the grant it already has there. Its tool rows are kept.
 pub async fn set_grant(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
     scope: Scope,
     default_policy: Fallback,
     new_tools: Fallback,
 ) -> Result<Grant, GrantError> {
-    connection::Entity::find_by_id(connection_id.to_string())
+    connector::Entity::find_by_id(connector_id.to_string())
         .one(conn)
         .await?
-        .ok_or_else(|| GrantError::ConnectionNotFound(connection_id.into()))?;
+        .ok_or_else(|| GrantError::ConnectorNotFound(connector_id.into()))?;
     let now = Utc::now();
-    let existing = rows(conn, connection_id)
+    let existing = rows(conn, connector_id)
         .await?
         .into_iter()
         .find(|row| row.workspace_id == scope.workspace_id && row.agent == scope.agent);
@@ -130,7 +130,7 @@ pub async fn set_grant(
         }
         None => {
             connector_grant::ActiveModel {
-                connection_id: Set(connection_id.into()),
+                connector_id: Set(connector_id.into()),
                 workspace_id: Set(scope.workspace_id),
                 agent: Set(scope.agent),
                 default_policy: Set(name_of(default_policy)),
@@ -149,10 +149,10 @@ pub async fn set_grant(
 
 async fn rows(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
 ) -> Result<Vec<connector_grant::Model>, DbErr> {
     connector_grant::Entity::find()
-        .filter(connector_grant::Column::ConnectionId.eq(connection_id))
+        .filter(connector_grant::Column::ConnectorId.eq(connector_id))
         .order_by_asc(connector_grant::Column::Id)
         .all(conn)
         .await
@@ -178,7 +178,7 @@ async fn to_grant(
         .collect::<Result<_, GrantError>>()?;
     Ok(Grant {
         id: row.id,
-        connection_id: row.connection_id,
+        connector_id: row.connector_id,
         scope: Scope {
             workspace_id: row.workspace_id,
             agent: row.agent,
@@ -197,13 +197,13 @@ pub async fn grant(conn: &DatabaseConnection, id: i32) -> Result<Option<Grant>, 
     }
 }
 
-/// Connection `connection_id`'s grants, oldest first.
+/// Connector `connector_id`'s grants, oldest first.
 pub async fn grants(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
 ) -> Result<Vec<Grant>, GrantError> {
     let mut grants = Vec::new();
-    for row in rows(conn, connection_id).await? {
+    for row in rows(conn, connector_id).await? {
         grants.push(to_grant(conn, row).await?);
     }
     Ok(grants)
@@ -214,11 +214,11 @@ pub async fn grants(
 /// any), (every, agent) and (every, any). `None` is no grant: deny.
 pub async fn grant_for(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
     workspace_id: Option<&str>,
     agent: &str,
 ) -> Result<Option<Grant>, GrantError> {
-    let rows = rows(conn, connection_id).await?;
+    let rows = rows(conn, connector_id).await?;
     let fits = |row: &&connector_grant::Model| {
         row.workspace_id
             .as_deref()
@@ -244,23 +244,23 @@ pub async fn remove_grant(conn: &DatabaseConnection, id: i32) -> Result<(), Gran
     Ok(())
 }
 
-/// The hash of connection `connection_id`'s tool `tool` as it is listed now.
+/// The hash of connector `connector_id`'s tool `tool` as it is listed now.
 async fn current_hash(
     conn: &DatabaseConnection,
-    connection_id: &str,
+    connector_id: &str,
     tool: &str,
 ) -> Result<String, GrantError> {
-    connection_tool::Entity::find()
-        .filter(connection_tool::Column::ConnectionId.eq(connection_id))
-        .filter(connection_tool::Column::Name.eq(tool))
-        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
+    connector_tool::Entity::find()
+        .filter(connector_tool::Column::ConnectorId.eq(connector_id))
+        .filter(connector_tool::Column::Name.eq(tool))
+        .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
         .one(conn)
         .await?
         .map(|row| row.schema_hash)
         .ok_or_else(|| GrantError::ToolNotFound(tool.into()))
 }
 
-/// Sets how grant `grant_id` treats `tool`, a tool its connection lists
+/// Sets how grant `grant_id` treats `tool`, a tool its connector lists
 /// now; `None` removes the row so the grant's fallback applies. An `allow`
 /// is pinned to the tool's current hash.
 pub async fn set_tool_policy(
@@ -272,7 +272,7 @@ pub async fn set_tool_policy(
     let current = grant(conn, grant_id)
         .await?
         .ok_or(GrantError::GrantNotFound(grant_id))?;
-    let hash = current_hash(conn, &current.connection_id, tool).await?;
+    let hash = current_hash(conn, &current.connector_id, tool).await?;
     let txn = conn.begin().await?;
     grant_tool_policy::Entity::delete_many()
         .filter(grant_tool_policy::Column::GrantId.eq(grant_id))
@@ -296,15 +296,15 @@ pub async fn set_tool_policy(
         .ok_or(GrantError::GrantNotFound(grant_id))
 }
 
-/// Allows every tool the connection lists now, each pinned to its current
+/// Allows every tool the connector lists now, each pinned to its current
 /// hash. A tool the user denied stays denied.
 pub async fn allow_all(conn: &DatabaseConnection, grant_id: i32) -> Result<Grant, GrantError> {
     let current = grant(conn, grant_id)
         .await?
         .ok_or(GrantError::GrantNotFound(grant_id))?;
-    let tools = connection_tool::Entity::find()
-        .filter(connection_tool::Column::ConnectionId.eq(&current.connection_id))
-        .filter(connection_tool::Column::Status.eq(TOOL_ACTIVE))
+    let tools = connector_tool::Entity::find()
+        .filter(connector_tool::Column::ConnectorId.eq(&current.connector_id))
+        .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
         .all(conn)
         .await?;
     let now = Utc::now();

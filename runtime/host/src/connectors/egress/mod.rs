@@ -1,12 +1,12 @@
 //! Outbound HTTP for connectors (design r3 §5.3). Every request a connector
 //! makes goes through [`EgressHttpClient`]: it reaches only origins in the
-//! connection's endpoint rules, connects only to addresses [`EgressGuard`]
+//! connector's endpoint rules, connects only to addresses [`EgressGuard`]
 //! checked, follows redirects only within the same origin and caps what it
 //! reads back.
 //!
 //! Not here yet: cross-origin redirects for uncredentialed OAuth discovery
 //! (comes with OAuth), admin-blocked origins (comes with `policy.json`), and refusing
-//! the Host's own listen ports in `local` rules (checked when a connection's
+//! the Host's own listen ports in `local` rules (checked when a connector's
 //! endpoints are validated).
 
 use std::error::Error as _;
@@ -36,7 +36,7 @@ pub enum EgressError {
         origin: String,
         reason: &'static str,
     },
-    #[error("{origin} isn't an endpoint of this connection")]
+    #[error("{origin} isn't an endpoint of this connector")]
     NotAllowed { origin: String },
     #[error("{host} is at {addr}, which is in the refused range {range}")]
     RefusedAddress {
@@ -73,7 +73,7 @@ pub enum NetworkClass {
     Local,
 }
 
-/// One origin a connection may reach (`connection_endpoint`).
+/// One origin a connector may reach (`connector_endpoint`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndpointRule {
     scheme: String,
@@ -160,7 +160,7 @@ impl Resolver for SystemResolver {
     }
 }
 
-/// Decides where a connection's requests may go.
+/// Decides where a connector's requests may go.
 pub struct EgressGuard {
     rules: Vec<EndpointRule>,
     resolver: Arc<dyn Resolver>,

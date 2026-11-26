@@ -262,7 +262,7 @@ async fn a_refused_origin_is_never_contacted() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;
     let url = Url::parse(&server.url()).unwrap();
-    // The connection's only endpoint is another port.
+    // The connector's only endpoint is another port.
     let egress = egress_for("http://127.0.0.1:1");
     let error = McpUpstream::connect_http(&url, egress, None)
         .await

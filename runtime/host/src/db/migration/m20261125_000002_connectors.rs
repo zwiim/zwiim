@@ -1,5 +1,5 @@
-//! Zwiim-owned: connections and the endpoints each may reach (connector
-//! design r3 §4.4, §5.3, §9). A connection is one account on one connector
+//! Zwiim-owned: connectors and the endpoints each may reach (connector
+//! design r3 §4.4, §5.3, §9). A connector is one account on one connector
 //! definition; its credentials live in the OS keychain, never here.
 
 use sea_orm_migration::prelude::*;
@@ -13,60 +13,56 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(Connections::Table)
+                    .table(Connectors::Table)
                     .col(
-                        ColumnDef::new(Connections::Id)
+                        ColumnDef::new(Connectors::Id)
                             .string()
                             .not_null()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(Connections::DefinitionId)
-                            .string()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(Connectors::DefinitionId).string().not_null())
                     // The definition hash the user confirmed.
                     .col(
-                        ColumnDef::new(Connections::DefinitionHash)
+                        ColumnDef::new(Connectors::DefinitionHash)
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(Connections::Label).string().not_null())
+                    .col(ColumnDef::new(Connectors::Label).string().not_null())
                     // The MCP server name agents see, e.g. `linear_work`.
                     .col(
-                        ColumnDef::new(Connections::Slug)
+                        ColumnDef::new(Connectors::Slug)
                             .string()
                             .not_null()
                             .unique_key(),
                     )
                     // `validating`, `active`, `needs_reauth`, `error`,
                     // `revoking` or `revoked`.
-                    .col(ColumnDef::new(Connections::Status).string().not_null())
+                    .col(ColumnDef::new(Connectors::Status).string().not_null())
                     // `keychain`, or `file` for a headless Host's plaintext store.
-                    .col(ColumnDef::new(Connections::Store).string().not_null())
+                    .col(ColumnDef::new(Connectors::Store).string().not_null())
                     // The revocation steps finished so far.
-                    .col(ColumnDef::new(Connections::RevocationJson).text().null())
+                    .col(ColumnDef::new(Connectors::RevocationJson).text().null())
                     // Redacted.
-                    .col(ColumnDef::new(Connections::LastError).text().null())
+                    .col(ColumnDef::new(Connectors::LastError).text().null())
                     .col(
-                        ColumnDef::new(Connections::LastValidatedAt)
+                        ColumnDef::new(Connectors::LastValidatedAt)
                             .timestamp_with_time_zone()
                             .null(),
                     )
                     .col(
-                        ColumnDef::new(Connections::CreatedAt)
+                        ColumnDef::new(Connectors::CreatedAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(Connections::UpdatedAt)
+                        ColumnDef::new(Connectors::UpdatedAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connections_definition_id")
-                            .from(Connections::Table, Connections::DefinitionId)
+                            .name("fk_connectors_definition_id")
+                            .from(Connectors::Table, Connectors::DefinitionId)
                             .to(ConnectorDefinitions::Table, ConnectorDefinitions::Id)
                             .on_delete(ForeignKeyAction::Restrict),
                     )
@@ -76,10 +72,10 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("idx_connections_definition_label")
-                    .table(Connections::Table)
-                    .col(Connections::DefinitionId)
-                    .col(Connections::Label)
+                    .name("idx_connectors_definition_label")
+                    .table(Connectors::Table)
+                    .col(Connectors::DefinitionId)
+                    .col(Connectors::Label)
                     .unique()
                     .to_owned(),
             )
@@ -87,9 +83,9 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("idx_connections_status")
-                    .table(Connections::Table)
-                    .col(Connections::Status)
+                    .name("idx_connectors_status")
+                    .table(Connectors::Table)
+                    .col(Connectors::Status)
                     .to_owned(),
             )
             .await?;
@@ -97,61 +93,58 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(ConnectionEndpoints::Table)
+                    .table(ConnectorEndpoints::Table)
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::Id)
+                        ColumnDef::new(ConnectorEndpoints::Id)
                             .integer()
                             .not_null()
                             .auto_increment()
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::ConnectionId)
+                        ColumnDef::new(ConnectorEndpoints::ConnectorId)
                             .string()
                             .not_null(),
                     )
                     // `scheme://host:port`, normalized.
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::Origin)
+                        ColumnDef::new(ConnectorEndpoints::Origin)
                             .string()
                             .not_null(),
                     )
                     // `mcp`, `oauth_metadata`, `oauth_token`, `authorize`, `api`.
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::Purpose)
+                        ColumnDef::new(ConnectorEndpoints::Purpose)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::Credentials)
+                        ColumnDef::new(ConnectorEndpoints::Credentials)
                             .boolean()
                             .not_null(),
                     )
                     // `public` or `local`.
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::NetworkClass)
+                        ColumnDef::new(ConnectorEndpoints::NetworkClass)
                             .string()
                             .not_null(),
                     )
                     // `definition`, `discovered` or `user`.
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::Source)
+                        ColumnDef::new(ConnectorEndpoints::Source)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(ConnectionEndpoints::ConfirmedAt)
+                        ColumnDef::new(ConnectorEndpoints::ConfirmedAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .name("fk_connection_endpoints_connection_id")
-                            .from(
-                                ConnectionEndpoints::Table,
-                                ConnectionEndpoints::ConnectionId,
-                            )
-                            .to(Connections::Table, Connections::Id)
+                            .name("fk_connector_endpoints_connector_id")
+                            .from(ConnectorEndpoints::Table, ConnectorEndpoints::ConnectorId)
+                            .to(Connectors::Table, Connectors::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
@@ -160,11 +153,11 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("idx_connection_endpoints_origin_purpose")
-                    .table(ConnectionEndpoints::Table)
-                    .col(ConnectionEndpoints::ConnectionId)
-                    .col(ConnectionEndpoints::Origin)
-                    .col(ConnectionEndpoints::Purpose)
+                    .name("idx_connector_endpoints_origin_purpose")
+                    .table(ConnectorEndpoints::Table)
+                    .col(ConnectorEndpoints::ConnectorId)
+                    .col(ConnectorEndpoints::Origin)
+                    .col(ConnectorEndpoints::Purpose)
                     .unique()
                     .to_owned(),
             )
@@ -173,16 +166,16 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(ConnectionEndpoints::Table).to_owned())
+            .drop_table(Table::drop().table(ConnectorEndpoints::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(Connections::Table).to_owned())
+            .drop_table(Table::drop().table(Connectors::Table).to_owned())
             .await
     }
 }
 
 #[derive(DeriveIden)]
-enum Connections {
+enum Connectors {
     Table,
     Id,
     DefinitionId,
@@ -199,10 +192,10 @@ enum Connections {
 }
 
 #[derive(DeriveIden)]
-enum ConnectionEndpoints {
+enum ConnectorEndpoints {
     Table,
     Id,
-    ConnectionId,
+    ConnectorId,
     Origin,
     Purpose,
     Credentials,
@@ -224,24 +217,24 @@ mod tests {
 
     const AT: &str = "'2026-11-25T00:00:00Z'";
 
-    fn connection(id: &str, label: &str, slug: &str) -> String {
+    fn connector(id: &str, label: &str, slug: &str) -> String {
         format!(
-            "INSERT INTO connections (id, definition_id, definition_hash, label, slug, status, \
+            "INSERT INTO connectors (id, definition_id, definition_hash, label, slug, status, \
              store, created_at, updated_at) VALUES ('{id}', 'linear', 'sha256:0', '{label}', \
              '{slug}', 'active', 'keychain', {AT}, {AT})"
         )
     }
 
-    fn endpoint(connection: &str, origin: &str) -> String {
+    fn endpoint(connector: &str, origin: &str) -> String {
         format!(
-            "INSERT INTO connection_endpoints (connection_id, origin, purpose, credentials, \
-             network_class, source, confirmed_at) VALUES ('{connection}', '{origin}', 'mcp', 1, \
+            "INSERT INTO connector_endpoints (connector_id, origin, purpose, credentials, \
+             network_class, source, confirmed_at) VALUES ('{connector}', '{origin}', 'mcp', 1, \
              'public', 'definition', {AT})"
         )
     }
 
     #[tokio::test]
-    async fn connections_keep_their_definition_and_endpoints_follow_their_connection() {
+    async fn connectors_keep_their_definition_and_endpoints_follow_their_connector() {
         let conn = Database::connect("sqlite::memory:")
             .await
             .expect("open in-memory sqlite");
@@ -265,16 +258,16 @@ mod tests {
         .await
         .unwrap();
 
-        conn.execute_unprepared(&connection("c1", "Work", "linear_work"))
+        conn.execute_unprepared(&connector("c1", "Work", "linear_work"))
             .await
-            .expect("first connection");
+            .expect("first connector");
         // Same label on the same definition, or the same slug: refused.
         assert!(conn
-            .execute_unprepared(&connection("c2", "Work", "linear_work_2"))
+            .execute_unprepared(&connector("c2", "Work", "linear_work_2"))
             .await
             .is_err());
         assert!(conn
-            .execute_unprepared(&connection("c2", "Home", "linear_work"))
+            .execute_unprepared(&connector("c2", "Home", "linear_work"))
             .await
             .is_err());
 
@@ -289,19 +282,19 @@ mod tests {
             .execute_unprepared(&endpoint("missing", "https://mcp.linear.app:443"))
             .await
             .is_err());
-        // A definition in use can't go; deleting the connection takes its
+        // A definition in use can't go; deleting the connector takes its
         // endpoints with it.
         assert!(conn
             .execute_unprepared("DELETE FROM connector_definitions WHERE id = 'linear'")
             .await
             .is_err());
-        conn.execute_unprepared("DELETE FROM connections WHERE id = 'c1'")
+        conn.execute_unprepared("DELETE FROM connectors WHERE id = 'c1'")
             .await
             .unwrap();
         let left = conn
             .query_one(Statement::from_string(
                 DbBackend::Sqlite,
-                "SELECT COUNT(*) AS n FROM connection_endpoints".to_owned(),
+                "SELECT COUNT(*) AS n FROM connector_endpoints".to_owned(),
             ))
             .await
             .unwrap()
@@ -311,7 +304,7 @@ mod tests {
         assert_eq!(left, 0);
 
         Migration.down(&manager).await.expect("run migration down");
-        assert!(!manager.has_table("connections").await.unwrap());
-        assert!(!manager.has_table("connection_endpoints").await.unwrap());
+        assert!(!manager.has_table("connectors").await.unwrap());
+        assert!(!manager.has_table("connector_endpoints").await.unwrap());
     }
 }

@@ -36,7 +36,7 @@ import type {
   RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
-  NewServiceConnection,
+  NewConnector,
   PlaybookDraft,
   RunResolveChoice,
   SessionEvent,
@@ -794,64 +794,64 @@ export class HostController {
     await this.client.request("browser.view.close", { stream_id });
   }
 
-  // ── Connections to outside services (revision 46) ───────────────────────
+  // ── Connectors to outside services (revision 46) ───────────────────────
 
-  listConnections(): Promise<OpResult<"connection.list">> {
-    return this.client.request("connection.list", {});
+  listConnectors(): Promise<OpResult<"connector.list">> {
+    return this.client.request("connector.list", {});
   }
 
   /** Add a remote server by URL and connect it; only on the Host itself. */
-  createConnection(connection: NewServiceConnection): Promise<OpResult<"connection.create">> {
-    return this.client.request("connection.create", connection);
+  createConnector(connector: NewConnector): Promise<OpResult<"connector.create">> {
+    return this.client.request("connector.create", connector);
   }
 
-  validateConnection(service_connection_id: string): Promise<OpResult<"connection.validate">> {
-    return this.client.request("connection.validate", { service_connection_id });
+  validateConnector(connector_id: string): Promise<OpResult<"connector.validate">> {
+    return this.client.request("connector.validate", { connector_id });
   }
 
-  /** Replace the connection's key and connect again; only on the Host itself. */
-  setConnectionSecret(service_connection_id: string, secret: string): Promise<OpResult<"connection.set_secret">> {
-    return this.client.request("connection.set_secret", { service_connection_id, secret });
+  /** Replace the connector's key and connect again; only on the Host itself. */
+  setConnectorSecret(connector_id: string, secret: string): Promise<OpResult<"connector.set_secret">> {
+    return this.client.request("connector.set_secret", { connector_id, secret });
   }
 
-  revokeConnection(service_connection_id: string): Promise<OpResult<"connection.revoke">> {
-    return this.client.request("connection.revoke", { service_connection_id });
+  revokeConnector(connector_id: string): Promise<OpResult<"connector.revoke">> {
+    return this.client.request("connector.revoke", { connector_id });
   }
 
-  listConnectionGrants(service_connection_id: string): Promise<OpResult<"connection.grant.list">> {
-    return this.client.request("connection.grant.list", { service_connection_id });
+  listConnectorGrants(connector_id: string): Promise<OpResult<"connector.grant.list">> {
+    return this.client.request("connector.grant.list", { connector_id });
   }
 
-  /** Grant a connection to a scope, or change that scope's grant; only on the Host itself. */
-  setConnectionGrant(params: OpParams<"connection.grant.set">): Promise<OpResult<"connection.grant.set">> {
-    return this.client.request("connection.grant.set", params);
+  /** Grant a connector to a scope, or change that scope's grant; only on the Host itself. */
+  setConnectorGrant(params: OpParams<"connector.grant.set">): Promise<OpResult<"connector.grant.set">> {
+    return this.client.request("connector.grant.set", params);
   }
 
-  async removeConnectionGrant(grant_id: number): Promise<void> {
-    await this.client.request("connection.grant.remove", { grant_id });
+  async removeConnectorGrant(grant_id: number): Promise<void> {
+    await this.client.request("connector.grant.remove", { grant_id });
   }
 
-  setConnectionToolPolicy(
+  setConnectorToolPolicy(
     grant_id: number,
     tool: string,
     policy: "allow" | "ask" | "deny" | null,
-  ): Promise<OpResult<"connection.tool_policy.set">> {
-    return this.client.request("connection.tool_policy.set", { grant_id, tool, policy });
+  ): Promise<OpResult<"connector.tool_policy.set">> {
+    return this.client.request("connector.tool_policy.set", { grant_id, tool, policy });
   }
 
-  allowAllConnectionTools(grant_id: number): Promise<OpResult<"connection.grant.allow_all">> {
-    return this.client.request("connection.grant.allow_all", { grant_id });
+  allowAllConnectorTools(grant_id: number): Promise<OpResult<"connector.grant.allow_all">> {
+    return this.client.request("connector.grant.allow_all", { grant_id });
   }
 
-  connectionTools(service_connection_id: string): Promise<OpResult<"connection.tools">> {
-    return this.client.request("connection.tools", { service_connection_id });
+  connectorTools(connector_id: string): Promise<OpResult<"connector.tools">> {
+    return this.client.request("connector.tools", { connector_id });
   }
 
-  /** A connection's tool calls, newest first; pass `next_cursor` for the next page. */
-  listConnectionExecutions(
-    params: OpParams<"connection.executions">,
-  ): Promise<OpResult<"connection.executions">> {
-    return this.client.request("connection.executions", params);
+  /** A connector's tool calls, newest first; pass `next_cursor` for the next page. */
+  listConnectorExecutions(
+    params: OpParams<"connector.executions">,
+  ): Promise<OpResult<"connector.executions">> {
+    return this.client.request("connector.executions", params);
   }
 
   // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────

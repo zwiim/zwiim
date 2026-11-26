@@ -3068,7 +3068,7 @@ pub async fn session_respond(
         binding_hash,
     } = &p.answer
     {
-        super::connection::connector_respond(
+        super::connector::connector_respond(
             &state,
             principal,
             &p.session_id,
