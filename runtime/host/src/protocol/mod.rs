@@ -327,6 +327,14 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/connector.executions",
             post(connector::connector_executions),
         )
+        .route(
+            "/connector.tool.set_enabled",
+            post(connector::connector_tool_set_enabled),
+        )
+        .route(
+            "/connector.tool_budget.set",
+            post(connector::connector_tool_budget_set),
+        )
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(

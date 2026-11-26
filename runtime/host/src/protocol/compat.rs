@@ -664,7 +664,23 @@ use serde::{Deserialize, Serialize};
 /// Executions gain the approval states and the reject reason `denied`.
 /// Older clients don't know the request kind and leave it unanswered; the
 /// call then expires with nothing sent.
-pub const PROTOCOL_REVISION: u32 = 49;
+///
+/// 50 (connector tool switches): agents are shown only a connector's tools
+/// that are on (connector design r3 §8.2, as the user chooses it). Each
+/// `connector.tools` entry gains `enabled` and `estimate` (about what it
+/// takes of an agent's context, in token-equivalents); each connector gains
+/// `tool_budget` (1,000 to 10,000, 4,000 to start) and `tools_used`. A
+/// connector's first listing turns tools on in name order while they fit;
+/// a tool the service adds later starts off. `connector.tool.set_enabled
+/// {connector_id, tool, enabled}` returns `{connector, tools}` and
+/// `connector.tool_budget.set {connector_id, tool_budget}` returns
+/// `{connector}`; only the Host itself may call them (`permission_denied`).
+/// New error code `over_budget` (409): a tool that doesn't fit in what the
+/// limit leaves (`details {needs, left, tool_budget}`), or a limit below what
+/// is on (`details {used}`). A call to a tool that is off is refused with
+/// nothing sent. Older clients see the new fields as unknown and can't turn
+/// tools on or off.
+pub const PROTOCOL_REVISION: u32 = 50;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -976,7 +992,12 @@ mod tests {
 
     #[test]
     fn connector_approvals_are_revision_49() {
-        assert_eq!(PROTOCOL_REVISION, 49);
+        assert!(PROTOCOL_REVISION >= 49);
+    }
+
+    #[test]
+    fn connector_tool_switches_are_revision_50() {
+        assert_eq!(PROTOCOL_REVISION, 50);
     }
 
     #[test]
