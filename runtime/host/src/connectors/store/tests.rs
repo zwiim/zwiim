@@ -370,3 +370,107 @@ async fn snapshots_are_per_connector_and_go_with_it() {
     assert!(tools(&db.conn, &one).await.unwrap().is_empty());
     assert_eq!(tools(&db.conn, &two).await.unwrap(), [tool("a", "Other A")]);
 }
+
+/// The names of connector `id`'s tools that are on.
+async fn on(db: &crate::db::AppDatabase, id: &str) -> Vec<String> {
+    super::listed(&db.conn, id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.enabled)
+        .map(|t| t.tool.name)
+        .collect()
+}
+
+/// About 1,500 token-equivalents.
+fn big(name: &str) -> ToolDefinition {
+    tool(name, &"x".repeat(6_000))
+}
+
+#[tokio::test]
+async fn a_first_listing_turns_on_what_fits_and_later_tools_start_off() {
+    let db = fresh_in_memory_db().await;
+    let id = connected(&db).await;
+    assert_eq!(
+        connector(&db.conn, &id).await.unwrap().unwrap().tool_budget,
+        4_000
+    );
+    save_tool_snapshot(&db.conn, &id, &[big("c"), big("a"), big("b")])
+        .await
+        .unwrap();
+    assert_eq!(on(&db, &id).await, ["a", "b"], "the third doesn't fit");
+
+    // A tool added later starts off; a changed one keeps its switch.
+    let mut a = big("a");
+    a.description = Some("y".repeat(6_000));
+    save_tool_snapshot(&db.conn, &id, &[a, big("b"), big("c"), tool("d", "Small")])
+        .await
+        .unwrap();
+    assert_eq!(on(&db, &id).await, ["a", "b"]);
+}
+
+#[tokio::test]
+async fn a_tool_is_turned_on_only_if_it_fits_in_the_limit() {
+    let db = fresh_in_memory_db().await;
+    let id = connected(&db).await;
+    save_tool_snapshot(&db.conn, &id, &[big("a"), big("b"), big("c")])
+        .await
+        .unwrap();
+    let listed = super::listed(&db.conn, &id).await.unwrap();
+    let used = super::used(&listed);
+    let err = super::set_tool_enabled(&db.conn, &id, "c", true)
+        .await
+        .unwrap_err();
+    let StoreError::OverBudget {
+        needs,
+        left,
+        budget,
+    } = err
+    else {
+        panic!("over the limit: {err}");
+    };
+    assert_eq!(
+        (needs, left, budget),
+        (listed[2].estimate, 4_000 - used, 4_000)
+    );
+
+    // Either turn another off, or raise the limit.
+    super::set_tool_enabled(&db.conn, &id, "a", false)
+        .await
+        .unwrap();
+    super::set_tool_enabled(&db.conn, &id, "c", true)
+        .await
+        .unwrap();
+    assert_eq!(on(&db, &id).await, ["b", "c"]);
+    super::set_tool_budget(&db.conn, &id, 6_000).await.unwrap();
+    super::set_tool_enabled(&db.conn, &id, "a", true)
+        .await
+        .unwrap();
+    assert_eq!(on(&db, &id).await, ["a", "b", "c"]);
+
+    assert!(matches!(
+        super::set_tool_enabled(&db.conn, &id, "nope", true).await,
+        Err(StoreError::ToolNotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_limit_stays_in_range_and_never_below_what_is_on() {
+    let db = fresh_in_memory_db().await;
+    let id = connected(&db).await;
+    save_tool_snapshot(&db.conn, &id, &[big("a"), big("b")])
+        .await
+        .unwrap();
+    for budget in [999, 10_001] {
+        assert!(matches!(
+            super::set_tool_budget(&db.conn, &id, budget).await,
+            Err(StoreError::BudgetOutOfRange(_))
+        ));
+    }
+    assert!(matches!(
+        super::set_tool_budget(&db.conn, &id, 1_000).await,
+        Err(StoreError::BudgetBelowUse { .. })
+    ));
+    let set = super::set_tool_budget(&db.conn, &id, 10_000).await.unwrap();
+    assert_eq!(set.tool_budget, 10_000);
+}

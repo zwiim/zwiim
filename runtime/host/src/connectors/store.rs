@@ -3,13 +3,15 @@
 //! live in the OS keychain.
 
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use super::budget;
 use super::definition::{ConnectorDefinition, DefinitionError, Purpose, Runtime, Trust};
 use super::egress::{EndpointRule, NetworkClass};
 use super::upstream::ToolDefinition;
@@ -32,6 +34,14 @@ pub enum StoreError {
         from: ConnectorStatus,
         to: ConnectorStatus,
     },
+    #[error("the connector lists no tool {0:?}")]
+    ToolNotFound(String),
+    #[error("this tool needs about {needs} of the connector's {budget}; {left} are left")]
+    OverBudget { needs: u32, left: u32, budget: u32 },
+    #[error("a connector's tool limit is {min}-{max}", min = budget::MIN, max = budget::MAX)]
+    BudgetOutOfRange(u32),
+    #[error("its tools that are on take about {used}; turn some off first")]
+    BudgetBelowUse { used: u32 },
     #[error("stored connector data is unreadable: {0}")]
     Corrupt(String),
     #[error("database: {0}")]
@@ -189,6 +199,8 @@ pub struct Connector {
     pub created_at: DateTime<Utc>,
     /// The revocation steps finished so far, in order.
     pub revocation: Vec<RevocationStep>,
+    /// The most its enabled tools may take, about, in token-equivalents.
+    pub tool_budget: u32,
 }
 
 /// One step of revoking a connector (design r3 §4.4). Each is recorded once
@@ -266,6 +278,7 @@ pub async fn create_connector(
         last_validated_at: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
+        tool_budget: Set(budget::DEFAULT as i32),
     }
     .insert(&txn)
     .await?;
@@ -418,6 +431,21 @@ pub async fn save_tool_snapshot(
         .await?;
     let now = Utc::now();
     let mut changes = SnapshotChanges::default();
+    // A connector's first listing starts with what fits on; any tool that
+    // appears later starts off, for the user to turn on.
+    let first_on = if existing.is_empty() {
+        let row = connector::Entity::find_by_id(id.to_string())
+            .one(&txn)
+            .await?
+            .ok_or_else(|| StoreError::ConnectorNotFound(id.into()))?;
+        let budget = u32::try_from(row.tool_budget).unwrap_or(budget::DEFAULT);
+        budget::first_on(tools, budget)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
     for tool in tools {
         let hash = tool.hash();
         let mut row = connector_tool::ActiveModel {
@@ -436,6 +464,7 @@ pub async fn save_tool_snapshot(
         match existing.iter().find(|r| r.name == tool.name) {
             None => {
                 row.first_seen_at = Set(now);
+                row.enabled = Set(first_on.contains(&tool.name));
                 row.insert(&txn).await?;
                 changes.added.push(tool.name.clone());
             }
@@ -472,6 +501,26 @@ pub async fn save_tool_snapshot(
 
 /// Connector `id`'s currently listed tools, by name.
 pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefinition>, StoreError> {
+    Ok(listed(conn, id)
+        .await?
+        .into_iter()
+        .map(|t| t.tool)
+        .collect())
+}
+
+/// One tool a connector lists now, as the user set it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListedTool {
+    pub tool: ToolDefinition,
+    pub first_seen_at: DateTime<Utc>,
+    /// Agents are shown it.
+    pub enabled: bool,
+    /// About what it takes of an agent's context.
+    pub estimate: u32,
+}
+
+/// Connector `id`'s currently listed tools, by name.
+pub async fn listed(conn: &impl ConnectionTrait, id: &str) -> Result<Vec<ListedTool>, StoreError> {
     let rows = connector_tool::Entity::find()
         .filter(connector_tool::Column::ConnectorId.eq(id))
         .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
@@ -483,16 +532,102 @@ pub async fn tools(conn: &DatabaseConnection, id: &str) -> Result<Vec<ToolDefini
     };
     rows.into_iter()
         .map(|row| {
-            Ok(ToolDefinition {
+            let tool = ToolDefinition {
                 input_schema: json(&row.input_schema_json)?,
                 output_schema: row.output_schema_json.as_deref().map(json).transpose()?,
                 annotations: row.annotations_json.as_deref().map(json).transpose()?,
                 name: row.name,
                 title: row.title,
                 description: row.description,
+            };
+            Ok(ListedTool {
+                estimate: budget::estimate(&tool),
+                tool,
+                first_seen_at: row.first_seen_at,
+                enabled: row.enabled,
             })
         })
         .collect()
+}
+
+/// What connector `id`'s enabled tools take together, about.
+pub fn used(tools: &[ListedTool]) -> u32 {
+    tools.iter().filter(|t| t.enabled).map(|t| t.estimate).sum()
+}
+
+/// Turns connector `id`'s tool `tool` on or off for agents. Turning one on
+/// is refused if it doesn't fit in what the connector's limit leaves.
+pub async fn set_tool_enabled(
+    conn: &DatabaseConnection,
+    id: &str,
+    tool: &str,
+    enabled: bool,
+) -> Result<(), StoreError> {
+    let txn = conn.begin().await?;
+    let budget = connector_in(&txn, id).await?.tool_budget;
+    let tools = listed(&txn, id).await?;
+    let target = tools
+        .iter()
+        .find(|t| t.tool.name == tool)
+        .ok_or_else(|| StoreError::ToolNotFound(tool.into()))?;
+    if enabled && !target.enabled {
+        let left = budget.saturating_sub(used(&tools));
+        if target.estimate > left {
+            return Err(StoreError::OverBudget {
+                needs: target.estimate,
+                left,
+                budget,
+            });
+        }
+    }
+    connector_tool::Entity::update_many()
+        .col_expr(connector_tool::Column::Enabled, Expr::value(enabled))
+        .filter(connector_tool::Column::ConnectorId.eq(id))
+        .filter(connector_tool::Column::Name.eq(tool))
+        .filter(connector_tool::Column::Status.eq(TOOL_ACTIVE))
+        .exec(&txn)
+        .await?;
+    txn.commit().await?;
+    Ok(())
+}
+
+/// Connector `id`, which must exist.
+async fn connector_in(conn: &impl ConnectionTrait, id: &str) -> Result<Connector, StoreError> {
+    connector::Entity::find_by_id(id.to_string())
+        .one(conn)
+        .await?
+        .map(to_connector)
+        .transpose()?
+        .ok_or_else(|| StoreError::ConnectorNotFound(id.into()))
+}
+
+/// Sets connector `id`'s tool limit. Refused outside the allowed range, or
+/// below what its enabled tools already take.
+pub async fn set_tool_budget(
+    conn: &DatabaseConnection,
+    id: &str,
+    tool_budget: u32,
+) -> Result<Connector, StoreError> {
+    if !(budget::MIN..=budget::MAX).contains(&tool_budget) {
+        return Err(StoreError::BudgetOutOfRange(tool_budget));
+    }
+    let txn = conn.begin().await?;
+    connector_in(&txn, id).await?;
+    let used = used(&listed(&txn, id).await?);
+    if used > tool_budget {
+        return Err(StoreError::BudgetBelowUse { used });
+    }
+    connector::Entity::update_many()
+        .col_expr(
+            connector::Column::ToolBudget,
+            Expr::value(tool_budget as i32),
+        )
+        .col_expr(connector::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(connector::Column::Id.eq(id))
+        .exec(&txn)
+        .await?;
+    txn.commit().await?;
+    connector_in(conn, id).await
 }
 
 /// When connector `id` first listed `tool`, if it lists it now.
@@ -557,6 +692,8 @@ fn to_connector(row: connector::Model) -> Result<Connector, StoreError> {
         last_error: row.last_error,
         last_validated_at: row.last_validated_at,
         created_at: row.created_at,
+        tool_budget: u32::try_from(row.tool_budget)
+            .map_err(|_| StoreError::Corrupt(format!("tool budget {}", row.tool_budget)))?,
     })
 }
 

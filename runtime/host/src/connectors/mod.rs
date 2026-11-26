@@ -9,6 +9,7 @@
 pub mod approvals;
 #[cfg(test)]
 mod bench;
+pub mod budget;
 pub mod credentials;
 pub mod definition;
 pub mod egress;
