@@ -409,6 +409,7 @@ async fn async_main() -> Exit {
 
     // Build AppState
     let connection_manager = zwiim_host::app_state::default_connection_manager();
+    let connectors = zwiim_host::connectors::runtime::SharedConnectors::default();
     let (
         delegation_broker,
         delegation_tokens,
@@ -423,6 +424,7 @@ async fn async_main() -> Exit {
         db.conn.clone(),
         data_dir.clone(),
         zwiim_host::app_state::default_instructions_path(),
+        connectors.clone(),
     );
     let state = Arc::new(AppState {
         db,
@@ -468,7 +470,7 @@ async fn async_main() -> Exit {
         github_auth: Default::default(),
         browser: Default::default(),
         browser_streams: Default::default(),
-        connectors: Default::default(),
+        connectors,
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
