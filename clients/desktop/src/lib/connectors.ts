@@ -1,0 +1,124 @@
+// What the connectors dialog shows, worked out from what the Host reports.
+//
+// Each tool has one control: Off, Ask or Allow. Off is the connector's own
+// switch (`enabled`), the same in every workspace; Ask and Allow are the row
+// on the grant shown, the one for this workspace or else the one for every
+// workspace. A grant made for one agent is left alone here.
+
+import type { Connector, ConnectorGrant, ConnectorTool, WorkspaceInfo } from "@zwiim/sdk";
+
+export type ToolChoice = "off" | "ask" | "allow";
+export type ToolGroup = "read" | "write" | "destructive";
+export type Scope = "nowhere" | "workspace" | "all";
+
+/** Limits are set in these steps, from MIN_LIMIT to MAX_LIMIT. */
+export const LIMIT_STEP = 500;
+export const MIN_LIMIT = 1000;
+export const MAX_LIMIT = 10000;
+
+/** The root workspace a worktree belongs to: grants name roots. */
+export function rootOf(workspaces: readonly WorkspaceInfo[] | null | undefined, workspaceId: string): string {
+  return workspaces?.find((w) => w.workspace_id === workspaceId)?.parent_workspace_id ?? workspaceId;
+}
+
+/** The grant the dialog shows and edits: this workspace's, else every workspace's. */
+export function shownGrant(grants: readonly ConnectorGrant[], root: string): ConnectorGrant | null {
+  const anyAgent = grants.filter((g) => g.agent === null);
+  return anyAgent.find((g) => g.workspace_id === root) ?? anyAgent.find((g) => g.workspace_id === null) ?? null;
+}
+
+export function scopeOf(grant: ConnectorGrant | null): Scope {
+  if (!grant) return "nowhere";
+  return grant.workspace_id === null ? "all" : "workspace";
+}
+
+/** Whether a session in `root` gets the connector, by any grant. */
+export function allowedHere(grants: readonly ConnectorGrant[], root: string): boolean {
+  return grants.some((g) => g.workspace_id === null || g.workspace_id === root);
+}
+
+export function toolChoice(tool: ConnectorTool, grant: ConnectorGrant | null): ToolChoice {
+  if (!tool.enabled) return "off";
+  const row = grant?.tools.find((r) => r.name === tool.name);
+  if (row?.policy === "deny") return "off";
+  if (row?.policy === "allow" && !row.changed) return "allow";
+  return "ask";
+}
+
+/** An `allow` given for an earlier version of the tool: it asks again. */
+export function changed(tool: ConnectorTool, grant: ConnectorGrant | null): boolean {
+  return grant?.tools.some((r) => r.name === tool.name && r.changed) ?? false;
+}
+
+/** By the server's own hints; a tool that says nothing counts as a write. */
+export function toolGroup(tool: ConnectorTool): ToolGroup {
+  const hints = tool.annotations ?? {};
+  if (hints.readOnlyHint === true) return "read";
+  if (hints.destructiveHint === true) return "destructive";
+  return "write";
+}
+
+/** The smallest limit that fits `needs` more, or null when none does. */
+export function limitThatFits(needs: number, used: number): number | null {
+  const limit = Math.max(MIN_LIMIT, Math.ceil((used + needs) / LIMIT_STEP) * LIMIT_STEP);
+  return limit > MAX_LIMIT ? null : limit;
+}
+
+/** Every limit offered, from MIN_LIMIT to MAX_LIMIT. */
+export function limitSteps(): number[] {
+  const steps = [];
+  for (let n = MIN_LIMIT; n <= MAX_LIMIT; n += LIMIT_STEP) steps.push(n);
+  return steps;
+}
+
+export type Tone = "ok" | "brand" | "bad" | "faint";
+
+/** The connector's state in a few words, and its dot's colour. */
+export function statusLine(c: Connector): { text: string; tone: Tone } {
+  switch (c.status) {
+    case "active":
+      return { text: "connected", tone: "ok" };
+    case "needs_reauth":
+      return { text: "needs a key", tone: "brand" };
+    case "error":
+      return { text: "can't reach server", tone: "bad" };
+    case "validating":
+      return { text: "checking", tone: "faint" };
+    case "revoking":
+    case "revoked":
+      return { text: "disconnecting", tone: "faint" };
+  }
+}
+
+/** "4,000": sizes and limits, grouped in thousands. */
+export const count = (n: number) => n.toLocaleString("en-US");
+
+/** A name to start the add form with: `https://mcp.linear.app/mcp` → `Linear`. */
+export function guessName(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "";
+  }
+  const part = host.split(".").find((p) => !["mcp", "api", "www"].includes(p)) ?? "";
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
+
+/**
+ * A server on this machine or network: the Host reaches it as `local`,
+ * which also allows plain http. Everything else is `public`, https only.
+ */
+export function isLocalUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host === "::1" || host.endsWith(".local")) return true;
+  const ip = host.split(".").map(Number);
+  if (ip.length !== 4 || ip.some((n) => !Number.isInteger(n))) return false;
+  const [a, b] = ip as [number, number, number, number];
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
