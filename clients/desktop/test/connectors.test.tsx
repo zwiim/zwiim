@@ -288,6 +288,12 @@ describe("ConnectorsDialog", () => {
     expect(ops(t, "connector.tool_policy.set")).toEqual([{ grant_id: 1, tool: "list_issues", policy: "allow" }]);
   });
 
+  it("has no Allow all read when no tool says it only reads", async () => {
+    const { t } = connectorHost({ tools: [tool("ask_question"), tool("read_contents")] });
+    await mount(t);
+    expect(screen.queryByRole("button", { name: "Allow all read" })).toBeNull();
+  });
+
   it("search narrows the tools; a name opens its description", async () => {
     const { t } = connectorHost();
     await mount(t);

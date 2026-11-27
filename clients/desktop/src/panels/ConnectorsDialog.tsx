@@ -674,16 +674,19 @@ function ConnectorDetail({
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </label>
-              <Button
-                size="xs"
-                variant="ghost"
-                className="text-brand"
-                disabled={disabled || !grant}
-                title={grant ? "Allow every read tool that is on" : "Allow it somewhere first"}
-                onClick={allowRead}
-              >
-                Allow all read
-              </Button>
+              {/* Tools that don't say they only read count as writes: then there is nothing to allow. */}
+              {tools?.some((t) => toolGroup(t) === "read") && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-brand"
+                  disabled={disabled || !grant}
+                  title={grant ? "Allow every read tool that is on" : "Allow it somewhere first"}
+                  onClick={allowRead}
+                >
+                  Allow all read
+                </Button>
+              )}
             </div>
             {!tools && !error && <p className="text-faint border-border border-t px-3.5 py-3 text-xs">Loading tools…</p>}
             {GROUPS.map(({ group, title }) => {
