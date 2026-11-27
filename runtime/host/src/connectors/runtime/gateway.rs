@@ -7,6 +7,7 @@
 //! the connectors it is offered.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use sea_orm::DatabaseConnection;
@@ -120,7 +121,7 @@ impl Connectors {
         }
         let listed = &listed.tool;
         let decided_by = match self
-            .permit(session, connector, listed, &arguments, &record.id)
+            .permit(session, connector, listed, &arguments, record)
             .await
         {
             Ok(by) => by,
@@ -190,7 +191,7 @@ impl Connectors {
         connector: &store::Connector,
         tool: &ToolDefinition,
         arguments: &Map<String, Value>,
-        execution_id: &str,
+        record: &Record,
     ) -> Result<String, Refusal> {
         let hash = tool.hash();
         let first_seen = store::first_seen(&self.db, &connector.id, &tool.name)
@@ -222,7 +223,7 @@ impl Connectors {
             Decision::Allow(AllowedBy::ToolRow) => Ok("policy".into()),
             Decision::Allow(AllowedBy::Session) => Ok("session_grant".into()),
             Decision::Deny(reason) => {
-                let _ = executions::decided(&self.db, execution_id, "policy").await;
+                let _ = executions::decided(&self.db, &record.id, "policy").await;
                 let rejected = match reason {
                     DenyReason::Unavailable => RejectReason::Unavailable,
                     DenyReason::NotExposed => RejectReason::NotExposed,
@@ -232,16 +233,14 @@ impl Connectors {
             }
             Decision::Ask(_) => {
                 let grant = grant.expect("asking needs a grant");
-                self.ask(
-                    session,
-                    connector,
-                    tool,
-                    &hash,
-                    grant.id,
-                    arguments,
-                    execution_id,
-                )
-                .await
+                let asked = Instant::now();
+                let answer = self
+                    .ask(
+                        session, connector, tool, &hash, grant.id, arguments, &record.id,
+                    )
+                    .await;
+                record.waited(asked.elapsed());
+                answer
             }
         }
     }
@@ -330,6 +329,8 @@ struct Record {
     events: broadcast::Sender<Execution>,
     id: String,
     started: Instant,
+    /// Time spent asking the user: not overhead (r3 §8.1).
+    waited: Mutex<Duration>,
     mark: DispatchMark,
     ended: AtomicBool,
 }
@@ -346,16 +347,26 @@ impl Record {
             events,
             id,
             started,
+            waited: Mutex::default(),
             mark: DispatchMark::default(),
             ended: AtomicBool::new(false),
         }
     }
 
+    fn waited(&self, wait: Duration) {
+        *self.waited.lock().unwrap() += wait;
+    }
+
     async fn end(&self, outcome: Outcome, detail: Option<&str>, upstream: Option<Duration>) {
         let total = self.started.elapsed();
+        let waited = *self.waited.lock().unwrap();
         let timings = Timings {
             upstream_ms: upstream.map(millis),
-            overhead_ms: Some(millis(total.saturating_sub(upstream.unwrap_or_default()))),
+            overhead_ms: Some(millis(
+                total
+                    .saturating_sub(upstream.unwrap_or_default())
+                    .saturating_sub(waited),
+            )),
         };
         let result = executions::finish(&self.db, &self.id, outcome, detail, timings).await;
         // Only now: dropped during the write, the record still ends itself,

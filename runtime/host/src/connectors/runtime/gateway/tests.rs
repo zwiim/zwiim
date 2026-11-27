@@ -540,6 +540,27 @@ async fn a_tool_that_asks_runs_once_the_user_says_yes() {
 }
 
 #[tokio::test]
+async fn time_spent_asking_is_not_overhead() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = Arc::new(asking(&fake).await);
+    granted(&setup).await;
+    let cards = Arc::new(Cards::default());
+
+    let call = spawn_echo(&setup, session(cards.clone()), "hi");
+    let card = cards.nth(0).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    answer(&setup, &card, ApprovalAnswer::Once).await.unwrap();
+    assert!(!finished(call).await.is_error);
+    // r3 §8.1: the wait for the user's answer is in neither number.
+    let record = &records(&setup).await[0];
+    assert!(
+        record.overhead_ms.unwrap() < 1000,
+        "overhead {:?}",
+        record.overhead_ms
+    );
+}
+
+#[tokio::test]
 async fn an_answer_must_name_its_call_and_session() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = Arc::new(asking(&fake).await);
