@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { Copy, Loader2 } from "lucide-react";
-import type { AgentRequest, PermissionTool, RequestAnswer } from "@zwiim/sdk";
+import type { AgentRequest, ConnectorApprovalDecision, PermissionTool, RequestAnswer } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 
 /**
- * A pending permission / question / plan-approval request. Answers go to the
+ * A pending permission / question / plan-approval / connector-call request. Answers go to the
  * host; the card disappears when the host reports the request resolved.
  */
 export function RequestCard({
@@ -80,6 +80,9 @@ export function RequestCard({
       )}
       {request.kind === "plan_approval" && (
         <PlanForm request={request} busy={busy} sending={sending} handOff={handOff} onSubmit={submit} />
+      )}
+      {request.kind === "connector_approval" && (
+        <ConnectorForm request={request} busy={busy} sending={sending} onSubmit={submit} />
       )}
       {error && <p className="text-destructive text-xs">{error}</p>}
     </div>
@@ -275,6 +278,82 @@ function PlanForm({
           <Sending on={sending === "approve" || sending === "request_changes"} />
           {adjustments ? "Send adjustments" : "Approve"}
         </Button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The answers a connector call card offers, in order. "Always deny" is left
+ * out: turning a tool Off in the connectors dialog does that.
+ */
+const CONNECTOR_ANSWERS: { decision: ConnectorApprovalDecision; label: string }[] = [
+  { decision: "once", label: "Allow once" },
+  { decision: "session", label: "Allow for this chat" },
+  { decision: "always", label: "Always allow" },
+  { decision: "deny", label: "Deny" },
+];
+
+/** What the tool says it does, when it says. */
+const RISK: Record<Extract<AgentRequest, { kind: "connector_approval" }>["risk"], string | null> = {
+  read: "reads only",
+  write: "makes changes",
+  destructive: "deletes",
+  unknown: null,
+};
+
+function ConnectorForm({
+  request,
+  busy,
+  sending,
+  onSubmit,
+}: {
+  request: Extract<AgentRequest, { kind: "connector_approval" }>;
+  busy: boolean;
+  sending: string | null;
+  onSubmit(a: RequestAnswer, which: string): void;
+}) {
+  const risk = RISK[request.risk];
+  const until = new Date(request.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return (
+    <>
+      <p className="font-medium">Allow {request.tool.title ?? request.tool.name}?</p>
+      <p className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-mono break-all">
+          {request.connector.slug} · {request.tool.name}
+        </span>
+        {risk && (
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5",
+              request.risk === "destructive" ? "bg-destructive/10 text-destructive" : "bg-muted",
+            )}
+          >
+            {risk}
+          </span>
+        )}
+        <span>Waits until {until}</span>
+      </p>
+      {request.preview && (
+        <pre className="bg-code max-h-60 overflow-auto rounded-lg px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+          {request.preview}
+        </pre>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {CONNECTOR_ANSWERS.filter((a) => request.answers.includes(a.decision)).map(({ decision, label }) => (
+          <Button
+            key={decision}
+            size="sm"
+            variant={decision === "once" ? "brand" : "outline"}
+            disabled={busy}
+            onClick={() =>
+              onSubmit({ kind: "connector_approval", answer: { decision, binding_hash: request.binding_hash } }, decision)
+            }
+          >
+            <Sending on={sending === decision} />
+            {label}
+          </Button>
+        ))}
       </div>
     </>
   );

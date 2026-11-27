@@ -173,6 +173,64 @@ describe("RequestCard", () => {
     await tick();
     expect(onAnswer).toHaveBeenCalledWith({ kind: "plan_approval", answer: { decision: "approve" } });
   });
+
+  it("answers a connector call with the binding it was shown", async () => {
+    const onAnswer = vi.fn(async () => {});
+    render(
+      <RequestCard
+        request={{
+          kind: "connector_approval",
+          request_id: "a1",
+          binding_hash: "sha256:abc",
+          connector: { label: "Work", slug: "linear_work" },
+          tool: { name: "delete_issue", title: "Delete issue" },
+          risk: "destructive",
+          preview: '{"id":"LIN-42"}',
+          expires_at: "2026-11-27T10:05:00Z",
+          answers: ["once", "session", "always", "deny", "always_deny"],
+        }}
+        onAnswer={onAnswer}
+      />,
+    );
+    expect(screen.getByText("Allow Delete issue?")).toBeTruthy();
+    expect(screen.getByText("linear_work · delete_issue")).toBeTruthy();
+    expect(screen.getByText("deletes")).toBeTruthy();
+    expect(screen.getByText('{"id":"LIN-42"}')).toBeTruthy();
+    // Off is the dialog's job: the card has no "Always deny".
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Allow once",
+      "Allow for this chat",
+      "Always allow",
+      "Deny",
+    ]);
+    fireEvent.click(screen.getByText("Allow for this chat"));
+    await tick();
+    expect(onAnswer).toHaveBeenCalledWith({
+      kind: "connector_approval",
+      answer: { decision: "session", binding_hash: "sha256:abc" },
+    });
+  });
+
+  it("offers only the answers the Host lists", () => {
+    render(
+      <RequestCard
+        request={{
+          kind: "connector_approval",
+          request_id: "a2",
+          binding_hash: "sha256:abc",
+          connector: { label: "Default", slug: "linear" },
+          tool: { name: "list_issues", title: null },
+          risk: "read",
+          preview: "",
+          expires_at: "2026-11-27T10:05:00Z",
+          answers: ["once", "deny"],
+        }}
+        onAnswer={vi.fn(async () => {})}
+      />,
+    );
+    expect(screen.getByText("Allow list_issues?")).toBeTruthy();
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
+  });
 });
 
 const pendingFile = (name: string): PendingFile => ({
