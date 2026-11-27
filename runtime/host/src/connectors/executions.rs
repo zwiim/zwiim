@@ -151,7 +151,8 @@ fn cause_name(cause: UnknownCause) -> &'static str {
 }
 
 /// Where the time went, in milliseconds (r3 §8.1). `upstream` is the service's
-/// round trip; `overhead` is the rest of the call's time in the Host.
+/// round trip; `overhead` is the rest of the call's time in the Host, less
+/// any wait for the user's answer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timings {
     pub upstream_ms: Option<i64>,
