@@ -4,11 +4,12 @@
 // limit on how much of an agent's context they take.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, Plug, Plus, Search, X } from "lucide-react";
+import { ArrowLeft, Loader2, Plug, Plus, Search, X } from "lucide-react";
 import {
   isClientError,
   isHostOutdated,
   type Connector,
+  type ConnectorExecution,
   type ConnectorGrant,
   type ConnectorTool,
   type HostController,
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import {
   allowedHere,
+  callOutcome,
   changed,
   count,
   guessName,
@@ -399,6 +401,7 @@ function ConnectorDetail({
   const [added, setAdded] = useState<string[]>([]);
   const [lastCall, setLastCall] = useState<string | null | undefined>(undefined);
   const [confirming, setConfirming] = useState(false);
+  const [activity, setActivity] = useState(false);
   const [key, setKey] = useState("");
   const grant = shownGrant(grants, root);
   const scope = scopeOf(grant);
@@ -557,6 +560,8 @@ function ConnectorDetail({
   const steps = limitSteps();
   if (!steps.includes(connector.tool_budget)) steps.push(connector.tool_budget);
   steps.sort((a, b) => a - b);
+
+  if (activity) return <ConnectorActivity connector={connector} onBack={() => setActivity(false)} onClose={onClose} />;
 
   return (
     <>
@@ -752,12 +757,160 @@ function ConnectorDetail({
           </Button>
         )}
         {!confirming && lastCall !== undefined && (
-          <span className="text-faint ml-auto text-xs">
-            {lastCall ? `Last call ${relativeTime(lastCall)}` : "No calls yet"}
-          </span>
+          <Button size="xs" variant="ghost" className="text-muted-foreground -mr-2 ml-auto" onClick={() => setActivity(true)}>
+            Activity · {lastCall ? `last call ${relativeTime(lastCall)}` : "no calls yet"}
+          </Button>
         )}
       </footer>
     </>
+  );
+}
+
+/** How many recent calls Activity shows. */
+const ACTIVITY_LIMIT = 50;
+
+/** A connector's recent calls, newest first, kept up to date as calls come in. */
+function ConnectorActivity({
+  connector,
+  onBack,
+  onClose,
+}: {
+  connector: Connector;
+  onBack(): void;
+  onClose(): void;
+}) {
+  const controller = useController();
+  const id = connector.connector_id;
+  const [calls, setCalls] = useState<ConnectorExecution[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    // A call can start or end while the list loads: the newer copy wins.
+    const seen = new Map<string, ConnectorExecution>();
+    const merge = (list: ConnectorExecution[]) =>
+      list
+        .filter((e) => !seen.has(e.execution_id))
+        .concat([...seen.values()])
+        .sort((a, b) => b.received_at.localeCompare(a.received_at))
+        .slice(0, ACTIVITY_LIMIT);
+    let loaded: ConnectorExecution[] | null = null;
+    const unsubscribe = controller.client.subscribe({
+      feed: (u) => {
+        if (u.type !== "event" || u.event.type !== "connector.execution") return;
+        if (u.event.payload.connector_id !== id) return;
+        const e = u.event.payload.execution;
+        seen.set(e.execution_id, e);
+        if (live && loaded) setCalls(merge(loaded));
+      },
+    });
+    controller.listConnectorExecutions({ connector_id: id, limit: ACTIVITY_LIMIT }).then(
+      (r) => {
+        loaded = r.executions;
+        if (live) setCalls(merge(loaded));
+      },
+      (e) => live && setError(errorMessage(e)),
+    );
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [controller, id]);
+
+  return (
+    <>
+      <header className="flex h-16 shrink-0 items-center gap-3 pr-3 pl-3">
+        <Button size="icon-sm" variant="ghost" title="Back" aria-label="Back" onClick={onBack}>
+          <ArrowLeft />
+        </Button>
+        <Logo name={connector.name} large />
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-base font-medium">Activity</h3>
+          <div className="text-muted-foreground truncate font-mono text-2xs">
+            {display(connector)} · last {ACTIVITY_LIMIT} calls
+          </div>
+        </div>
+        <CloseButton onClose={onClose} />
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+        {error && (
+          <p className="text-destructive text-xs" role="alert">
+            {error}
+          </p>
+        )}
+        {!calls && !error && <p className="text-faint text-xs">Loading calls…</p>}
+        {calls?.length === 0 && (
+          <p className="text-muted-foreground text-xs">No calls yet. Calls agents make through {connector.name} show here.</p>
+        )}
+        {calls && calls.length > 0 && (
+          <div className="ring-border rounded-[10px] bg-muted ring-1 ring-inset">
+            {calls.map((e, i) => (
+              <CallRow
+                key={e.execution_id}
+                call={e}
+                first={i === 0}
+                opened={opened === e.execution_id}
+                onOpen={() => setOpened(opened === e.execution_id ? null : e.execution_id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function CallRow({
+  call,
+  first,
+  opened,
+  onOpen,
+}: {
+  call: ConnectorExecution;
+  first: boolean;
+  opened: boolean;
+  onOpen(): void;
+}) {
+  const outcome = callOutcome(call);
+  return (
+    <div data-testid={`call-${call.execution_id}`} className={cn(!first && "border-border border-t")}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left"
+        aria-expanded={opened}
+        onClick={onOpen}
+      >
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">{call.tool}</span>
+        <span className={cn("text-xs", TONE_TEXT[outcome.tone])}>{outcome.text}</span>
+        <span className="text-faint w-14 text-right font-mono text-2xs">
+          {call.upstream_ms !== null ? `${count(call.upstream_ms)} ms` : ""}
+        </span>
+        <span className="text-faint w-20 text-right text-2xs">{relativeTime(call.received_at)}</span>
+      </button>
+      {opened && (
+        <dl className="text-muted-foreground grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 px-3.5 pb-2.5 text-xs">
+          {call.detail && (
+            <>
+              <dt>Agent was told</dt>
+              <dd className="text-foreground">{call.detail}</dd>
+            </>
+          )}
+          <dt>Arguments</dt>
+          <dd className="font-mono">{call.arg_keys.length ? call.arg_keys.join(", ") : "none"}</dd>
+          <dt>Started</dt>
+          <dd>{new Date(call.received_at).toLocaleString()}</dd>
+          {call.upstream_ms !== null && (
+            <>
+              <dt>Time</dt>
+              <dd>
+                {count(call.upstream_ms)} ms at the service · {count(call.overhead_ms ?? 0)} ms in Zwiim
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
+    </div>
   );
 }
 

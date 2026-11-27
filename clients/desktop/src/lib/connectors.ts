@@ -5,7 +5,7 @@
 // on the grant shown, the one for this workspace or else the one for every
 // workspace. A grant made for one agent is left alone here.
 
-import type { Connector, ConnectorGrant, ConnectorTool, WorkspaceInfo } from "@zwiim/sdk";
+import type { Connector, ConnectorExecution, ConnectorGrant, ConnectorTool, WorkspaceInfo } from "@zwiim/sdk";
 
 export type ToolChoice = "off" | "ask" | "allow";
 export type ToolGroup = "read" | "write" | "destructive";
@@ -89,6 +89,42 @@ export function statusLine(c: Connector): { text: string; tone: Tone } {
       return { text: "disconnecting", tone: "faint" };
   }
 }
+
+/** How a call through a connector went, in a few words, and its colour. */
+export function callOutcome(e: ConnectorExecution): { text: string; tone: Tone } {
+  switch (e.state) {
+    case "received":
+    case "dispatched":
+      return { text: "running", tone: "faint" };
+    case "awaiting_approval":
+      return { text: "waiting for you", tone: "brand" };
+    case "succeeded":
+      return { text: "ran", tone: "ok" };
+    case "tool_error":
+      return { text: "tool error", tone: "bad" };
+    case "failed":
+      return { text: "failed", tone: "bad" };
+    case "outcome_unknown":
+      return { text: "may have run", tone: "brand" };
+    case "approval_denied":
+      return { text: "you denied", tone: "faint" };
+    case "approval_expired":
+      return { text: "no answer", tone: "faint" };
+    case "approval_void":
+      return { text: "approval no longer valid", tone: "faint" };
+    case "cancelled_before_dispatch":
+      return { text: "cancelled", tone: "faint" };
+    case "rejected":
+      return { text: REJECTED[e.reason ?? ""] ?? "not sent", tone: "faint" };
+  }
+}
+
+const REJECTED: Record<string, string> = {
+  unavailable: "connector unavailable",
+  not_exposed: "tool off",
+  not_sent: "not sent",
+  denied: "not allowed",
+};
 
 /** "4,000": sizes and limits, grouped in thousands. */
 export const count = (n: number) => n.toLocaleString("en-US");

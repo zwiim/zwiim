@@ -6,11 +6,13 @@ import {
   ZwiimClientError,
   type Connector,
   type ConnectorGrant,
+  type ConnectorExecution,
   type ConnectorTool,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import {
+  callOutcome,
   guessName,
   isLocalUrl,
   limitThatFits,
@@ -121,6 +123,33 @@ describe("connector helpers", () => {
     expect(isLocalUrl("http://localhost:3000/mcp")).toBe(true);
     expect(isLocalUrl("http://192.168.1.4/mcp")).toBe(true);
     expect(isLocalUrl("https://mcp.linear.app/mcp")).toBe(false);
+  });
+});
+
+const execution = (id: string, extra: Partial<ConnectorExecution> = {}): ConnectorExecution => ({
+  execution_id: id,
+  tool: "list_issues",
+  state: "succeeded",
+  reason: null,
+  detail: null,
+  arg_keys: ["team"],
+  received_at: "2026-11-27T10:00:00Z",
+  dispatched_at: "2026-11-27T10:00:00Z",
+  finished_at: "2026-11-27T10:00:01Z",
+  upstream_ms: 465,
+  overhead_ms: 2,
+  ...extra,
+});
+
+describe("callOutcome", () => {
+  it("says how a call ended in a few words", () => {
+    expect(callOutcome(execution("e"))).toEqual({ text: "ran", tone: "ok" });
+    expect(callOutcome(execution("e", { state: "awaiting_approval" }))).toEqual({ text: "waiting for you", tone: "brand" });
+    expect(callOutcome(execution("e", { state: "rejected", reason: "not_exposed" })).text).toBe("tool off");
+    expect(callOutcome(execution("e", { state: "rejected", reason: "denied" })).text).toBe("not allowed");
+    expect(callOutcome(execution("e", { state: "approval_denied" })).text).toBe("you denied");
+    expect(callOutcome(execution("e", { state: "outcome_unknown" }))).toEqual({ text: "may have run", tone: "brand" });
+    expect(callOutcome(execution("e", { state: "tool_error" })).tone).toBe("bad");
   });
 });
 
@@ -292,6 +321,36 @@ describe("ConnectorsDialog", () => {
     const { t } = connectorHost({ tools: [tool("ask_question"), tool("read_contents")] });
     await mount(t);
     expect(screen.queryByRole("button", { name: "Allow all read" })).toBeNull();
+  });
+
+  it("Activity lists the calls, adds new ones as they come, and opens one", async () => {
+    const { t } = connectorHost();
+    t.handlers["connector.executions"] = () => ({
+      executions: [execution("e1", { state: "approval_denied", detail: "The user denied this call; nothing was sent.", upstream_ms: null })],
+      next_cursor: null,
+    });
+    await mount(t);
+    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    await tick();
+    expect(ops(t, "connector.executions").at(-1)).toEqual({ connector_id: "c1", limit: 50 });
+    const first = within(screen.getByTestId("call-e1"));
+    expect(first.getByText("you denied")).toBeTruthy();
+
+    act(() => {
+      t.feedEvent("connector.execution", { connector_id: "c1", execution: execution("e2", { tool: "create_issue", received_at: "2026-11-27T10:05:00Z" }) });
+      t.feedEvent("connector.execution", { connector_id: "other", execution: execution("e3") });
+    });
+    await tick();
+    const calls = screen.getAllByTestId(/^call-/).map((e) => e.dataset.testid);
+    expect(calls).toEqual(["call-e2", "call-e1"]);
+    expect(within(screen.getByTestId("call-e2")).getByText("465 ms")).toBeTruthy();
+
+    fireEvent.click(first.getByRole("button", { name: /list_issues/ }));
+    expect(screen.getByText("The user denied this call; nothing was sent.")).toBeTruthy();
+    expect(screen.getByText("team")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("tool-list_issues")).toBeTruthy();
   });
 
   it("search narrows the tools; a name opens its description", async () => {
