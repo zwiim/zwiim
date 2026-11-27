@@ -172,7 +172,7 @@ export function ConnectorsDialog({ workspaceId, onClose }: { workspaceId: string
       aria-label="Connectors"
       className="h-[min(660px,calc(100vh-48px))] max-w-[900px] flex-row overflow-hidden"
     >
-      <aside className="border-border flex w-68 shrink-0 flex-col border-r bg-black/10">
+      <aside className="border-border flex w-68 shrink-0 flex-col border-r bg-muted">
         <div className="flex h-16 shrink-0 items-center justify-between pr-3 pl-3.5">
           <h2 className="text-base font-medium">Connectors</h2>
           <Button
@@ -419,6 +419,7 @@ function ConnectorDetail({
   }, [controller, id]);
 
   async function run(what: string, fn: () => Promise<void>) {
+    if (busy !== null) return;
     setBusy(what);
     setError(null);
     try {
@@ -550,7 +551,9 @@ function ConnectorDetail({
       return connector.url;
     }
   }, [connector.url]);
-  const disabled = !online || busy !== null;
+  // Not while a change runs: disabling the control just clicked would drop
+  // focus out of the dialog. `run` ignores clicks until the Host answers.
+  const disabled = !online;
   const steps = limitSteps();
   if (!steps.includes(connector.tool_budget)) steps.push(connector.tool_budget);
   steps.sort((a, b) => a - b);
@@ -582,7 +585,7 @@ function ConnectorDetail({
         )}
         <div>
           <Caption>Access</Caption>
-          <div className="ring-border divide-border divide-y rounded-[10px] bg-black/10 ring-1 ring-inset">
+          <div className="ring-border divide-border divide-y rounded-[10px] bg-muted ring-1 ring-inset">
             <Row title="Allowed in" detail={`Agents in these workspaces can use ${connector.name}`}>
               <div className="bg-background flex gap-0.5 rounded-lg p-0.5" role="radiogroup" aria-label="Allowed in">
                 {(
@@ -659,7 +662,7 @@ function ConnectorDetail({
               </select>
             </span>
           </Caption>
-          <div className="ring-border rounded-[10px] bg-black/10 ring-1 ring-inset">
+          <div className="ring-border rounded-[10px] bg-muted ring-1 ring-inset">
             <div className="flex items-center gap-2.5 px-3.5 py-2">
               <label className="bg-background ring-border text-faint flex h-7 flex-1 items-center gap-1.5 rounded-md px-2 ring-1 ring-inset">
                 <Search className="size-3.5 shrink-0" />
