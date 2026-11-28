@@ -1,12 +1,13 @@
 // The Host tab's Connectors group: each connector the host's agents can
-// reach and how it is. Read only; it's set up in Zwiim on the Mac.
+// reach and how it is. Tap one to disconnect it; the rest is set up in Zwiim
+// on the Mac.
 
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import type { Connector } from "@zwiim/sdk";
-import { connectorRow, loadConnectors } from "../host/connectors";
+import { connectorRow, disconnectConnector, loadConnectors } from "../host/connectors";
 import { currentHost } from "../services";
-import { StatusDot, T } from "../ui/components";
+import { Button, StatusDot, T } from "../ui/components";
 import { radius, space, useTheme } from "../ui/tokens";
 
 export function ConnectorsGroup({ host, live }: { host: string; live: boolean }) {
@@ -14,6 +15,9 @@ export function ConnectorsGroup({ host, live }: { host: string; live: boolean })
   const [connectors, setConnectors] = useState<Connector[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The connector whose Disconnect confirm is open, and whether it's going.
+  const [asking, setAsking] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const read = async () => {
     setLoading(true);
@@ -28,6 +32,15 @@ export function ConnectorsGroup({ host, live }: { host: string; live: boolean })
   useEffect(() => {
     if (live) void read();
   }, [live]);
+
+  const disconnect = async (id: string) => {
+    setDisconnecting(true);
+    const failed = await disconnectConnector(currentHost, id);
+    setDisconnecting(false);
+    setAsking(null);
+    if (failed) return setError(failed);
+    await read();
+  };
 
   // Nothing to show for a host without any, or from before them.
   if (!error && !connectors?.length) return null;
@@ -46,16 +59,44 @@ export function ConnectorsGroup({ host, live }: { host: string; live: boolean })
         ) : (
           connectors?.map((c) => {
             const row = connectorRow(c);
+            const gone = c.status === "revoking";
             return (
-              <View key={c.connector_id} style={styles.row} testID={`connector-${c.connector_id}`}>
-                <StatusDot state={row.dot} />
-                <View style={styles.flex}>
-                  <T numberOfLines={1}>{row.name}</T>
-                  <T variant="mono" color={theme.mut} numberOfLines={1}>
-                    {row.detail}
-                  </T>
-                </View>
-                <T color={theme.mut}>{row.state}</T>
+              <View key={c.connector_id}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityHint="Shows Disconnect"
+                  disabled={!live || gone || disconnecting}
+                  onPress={() => setAsking(asking === c.connector_id ? null : c.connector_id)}
+                  style={styles.row}
+                  testID={`connector-${c.connector_id}`}
+                >
+                  <StatusDot state={row.dot} />
+                  <View style={styles.flex}>
+                    <T numberOfLines={1}>{row.name}</T>
+                    <T variant="mono" color={theme.mut} numberOfLines={1}>
+                      {row.detail}
+                    </T>
+                  </View>
+                  <T color={theme.mut}>{row.state}</T>
+                </Pressable>
+                {asking === c.connector_id ? (
+                  <View style={styles.confirm} testID="connector-confirm">
+                    <T color={theme.mut}>
+                      Disconnect {row.name}? Agents on {host} lose it and its key is deleted.
+                    </T>
+                    <View style={styles.buttons}>
+                      <Button kind="ghost" label="Keep" disabled={disconnecting} onPress={() => setAsking(null)} />
+                      <Button
+                        kind="destructive"
+                        label="Disconnect"
+                        loading={disconnecting}
+                        disabled={!live}
+                        onPress={() => void disconnect(c.connector_id)}
+                        testID="connector-disconnect"
+                      />
+                    </View>
+                  </View>
+                ) : null}
               </View>
             );
           })
@@ -83,4 +124,6 @@ const styles = StyleSheet.create({
   group: { borderRadius: radius.lg, marginBottom: space.lg },
   row: { minHeight: 52, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: space.md },
+  confirm: { paddingHorizontal: space.md, paddingBottom: space.md, gap: space.sm },
+  buttons: { flexDirection: "row", gap: space.sm, justifyContent: "flex-end" },
 });
