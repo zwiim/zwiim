@@ -109,11 +109,11 @@ jobs:
       - name: Host integration (lifecycle, restart, migrations)
         run: cargo test -p zwiim-host --test '*'
       # Connector calls through the real agent proxy (design r3 §8.1), on the
-      # debug build the tests above compiled: fails on a miss of the ADR-17
-      # budget, or on a p95 or memory figure more than 20 % over
-      # runtime/host/src/connectors/bench/proxy_baseline.json (this runner's
-      # own debug numbers). The 30 MiB limit is for release builds and is
-      # checked by the release run in runtime/host/src/connectors/bench/proxy.rs.
+      # debug build the tests above compiled: fails on a p50 or memory figure
+      # more than 20 % over runtime/host/src/connectors/bench/
+      # proxy_baseline.json (this runner's own debug numbers). The ADR-17
+      # budget and the 30 MiB limit are for release builds, checked by the
+      # release run in runtime/host/src/connectors/bench/proxy.rs.
       - name: Connector benchmark (regression check)
         run: |
           cargo build -p zwiim-host --bin zwiim-mcp

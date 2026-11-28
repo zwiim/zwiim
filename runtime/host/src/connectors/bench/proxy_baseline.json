@@ -1,5 +1,15 @@
 {
   "profile": "debug",
-  "p95_us": {},
-  "memory_kib": null
+  "p50_us": {
+    "x1 first call": 7000,
+    "x1 session start": 12670,
+    "x1 warm call": 7030,
+    "x3 first call": 7420,
+    "x3 session start": 17230,
+    "x3 warm call": 6810,
+    "x8 first call": 6750,
+    "x8 session start": 38990,
+    "x8 warm call": 6710
+  },
+  "memory_kib": 30966
 }

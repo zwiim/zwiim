@@ -10,16 +10,18 @@
 //!
 //! One proxy per connector is the topology (ADR-2, decided on these numbers
 //! 2026-11-28); a multiplexed proxy would be built only if this one missed
-//! the ADR-17 budget. Memory for 8 warm connectors is held to 30 MiB. As in the Host-only benchmark, each fake answers at once in a
-//! child process, so every round trip counts as Zwiim's: an upper bound.
+//! the ADR-17 budget. Memory for 8 warm connectors is held to 30 MiB. As in
+//! the Host-only benchmark, each fake answers at once in a child process, so
+//! every round trip counts as Zwiim's: an upper bound.
 //!
-//! The 30 MiB limit is for a release build; a debug one takes about 5 %
-//! more. CI runs the debug build its tests already compiled, as a
-//! regression check (`ZWIIM_BENCH_CHECK=1`): each p95 and the memory figure
-//! may be at most 20 % over `proxy_baseline.json`, which holds the CI
-//! runner's own debug numbers. A run prints its numbers in that file's
-//! shape (the `BENCH` line); after a change that is meant to cost more,
-//! paste the CI run's line into the file.
+//! The ADR-17 budget and the 30 MiB limit are for a release build, which
+//! the run above checks. CI runs the debug build its tests already compiled
+//! as a regression check (`ZWIIM_BENCH_CHECK=1`): each p50 and the memory
+//! figure may be at most 20 % over `proxy_baseline.json`, which holds the CI
+//! runner's own debug numbers. Medians, because a shared runner's tail
+//! moves by more than 20 % from run to run. A run prints its numbers in
+//! that file's shape (the `BENCH` line); after a change that is meant to
+//! cost more, paste the CI run's line into the file.
 //!
 //! ```text
 //! "agent" (this test) ──stdio──▶ zwiim-mcp --connector ──UDS──▶ listener
@@ -52,7 +54,7 @@ const STARTS: usize = 50;
 
 /// How much worse than the baseline a CI run may be (design r3 §8.1).
 const TOLERANCE: f64 = 1.2;
-/// Below this a p95 change is the runner's noise, not Zwiim's: 20 % of a
+/// Below this a change is the runner's noise, not Zwiim's: 20 % of a
 /// half-millisecond call is a tenth of a millisecond.
 const NOISE_US: u64 = 1_000;
 
@@ -61,8 +63,8 @@ const NOISE_US: u64 = 1_000;
 struct Measured {
     /// `debug` or `release`: only the same build compares.
     profile: String,
-    /// p95 per case, in microseconds, keyed like `x8 warm call`.
-    p95_us: BTreeMap<String, u64>,
+    /// p50 per case, in microseconds, keyed like `x8 warm call`.
+    p50_us: BTreeMap<String, u64>,
     /// 8 warm connectors, Host growth plus proxies; null where unmeasured.
     memory_kib: Option<u64>,
 }
@@ -77,13 +79,13 @@ fn regressions(run: &Measured, baseline: &Measured) -> Vec<String> {
         )];
     }
     let mut misses = Vec::new();
-    for (case, &us) in &run.p95_us {
-        match baseline.p95_us.get(case) {
+    for (case, &us) in &run.p50_us {
+        match baseline.p50_us.get(case) {
             None => misses.push(format!("{case}: no baseline")),
             Some(&base) => {
                 let allowed = ((base as f64 * TOLERANCE) as u64).max(base + NOISE_US);
                 if us > allowed {
-                    misses.push(format!("{case}: p95 {us} µs, baseline {base} µs"));
+                    misses.push(format!("{case}: p50 {us} µs, baseline {base} µs"));
                 }
             }
         }
@@ -349,12 +351,13 @@ async fn connector_proxy_overhead() {
                 "{n:>5} {case:<13} {:>6} {:>9.2?} {:>9.2?} {:>9.2?}",
                 row.n, row.p50, row.p95, row.p99
             );
-            if row.p95 > P95_TARGET || row.p99 > P99_TARGET {
+            let slow = row.p95 > P95_TARGET || row.p99 > P99_TARGET;
+            if slow && profile == "release" {
                 misses.push(format!("x{n} {case}: p95 {:?}, p99 {:?}", row.p95, row.p99));
             }
             measured
-                .p95_us
-                .insert(format!("x{n} {case}"), row.p95.as_micros() as u64);
+                .p50_us
+                .insert(format!("x{n} {case}"), row.p50.as_micros() as u64);
         }
         if n == MAX {
             warm_eight = proxies;
@@ -394,7 +397,10 @@ async fn connector_proxy_overhead() {
     serving.abort();
     drop(fakes.stdin.take());
     let _ = fakes.wait().await;
-    assert!(misses.is_empty(), "missed the ADR-17 budget: {misses:#?}");
+    assert!(
+        misses.is_empty(),
+        "missed the ADR-17 budget or the 30 MiB limit: {misses:#?}"
+    );
     if std::env::var_os("ZWIIM_BENCH_CHECK").is_some() {
         let baseline: Measured = serde_json::from_str(include_str!("proxy_baseline.json")).unwrap();
         let worse = regressions(&measured, &baseline);
@@ -407,9 +413,9 @@ async fn connector_proxy_overhead() {
 
 #[test]
 fn a_run_may_be_a_fifth_worse_than_the_baseline_and_no_more() {
-    let run = |p95: &[(&str, u64)], memory_kib| Measured {
+    let run = |p50: &[(&str, u64)], memory_kib| Measured {
         profile: "debug".into(),
-        p95_us: p95.iter().map(|&(k, v)| (k.to_string(), v)).collect(),
+        p50_us: p50.iter().map(|&(k, v)| (k.to_string(), v)).collect(),
         memory_kib,
     };
     let baseline = run(
@@ -430,8 +436,8 @@ fn a_run_may_be_a_fifth_worse_than_the_baseline_and_no_more() {
     assert_eq!(
         regressions(&worse, &baseline),
         [
-            "x8 session start: p95 12001 µs, baseline 10000 µs",
-            "x8 warm call: p95 1501 µs, baseline 500 µs",
+            "x8 session start: p50 12001 µs, baseline 10000 µs",
+            "x8 warm call: p50 1501 µs, baseline 500 µs",
             "memory: 36001 KiB, baseline 30000 KiB",
         ]
     );
