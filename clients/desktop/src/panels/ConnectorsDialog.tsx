@@ -585,7 +585,7 @@ function ConnectorDetail({
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-base font-medium">{display(connector)}</h3>
           <div className="text-muted-foreground truncate font-mono text-2xs">
-            {host} · {connector.tool_count} tools · <span className={TONE_TEXT[status.tone]}>{status.text}</span>
+            {host} · {connector.tool_count} tool{connector.tool_count === 1 ? "" : "s"} · <span className={TONE_TEXT[status.tone]}>{status.text}</span>
           </div>
         </div>
         <Button size="xs" variant="ghost" disabled={disabled} onClick={checkAgain}>
@@ -714,7 +714,7 @@ function ConnectorDetail({
                 <Search className="size-3.5 shrink-0" />
                 <input
                   className="text-foreground placeholder:text-faint min-w-0 flex-1 bg-transparent text-xs outline-none"
-                  placeholder={`Search ${connector.tool_count} tools`}
+                  placeholder={`Search ${connector.tool_count} tool${connector.tool_count === 1 ? "" : "s"}`}
                   aria-label="Search tools"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}

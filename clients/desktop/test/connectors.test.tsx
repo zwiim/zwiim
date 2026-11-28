@@ -430,6 +430,13 @@ describe("ConnectorsDialog", () => {
     expect(screen.getByTestId("connector-c1").textContent).toContain("needs a key");
   });
 
+  it("counts one tool as a tool", async () => {
+    const { t } = connectorHost({ connectors: [connector({ tool_count: 1 })] });
+    await mount(t);
+    expect(screen.getByText(/· 1 tool ·/)).toBeTruthy();
+    expect(screen.getByPlaceholderText("Search 1 tool")).toBeTruthy();
+  });
+
   it("search narrows the tools; a name opens its description", async () => {
     const { t } = connectorHost();
     await mount(t);
