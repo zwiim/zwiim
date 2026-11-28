@@ -137,6 +137,9 @@ describe("connector helpers", () => {
   it("guesses a name from the address, and knows a local server", () => {
     expect(guessName("https://mcp.linear.app/mcp")).toBe("Linear");
     expect(guessName("nonsense")).toBe("");
+    expect(guessName("http://127.0.0.1:3000/mcp")).toBe("");
+    expect(guessName("http://[::1]:3000/mcp")).toBe("");
+    expect(guessName("http://localhost:3000/mcp")).toBe("");
     expect(isLocalUrl("http://localhost:3000/mcp")).toBe(true);
     expect(isLocalUrl("http://192.168.1.4/mcp")).toBe(true);
     expect(isLocalUrl("https://mcp.linear.app/mcp")).toBe(false);
@@ -385,6 +388,16 @@ describe("ConnectorsDialog", () => {
     });
     await mount(big.t);
     expect(screen.getByRole("note").textContent).toContain("about 12,400 of an agent's context, over 12,000");
+  });
+
+  it("asks for a new key when the server refused the one it has", async () => {
+    const { t } = connectorHost({
+      connectors: [connector({ status: "needs_reauth", error: "the service refused the key" })],
+    });
+    await mount(t);
+    expect(screen.getByText("Linear refused the key. Paste a new one below.")).toBeTruthy();
+    expect(screen.getByLabelText("New key")).toBeTruthy();
+    expect(screen.getByTestId("connector-c1").textContent).toContain("needs a key");
   });
 
   it("search narrows the tools; a name opens its description", async () => {

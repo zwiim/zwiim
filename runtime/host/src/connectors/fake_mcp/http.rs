@@ -6,6 +6,7 @@
 //! GET                -> 405 (no server-initiated stream for legacy clients)
 //! DELETE             -> 200, ends the legacy session
 //! redirect set       -> 307 to that location, for every request
+//! refusal set        -> that status (401 or 403) with a Bearer challenge, for every request
 //! client goes away   -> recorded as `HTTP abandoned`
 //! ```
 //!
@@ -38,6 +39,7 @@ const BODY_LIMIT: usize = 4 << 20;
 pub struct HttpServer {
     addr: SocketAddr,
     redirect: Arc<Mutex<Option<String>>>,
+    refusal: Arc<Mutex<Option<StatusCode>>>,
     task: JoinHandle<()>,
 }
 
@@ -55,6 +57,12 @@ impl HttpServer {
     pub fn redirect_to(&self, location: Option<String>) {
         *self.redirect.lock().unwrap() = location;
     }
+
+    /// Answers every request with `status` (401 or 403), as a service that
+    /// refuses the key, or stops when `None`.
+    pub fn refuse_with(&self, status: Option<StatusCode>) {
+        *self.refusal.lock().unwrap() = status;
+    }
 }
 
 impl Drop for HttpServer {
@@ -67,6 +75,7 @@ impl Drop for HttpServer {
 struct Shared {
     fake: FakeMcp,
     redirect: Arc<Mutex<Option<String>>>,
+    refusal: Arc<Mutex<Option<StatusCode>>>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     next_session: Arc<AtomicU64>,
 }
@@ -83,11 +92,13 @@ impl FakeMcp {
             .expect("bind loopback");
         let addr = listener.local_addr().expect("local addr");
         let redirect = Arc::new(Mutex::new(None));
+        let refusal = Arc::new(Mutex::new(None));
         let router = Router::new()
             .route("/mcp", axum::routing::any(handle))
             .with_state(Shared {
                 fake: self.clone(),
                 redirect: redirect.clone(),
+                refusal: refusal.clone(),
                 sessions: Arc::default(),
                 next_session: Arc::default(),
             });
@@ -112,6 +123,7 @@ impl FakeMcp {
         HttpServer {
             addr,
             redirect,
+            refusal,
             task,
         }
     }
@@ -127,6 +139,12 @@ async fn handle(
     if let Some(location) = shared.redirect.lock().unwrap().clone() {
         return status(StatusCode::TEMPORARY_REDIRECT)
             .header("location", location)
+            .body(Body::empty())
+            .unwrap();
+    }
+    if let Some(code) = *shared.refusal.lock().unwrap() {
+        return status(code)
+            .header("www-authenticate", "Bearer")
             .body(Body::empty())
             .unwrap();
     }

@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::stream::{BoxStream, StreamExt};
-use http::header::{ACCEPT, CONTENT_TYPE};
+use http::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ErrorData, ServerJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
-    SseError, StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
-    StreamableHttpResponseLimits,
+    AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
+    StreamableHttpPostResponse, StreamableHttpResponseLimits,
 };
 use sse_stream::{Sse, SseStream};
 use url::Url;
@@ -103,9 +103,12 @@ impl McpHttpClient {
         // comes back for them is as good as 202.
         let awaits_no_response = !matches!(message, ClientJsonRpcMessage::Request(_));
 
+        if is_auth_failure(status) {
+            return Err(auth_error(status, response.headers()));
+        }
         if !status.is_success() {
             let error = match content_type.as_deref() {
-                Some(JSON) if !is_auth_failure(status) => response
+                Some(JSON) => response
                     .bytes_up_to(limits.max_json_response_size)
                     .await
                     .ok()
@@ -186,6 +189,9 @@ impl McpHttpClient {
         let status = response.status();
         if status == StatusCode::METHOD_NOT_ALLOWED {
             return Err(Error::ServerDoesNotSupportSse);
+        }
+        if is_auth_failure(status) {
+            return Err(auth_error(status, response.headers()));
         }
         if !status.is_success() {
             return Err(Error::UnexpectedServerResponse(Cow::Owned(format!(
@@ -315,6 +321,21 @@ fn media_type(headers: &HeaderMap) -> Option<String> {
 
 fn is_auth_failure(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
+
+/// A 401 or 403 as rmcp's own errors for them, so callers can tell a refused
+/// key (`auth_challenge()`) from a service that can't be reached.
+fn auth_error(status: StatusCode, headers: &HeaderMap) -> Error {
+    let challenge = headers
+        .get(WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    if status == StatusCode::FORBIDDEN {
+        Error::InsufficientScope(InsufficientScopeError::new(challenge, None))
+    } else {
+        Error::AuthRequired(AuthRequiredError::new(challenge))
+    }
 }
 
 /// The id of a `server/discover` sent outside a session that the server

@@ -50,7 +50,8 @@ pub struct ConnectorView {
     pub url: String,
     /// `validating`, `active`, `needs_reauth`, `error`, `revoking` or `revoked`.
     pub status: String,
-    /// Why the connector is `error`, or what its revocation waits for.
+    /// Why the connector is `error` or `needs_reauth` (its service refused
+    /// the key), or what its revocation waits for.
     pub error: Option<String>,
     pub last_validated_at: Option<String>,
     pub created_at: String,
@@ -237,6 +238,12 @@ fn validate_error(e: ValidateError) -> ZwiimError {
         ValidateError::Failed(message) => {
             ZwiimError::new(StatusCode::BAD_GATEWAY, "connection_failed", message)
         }
+        // Recorded on the connector as `needs_reauth`.
+        ValidateError::KeyRefused => ZwiimError::new(
+            StatusCode::BAD_GATEWAY,
+            "connection_failed",
+            "The server refused the key; paste a new one",
+        ),
         ValidateError::Store(e) => internal(e),
     }
 }

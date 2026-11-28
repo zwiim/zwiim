@@ -154,6 +154,8 @@ export function guessName(url: string): string {
   } catch {
     return "";
   }
+  // An address names no service: leave the name to the user.
+  if (host === "localhost" || host.startsWith("[") || /^\d+(\.\d+){3}$/.test(host)) return "";
   const part = host.split(".").find((p) => !["mcp", "api", "www"].includes(p)) ?? "";
   return part.charAt(0).toUpperCase() + part.slice(1);
 }
