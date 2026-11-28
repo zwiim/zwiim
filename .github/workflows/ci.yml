@@ -108,6 +108,18 @@ jobs:
       # Only runtime/host/tests: `--tests` would run the unit tests again.
       - name: Host integration (lifecycle, restart, migrations)
         run: cargo test -p zwiim-host --test '*'
+      # Connector calls through the real agent proxy (design r3 §8.1), on the
+      # debug build the tests above compiled: fails on a p50 or memory figure
+      # more than 20 % over runtime/host/src/connectors/bench/
+      # proxy_baseline.json (this runner's own debug numbers). The ADR-17
+      # budget and the 30 MiB limit are for release builds, checked by the
+      # release run in runtime/host/src/connectors/bench/proxy.rs.
+      - name: Connector benchmark (regression check)
+        run: |
+          cargo build -p zwiim-host --bin zwiim-mcp
+          cargo test -p zwiim-host --lib connectors::bench::proxy -- --ignored --nocapture
+        env:
+          ZWIIM_BENCH_CHECK: "1"
       - name: Cloud
         run: cargo test -p zwiim-cloud
       - name: Desktop shell
