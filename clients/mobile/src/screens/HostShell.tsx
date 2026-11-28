@@ -37,6 +37,7 @@ import { Folder, Icon, Laptop, MessagesSquare } from "../ui/icons";
 import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
 import { HostFrame } from "./HostFrame";
+import { ConnectorsGroup } from "./connectors";
 import { InstructionsGroup } from "./instructions";
 import { LimitSheet } from "./LimitSheet";
 import { SessionsTab } from "./SessionsTab";
@@ -415,6 +416,8 @@ function HostTab() {
         {githubSignInOffered(view?.compat ?? null) ? (
           <GithubGroup host={hostName(host)} live={view?.active === "lan" || view?.active === "relay"} />
         ) : null}
+
+        <ConnectorsGroup host={hostName(host)} live={view?.active === "lan" || view?.active === "relay"} />
 
         <T variant="caption" color={theme.mut}>
           Account
