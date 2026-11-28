@@ -139,6 +139,39 @@ async fn an_unreachable_service_marks_the_connector_failed() {
 }
 
 #[tokio::test]
+async fn a_refused_key_asks_for_a_new_one_and_a_good_one_activates_it() {
+    for code in [http::StatusCode::UNAUTHORIZED, http::StatusCode::FORBIDDEN] {
+        for era in [Era::Modern, Era::Legacy("2025-06-18")] {
+            let fake = FakeMcp::new(era);
+            let server = fake.serve_http().await;
+            server.refuse_with(Some(code));
+            let setup = setup_at(&server.url(), Some("k3y")).await;
+            let err = setup
+                .connectors
+                .validate(&setup.connector)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ValidateError::KeyRefused),
+                "{code} {era:?}: {err}"
+            );
+            assert_eq!(err.code(), "connection_failed");
+            assert_eq!(
+                status(&setup).await,
+                (
+                    ConnectorStatus::NeedsReauth,
+                    Some("the service refused the key".into())
+                )
+            );
+
+            server.refuse_with(None);
+            setup.connectors.validate(&setup.connector).await.unwrap();
+            assert_eq!(status(&setup).await, (ConnectorStatus::Active, None));
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_missing_key_fails_the_connector_and_a_locked_store_changes_nothing() {
     let fake = FakeMcp::new(Era::Modern);
     let server = fake.serve_http().await;

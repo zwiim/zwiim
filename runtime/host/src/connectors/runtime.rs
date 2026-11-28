@@ -160,6 +160,10 @@ pub enum ValidateError {
     /// connector as `error`.
     #[error("{0}")]
     Failed(String),
+    /// The service refused the key; recorded on the connector as
+    /// `needs_reauth`, so the user is asked for a new one.
+    #[error("the service refused the key")]
+    KeyRefused,
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -171,7 +175,7 @@ impl ValidateError {
             Self::Unavailable(_) => "connector_unavailable",
             Self::DefinitionChanged => "definition_changed",
             Self::Credential(e) => e.code(),
-            Self::Failed(_) => "connection_failed",
+            Self::Failed(_) | Self::KeyRefused => "connection_failed",
             Self::Store(_) => "internal",
         }
     }
@@ -310,6 +314,10 @@ impl Connectors {
         }
         let upstream = match self.open(&connector).await {
             Ok(upstream) => upstream,
+            Err(ValidateError::KeyRefused) => {
+                self.refused(&connector).await?;
+                return Err(ValidateError::KeyRefused);
+            }
             Err(e) => {
                 // A credential store that won't open may only be locked.
                 let recorded = match &e {
@@ -327,6 +335,11 @@ impl Connectors {
         };
         let listing = match timeout(upstream.list_tools()).await {
             Ok(listing) => listing,
+            Err(ConnectorError::KeyRefused) => {
+                let _ = upstream.shutdown(ShutdownReason::Idle).await;
+                self.refused(&connector).await?;
+                return Err(ValidateError::KeyRefused);
+            }
             Err(e) => {
                 let _ = upstream.shutdown(ShutdownReason::Idle).await;
                 let message = self.redact(&connector, &e.to_string()).await?;
@@ -398,14 +411,22 @@ impl Connectors {
         let endpoints = store::endpoint_rules(&self.db, &connector.id).await?;
         timeout(self.factory.open(&definition, endpoints, credential))
             .await
-            .map_err(|e| {
-                ValidateError::Failed(credentials::redact(
+            .map_err(|e| match e {
+                ConnectorError::KeyRefused => ValidateError::KeyRefused,
+                e => ValidateError::Failed(credentials::redact(
                     &*self.secrets,
                     &connector.id,
                     &definition.auth,
                     &e.to_string(),
-                ))
+                )),
             })
+    }
+
+    /// Marks `connector` as needing a new key: its service refused this one.
+    async fn refused(&self, connector: &store::Connector) -> Result<(), StoreError> {
+        let message = ValidateError::KeyRefused.to_string();
+        self.set_status(connector, ConnectorStatus::NeedsReauth, Some(&message))
+            .await
     }
 
     /// `text` without `connector`'s secrets.

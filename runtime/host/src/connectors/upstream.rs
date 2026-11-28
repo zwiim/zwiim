@@ -158,6 +158,9 @@ pub enum ConnectorError {
     Rpc { code: i64, message: String },
     #[error("the connection to the service is closed")]
     Closed,
+    /// It answered 401 or 403: the key is wrong, expired or lacks access.
+    #[error("the service refused the key")]
+    KeyRefused,
 }
 
 /// Why a call has no [`CallOutput`].

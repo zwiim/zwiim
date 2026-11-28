@@ -592,6 +592,9 @@ function ConnectorDetail({
         {connector.status === "error" && connector.error && (
           <p className="text-destructive text-xs">{connector.error}</p>
         )}
+        {connector.status === "needs_reauth" && (
+          <p className="text-brand text-xs">{connector.name} refused the key. Paste a new one below.</p>
+        )}
         {error && (
           <p className="text-destructive text-xs" role="alert">
             {error}

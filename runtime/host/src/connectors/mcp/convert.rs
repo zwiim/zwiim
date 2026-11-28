@@ -72,6 +72,9 @@ pub(super) fn never_sent(error: &EgressError) -> bool {
 }
 
 pub(super) fn service_error(error: ServiceError) -> ConnectorError {
+    if error.auth_challenge().is_some() {
+        return ConnectorError::KeyRefused;
+    }
     match error {
         ServiceError::McpError(error) => ConnectorError::Rpc {
             code: i64::from(error.code.0),
@@ -88,6 +91,9 @@ pub(super) fn service_error(error: ServiceError) -> ConnectorError {
 }
 
 pub(super) fn init_error(error: ClientInitializeError) -> ConnectorError {
+    if error.auth_challenge().is_some() {
+        return ConnectorError::KeyRefused;
+    }
     match error {
         ClientInitializeError::NoCompatibleProtocolVersion {
             server_supported, ..

@@ -2282,7 +2282,7 @@ export interface Connector {
   slug: string;
   url: string;
   status: "validating" | "active" | "needs_reauth" | "error" | "revoking" | "revoked";
-  /** Why it is `error`, or what its revocation waits for. */
+  /** Why it is `error` or `needs_reauth` (its service refused the key), or what its revocation waits for. */
   error: string | null;
   last_validated_at: string | null;
   created_at: string;

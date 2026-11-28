@@ -387,6 +387,16 @@ describe("ConnectorsDialog", () => {
     expect(screen.getByRole("note").textContent).toContain("about 12,400 of an agent's context, over 12,000");
   });
 
+  it("asks for a new key when the server refused the one it has", async () => {
+    const { t } = connectorHost({
+      connectors: [connector({ status: "needs_reauth", error: "the service refused the key" })],
+    });
+    await mount(t);
+    expect(screen.getByText("Linear refused the key. Paste a new one below.")).toBeTruthy();
+    expect(screen.getByLabelText("New key")).toBeTruthy();
+    expect(screen.getByTestId("connector-c1").textContent).toContain("needs a key");
+  });
+
   it("search narrows the tools; a name opens its description", async () => {
     const { t } = connectorHost();
     await mount(t);
