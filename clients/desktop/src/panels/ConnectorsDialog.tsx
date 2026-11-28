@@ -938,7 +938,7 @@ function CallRow({
       >
         <span className="min-w-0 flex-1 truncate font-mono text-xs">{call.tool}</span>
         <span className={cn("text-xs", TONE_TEXT[outcome.tone])}>{outcome.text}</span>
-        <span className="text-faint w-14 text-right font-mono text-2xs">
+        <span className="text-faint min-w-16 text-right font-mono text-2xs whitespace-nowrap">
           {call.upstream_ms !== null ? `${count(call.upstream_ms)} ms` : ""}
         </span>
         <span className="text-faint w-20 text-right text-2xs">{relativeTime(call.received_at)}</span>
