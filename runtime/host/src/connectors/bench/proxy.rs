@@ -8,9 +8,9 @@
 //! cargo test --release -p zwiim-host --lib connectors::bench::proxy -- --ignored --nocapture
 //! ```
 //!
-//! Only one topology exists, one proxy per connector, so this measures it
-//! against the ADR-17 budget; the multiplexed proxy is built only if this one
-//! misses. As in the Host-only benchmark, each fake answers at once in a
+//! One proxy per connector is the topology (ADR-2, decided on these numbers
+//! 2026-11-28); a multiplexed proxy would be built only if this one missed
+//! the ADR-17 budget. Memory for 8 warm connectors is held to 30 MiB. As in the Host-only benchmark, each fake answers at once in a
 //! child process, so every round trip counts as Zwiim's: an upper bound.
 //!
 //! ```text
@@ -307,7 +307,7 @@ async fn connector_proxy_overhead() {
             let total = host + proxies;
             println!(
                 "\nmemory, {MAX} warm connectors: Host +{} KiB, {MAX} proxies {} KiB, \
-                 together {} KiB (initial target {} MiB{})",
+                 together {} KiB (limit {} MiB{})",
                 host / 1024,
                 proxies / 1024,
                 total / 1024,
@@ -318,6 +318,9 @@ async fn connector_proxy_overhead() {
                     ""
                 },
             );
+            if total > MEMORY_TARGET {
+                misses.push(format!("memory: {} KiB", total / 1024));
+            }
         }
         _ => println!("\nmemory: not measured on this platform"),
     }
@@ -326,8 +329,5 @@ async fn connector_proxy_overhead() {
     serving.abort();
     drop(fakes.stdin.take());
     let _ = fakes.wait().await;
-    assert!(
-        misses.is_empty(),
-        "missed the ADR-17 latency budget: {misses:#?}"
-    );
+    assert!(misses.is_empty(), "missed the ADR-17 budget: {misses:#?}");
 }

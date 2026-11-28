@@ -47,7 +47,9 @@ const CHILD_ENV: &str = "ZWIIM_CONNECTOR_BENCH_CHILD";
 
 const P95_TARGET: Duration = Duration::from_millis(100);
 const P99_TARGET: Duration = Duration::from_millis(300);
-/// Initial target, reported but not enforced until Phase 0 confirms it.
+/// 8 warm connectors, Host and proxies together: confirmed as the limit
+/// after Phase 0 (2026-11-28). The Host-only run reports it; the proxy run
+/// enforces it.
 const MEMORY_TARGET: u64 = 30 * 1024 * 1024;
 
 const ERAS: [(&str, Era); 2] = [
