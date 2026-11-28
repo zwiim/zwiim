@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ZwiimClientError, type Connector } from "@zwiim/sdk";
-import { connectorRow, loadConnectors, type ConnectorsHost } from "../src/host/connectors";
+import { connectorRow, disconnectConnector, loadConnectors, type ConnectorsHost } from "../src/host/connectors";
 
 const connector = (extra: Partial<Connector> = {}): Connector => ({
   connector_id: "c1",
@@ -48,6 +48,16 @@ describe("connectors on the phone", () => {
       throw new ZwiimClientError("network", "Host unreachable");
     });
     expect(await loadConnectors(down.host)).toEqual({ error: "Host unreachable" });
+  });
+
+  it("disconnects one, and says why it couldn't", async () => {
+    const ok = fakeHost(() => ({ connector: connector({ status: "revoked" }) }));
+    expect(await disconnectConnector(ok.host, "c1")).toBeNull();
+    expect(ok.calls).toEqual([{ op: "connector.revoke", params: { connector_id: "c1" } }]);
+    const gone = fakeHost(() => {
+      throw new ZwiimClientError("not_found", "No such connector", 404);
+    });
+    expect(await disconnectConnector(gone.host, "c1")).toBe("No such connector");
   });
 
   it("shows each one's name, server and status", () => {

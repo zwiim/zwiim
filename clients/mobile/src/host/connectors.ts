@@ -1,5 +1,5 @@
-// The Host tab's Connectors group, read only: the outside services the
-// host's agents reach and whether each is working. Adding one, its key, its
+// The Host tab's Connectors group: the outside services the host's agents
+// reach, whether each is working, and Disconnect. Adding one, its key, its
 // tools and where it is allowed stay on the Mac running the host.
 
 import { isHostOutdated, type Connector, type OpName, type OpParams, type OpResult } from "@zwiim/sdk";
@@ -20,6 +20,16 @@ export async function loadConnectors(
   } catch (e) {
     if (isHostOutdated(e)) return "outdated";
     return { error: errorInfo(e).message };
+  }
+}
+
+/** Disconnects one: agents lose it and the host deletes its key. Null when done, else why not. */
+export async function disconnectConnector(host: ConnectorsHost, id: string): Promise<string | null> {
+  try {
+    await host.request("connector.revoke", { connector_id: id });
+    return null;
+  } catch (e) {
+    return errorInfo(e).message;
   }
 }
 

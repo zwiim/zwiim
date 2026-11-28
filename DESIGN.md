@@ -724,9 +724,11 @@ Secondary settings, grouped list:
   Host is out of reach). Read-only: the setting lives on the Mac.
 - **Connectors** (`connector.list`): one row per connector: status dot,
   name ("Linear (Work)" when labelled), its server in mono, and Connected /
-  Needs a key / Can't reach server / Checking / Disconnecting. Last row: "Set
-  them up in Zwiim on {Host}." with Refresh. Read-only; hidden when the Host
-  has none or is from before connectors.
+  Needs a key / Can't reach server / Checking / Disconnecting. Tapping a row
+  opens an inline confirm: "Disconnect {name}? Agents on {Host} lose it and its
+  key is deleted." with Keep and a destructive Disconnect. Last row: "Set them
+  up in Zwiim on {Host}." with Refresh. Nothing else changes here; hidden when
+  the Host has none or is from before connectors.
 - **Account**: email, Sign out.
 - **Appearance**: System / Dark / Light.
 
