@@ -673,6 +673,20 @@ function ConnectorDetail({
                 </Button>
               </Row>
             )}
+            {connector.endpoints.length > 0 && (
+              <Row title="Reaches" detail="The Host sends its requests here and nowhere else">
+                <ul className="min-w-0 space-y-0.5 text-right" aria-label="Reaches">
+                  {connector.endpoints.map((e) => (
+                    <li key={e.origin} className="truncate font-mono text-2xs">
+                      {e.origin}
+                      {e.credentials && connector.credentials !== null && (
+                        <span className="text-faint ml-1.5 font-sans">gets the key</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </Row>
+            )}
           </div>
         </div>
         <div>
