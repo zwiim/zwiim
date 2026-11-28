@@ -15,6 +15,8 @@ export type Scope = "nowhere" | "workspace" | "all";
 export const LIMIT_STEP = 500;
 export const MIN_LIMIT = 1000;
 export const MAX_LIMIT = 10000;
+/** Above this across the connectors a session gets, the user is warned (r3 §8.2). Nothing is held back. */
+export const SESSION_WARNING = 12000;
 
 /** The root workspace a worktree belongs to: grants name roots. */
 export function rootOf(workspaces: readonly WorkspaceInfo[] | null | undefined, workspaceId: string): string {
@@ -30,6 +32,21 @@ export function shownGrant(grants: readonly ConnectorGrant[], root: string): Con
 export function scopeOf(grant: ConnectorGrant | null): Scope {
   if (!grant) return "nowhere";
   return grant.workspace_id === null ? "all" : "workspace";
+}
+
+/**
+ * About what the tools that are on take of a session's context in `root`,
+ * across every active connector allowed there. An upper bound: a grant for
+ * one agent, or a tool a grant denies, can leave some out.
+ */
+export function sessionCost(
+  connectors: readonly Connector[],
+  grants: Readonly<Record<string, readonly ConnectorGrant[]>>,
+  root: string,
+): number {
+  return connectors
+    .filter((c) => c.status === "active" && allowedHere(grants[c.connector_id] ?? [], root))
+    .reduce((sum, c) => sum + c.tools_used, 0);
 }
 
 /** Whether a session in `root` gets the connector, by any grant. */
