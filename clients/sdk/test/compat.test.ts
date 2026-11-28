@@ -104,7 +104,11 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 50 and turns a connector's tools on and off", () => {
-    expect(CLIENT_REVISION).toBe(50);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(50);
+  });
+
+  it("speaks revision 51 and turns a whole connector on and off", () => {
+    expect(CLIENT_REVISION).toBe(51);
   });
 
   it("speaks revision 49 and answers a connector's approvals", () => {

@@ -2296,6 +2296,8 @@ export interface Connector {
   tool_budget: number;
   /** What its tools that are on take now, about (revision 50). */
   tools_used: number;
+  /** The user's switch: off, agents are shown none of its tools (revision 51). */
+  enabled: boolean;
 }
 
 /** What `connector.create` takes: a remote server added by URL. */
@@ -2963,6 +2965,11 @@ export interface Operations {
    */
   "connector.tool_budget.set": [{ connector_id: string; tool_budget: number }, { connector: Connector }];
   /**
+   * Turn a whole connector on or off for agents (revision 51). Off keeps its
+   * key, tools and grants. Only on the Host itself.
+   */
+  "connector.set_enabled": [{ connector_id: string; enabled: boolean }, { connector: Connector }];
+  /**
    * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
    */
@@ -3332,6 +3339,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "connector.grant.allow_all",
   "connector.tool.set_enabled",
   "connector.tool_budget.set",
+  "connector.set_enabled",
   "playbook.create",
   "playbook.save",
   "playbook.file.set",

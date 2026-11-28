@@ -67,6 +67,9 @@ pub struct ConnectorView {
     pub tool_budget: u32,
     /// What its tools that are on take now, about (revision 50).
     pub tools_used: u32,
+    /// The user's switch: off, agents are shown none of its tools
+    /// (revision 51).
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +187,7 @@ async fn view(state: &AppState, connector: Connector) -> Result<ConnectorView, Z
         tool_count: tools.len(),
         tool_budget: connector.tool_budget,
         tools_used: store::used(&tools),
+        enabled: connector.enabled,
     })
 }
 
@@ -497,7 +501,7 @@ async fn tools_of(state: &AppState, id: &str) -> Result<Vec<ToolView>, ZwiimErro
 fn switches_host_only(principal: Option<Extension<Principal>>) -> Result<(), ZwiimError> {
     match principal {
         Some(Extension(Principal::Device(_))) => Err(ZwiimError::permission_denied(
-            "Tool switches and limits are changed on the Host's computer",
+            "Connector switches and limits are changed on the Host's computer",
         )),
         _ => Ok(()),
     }
@@ -575,6 +579,31 @@ pub async fn connector_tool_set_enabled(
     Ok(Json(ToolSwitchResult {
         connector: view_of(&state, &p.connector_id).await?,
         tools: tools_of(&state, &p.connector_id).await?,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetEnabledParams {
+    pub connector_id: String,
+    pub enabled: bool,
+}
+
+/// `connector.set_enabled {connector_id, enabled}` → `{connector}`. One that
+/// is off keeps its key, tools and grants; agents are shown none of its
+/// tools and its calls are refused.
+pub async fn connector_set_enabled(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<SetEnabledParams>,
+) -> ZResult<ConnectorResult> {
+    switches_host_only(principal)?;
+    let connector = store::set_enabled(&state.db.conn, &p.connector_id, p.enabled)
+        .await
+        .map_err(switch_error)?;
+    state.connectors().await.exposure_changed();
+    Ok(Json(ConnectorResult {
+        connector: view(&state, connector).await?,
     }))
 }
 

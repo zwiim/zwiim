@@ -120,5 +120,13 @@ describe("connector methods", () => {
       params: { connector_id: "c1", tool_budget: 6000 },
       options: { mutating: true },
     });
+
+    t.transport.handlers["connector.set_enabled"] = () => ({ connector });
+    await t.controller.setConnectorEnabled("c1", false);
+    expect(sent()).toMatchObject({
+      op: "connector.set_enabled",
+      params: { connector_id: "c1", enabled: false },
+      options: { mutating: true },
+    });
   });
 });

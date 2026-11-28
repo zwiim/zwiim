@@ -193,6 +193,7 @@ const OPS: &[&str] = &[
     "connector.executions",
     "connector.tool.set_enabled",
     "connector.tool_budget.set",
+    "connector.set_enabled",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {

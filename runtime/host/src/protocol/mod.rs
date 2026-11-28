@@ -335,6 +335,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/connector.tool_budget.set",
             post(connector::connector_tool_budget_set),
         )
+        .route(
+            "/connector.set_enabled",
+            post(connector::connector_set_enabled),
+        )
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(
