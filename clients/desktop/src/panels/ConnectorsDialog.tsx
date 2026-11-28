@@ -27,6 +27,8 @@ import {
   limitThatFits,
   rootOf,
   scopeOf,
+  SESSION_WARNING,
+  sessionCost,
   shownGrant,
   statusLine,
   toolChoice,
@@ -167,6 +169,7 @@ export function ConnectorsDialog({ workspaceId, onClose }: { workspaceId: string
   const elsewhere = matching.filter((c) => !here.includes(c));
   const current = data?.connectors.find((c) => c.connector_id === selected) ?? null;
   const fileKeys = data?.connectors.some((c) => c.credentials === "file") ?? false;
+  const cost = data ? sessionCost(data.connectors, data.grants, root) : 0;
 
   return (
     <Dialog
@@ -216,6 +219,12 @@ export function ConnectorsDialog({ workspaceId, onClose }: { workspaceId: string
                 />
               ))}
             </ListSection>
+          )}
+          {cost > SESSION_WARNING && (
+            <p role="note" className="text-brand px-2 pt-1 pb-2 text-xs">
+              Together their tools take about {count(cost)} of an agent's context, over {count(SESSION_WARNING)}.
+              Agents here have less room for your work. Turn off tools you don't need.
+            </p>
           )}
           {elsewhere.length > 0 && (
             <ListSection title={`Not allowed here · ${elsewhere.length}`}>

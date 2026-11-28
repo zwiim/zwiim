@@ -17,6 +17,7 @@ import {
   isLocalUrl,
   limitThatFits,
   rootOf,
+  sessionCost,
   shownGrant,
   toolChoice,
   toolGroup,
@@ -115,6 +116,22 @@ describe("connector helpers", () => {
     expect(limitThatFits(1240, 3120)).toBe(4500);
     expect(limitThatFits(100, 200)).toBe(1000);
     expect(limitThatFits(2000, 9000)).toBeNull();
+  });
+
+  it("adds up the tools that are on across the active connectors allowed here", () => {
+    const connectors = [
+      connector({ connector_id: "a", tools_used: 5000 }),
+      connector({ connector_id: "b", tools_used: 4000 }),
+      connector({ connector_id: "c", tools_used: 3000, status: "error" }),
+      connector({ connector_id: "d", tools_used: 2000 }),
+    ];
+    const grants = {
+      a: [grant({ workspace_id: "w1" })],
+      b: [grant({ workspace_id: null })],
+      c: [grant({ workspace_id: "w1" })],
+      d: [grant({ workspace_id: "other" })],
+    };
+    expect(sessionCost(connectors, grants, "w1")).toBe(9000);
   });
 
   it("guesses a name from the address, and knows a local server", () => {
@@ -351,6 +368,23 @@ describe("ConnectorsDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByTestId("tool-list_issues")).toBeTruthy();
+  });
+
+  it("warns when the connectors allowed here take more than 12,000 together", async () => {
+    const { t } = connectorHost();
+    await mount(t);
+    expect(screen.queryByRole("note")).toBeNull();
+    cleanup();
+
+    const big = connectorHost({
+      connectors: [
+        connector(),
+        connector({ connector_id: "c2", name: "GitHub", slug: "github", tool_budget: 10000, tools_used: 6000 }),
+        connector({ connector_id: "c3", name: "Notion", slug: "notion", tool_budget: 10000, tools_used: 6000 }),
+      ],
+    });
+    await mount(big.t);
+    expect(screen.getByRole("note").textContent).toContain("about 12,400 of an agent's context, over 12,000");
   });
 
   it("search narrows the tools; a name opens its description", async () => {
