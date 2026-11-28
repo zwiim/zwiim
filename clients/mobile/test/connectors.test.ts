@@ -17,6 +17,7 @@ const connector = (extra: Partial<Connector> = {}): Connector => ({
   tool_count: 3,
   tool_budget: 4000,
   tools_used: 600,
+  enabled: true,
   ...extra,
 });
 
@@ -67,6 +68,7 @@ describe("connectors on the phone", () => {
       state: "Connected",
       dot: "done",
     });
+    expect(connectorRow(connector({ enabled: false }))).toMatchObject({ state: "Off", dot: "off" });
     expect(connectorRow(connector({ label: "Work", status: "needs_reauth" }))).toMatchObject({
       name: "Linear (Work)",
       state: "Needs a key",
