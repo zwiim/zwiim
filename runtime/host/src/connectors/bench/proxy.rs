@@ -13,12 +13,19 @@
 //! the ADR-17 budget. Memory for 8 warm connectors is held to 30 MiB. As in the Host-only benchmark, each fake answers at once in a
 //! child process, so every round trip counts as Zwiim's: an upper bound.
 //!
+//! CI runs it as a regression check (`ZWIIM_BENCH_CHECK=1`): each p95 and
+//! the memory figure may be at most 20 % over `proxy_baseline.json`, which
+//! holds the CI runner's own numbers. A run prints its numbers in that
+//! file's shape (the `BENCH` line); after a change that is meant to cost
+//! more, paste the CI run's line into the file.
+//!
 //! ```text
 //! "agent" (this test) ──stdio──▶ zwiim-mcp --connector ──UDS──▶ listener
 //!                                  (one per connector)            │
 //!                                                     Connectors ─┴─HTTP─▶ fake
 //! ```
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -40,6 +47,46 @@ use crate::connectors::runtime::{Connectors, McpFactory};
 
 /// Sessions started per case; each spawns its proxies anew.
 const STARTS: usize = 50;
+
+/// How much worse than the baseline a CI run may be (design r3 §8.1).
+const TOLERANCE: f64 = 1.2;
+/// Below this a p95 change is the runner's noise, not Zwiim's: 20 % of a
+/// half-millisecond call is a tenth of a millisecond.
+const NOISE_US: u64 = 1_000;
+
+/// What a run measured, in the shape of `proxy_baseline.json`.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Measured {
+    /// p95 per case, in microseconds, keyed like `x8 warm call`.
+    p95_us: BTreeMap<String, u64>,
+    /// 8 warm connectors, Host growth plus proxies; null where unmeasured.
+    memory_kib: Option<u64>,
+}
+
+/// Each figure in `run` more than [`TOLERANCE`] over `baseline`. A case
+/// the baseline lacks is a miss too, so a new case can't pass unchecked.
+fn regressions(run: &Measured, baseline: &Measured) -> Vec<String> {
+    let mut misses = Vec::new();
+    for (case, &us) in &run.p95_us {
+        match baseline.p95_us.get(case) {
+            None => misses.push(format!("{case}: no baseline")),
+            Some(&base) => {
+                let allowed = ((base as f64 * TOLERANCE) as u64).max(base + NOISE_US);
+                if us > allowed {
+                    misses.push(format!("{case}: p95 {us} µs, baseline {base} µs"));
+                }
+            }
+        }
+    }
+    match (run.memory_kib, baseline.memory_kib) {
+        (Some(kib), Some(base)) if kib as f64 > base as f64 * TOLERANCE => {
+            misses.push(format!("memory: {kib} KiB, baseline {base} KiB"));
+        }
+        (Some(_), None) => misses.push("memory: no baseline".into()),
+        _ => {}
+    }
+    misses
+}
 
 /// One proxy, as an agent sees it: a child process speaking MCP over stdio.
 struct Proxy {
@@ -260,6 +307,7 @@ async fn connector_proxy_overhead() {
         at.elapsed()
     );
     let mut misses = Vec::new();
+    let mut measured = Measured::default();
     let mut warm_eight = Vec::new();
     for n in CONNECTIONS {
         let mut starts = Vec::new();
@@ -290,6 +338,9 @@ async fn connector_proxy_overhead() {
             if row.p95 > P95_TARGET || row.p99 > P99_TARGET {
                 misses.push(format!("x{n} {case}: p95 {:?}, p99 {:?}", row.p95, row.p99));
             }
+            measured
+                .p95_us
+                .insert(format!("x{n} {case}"), row.p95.as_micros() as u64);
         }
         if n == MAX {
             warm_eight = proxies;
@@ -321,13 +372,61 @@ async fn connector_proxy_overhead() {
             if total > MEMORY_TARGET {
                 misses.push(format!("memory: {} KiB", total / 1024));
             }
+            measured.memory_kib = Some(total / 1024);
         }
         _ => println!("\nmemory: not measured on this platform"),
     }
+
+    println!("\nBENCH {}", serde_json::to_string(&measured).unwrap());
 
     drop(warm_eight);
     serving.abort();
     drop(fakes.stdin.take());
     let _ = fakes.wait().await;
     assert!(misses.is_empty(), "missed the ADR-17 budget: {misses:#?}");
+    if std::env::var_os("ZWIIM_BENCH_CHECK").is_some() {
+        let baseline: Measured = serde_json::from_str(include_str!("proxy_baseline.json")).unwrap();
+        let worse = regressions(&measured, &baseline);
+        assert!(
+            worse.is_empty(),
+            "over proxy_baseline.json by more than 20 %: {worse:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_run_may_be_a_fifth_worse_than_the_baseline_and_no_more() {
+    let run = |p95: &[(&str, u64)], memory_kib| Measured {
+        p95_us: p95.iter().map(|&(k, v)| (k.to_string(), v)).collect(),
+        memory_kib,
+    };
+    let baseline = run(
+        &[("x8 session start", 10_000), ("x8 warm call", 500)],
+        Some(30_000),
+    );
+
+    let within = run(
+        &[("x8 session start", 12_000), ("x8 warm call", 1_500)],
+        Some(36_000),
+    );
+    assert!(regressions(&within, &baseline).is_empty());
+
+    let worse = run(
+        &[("x8 session start", 12_001), ("x8 warm call", 1_501)],
+        Some(36_001),
+    );
+    assert_eq!(
+        regressions(&worse, &baseline),
+        [
+            "x8 session start: p95 12001 µs, baseline 10000 µs",
+            "x8 warm call: p95 1501 µs, baseline 500 µs",
+            "memory: 36001 KiB, baseline 30000 KiB",
+        ]
+    );
+
+    let new_case = run(&[("x16 warm call", 500)], None);
+    assert_eq!(
+        regressions(&new_case, &baseline),
+        ["x16 warm call: no baseline"]
+    );
 }
