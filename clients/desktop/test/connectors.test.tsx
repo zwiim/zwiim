@@ -430,6 +430,29 @@ describe("ConnectorsDialog", () => {
     expect(screen.getByTestId("connector-c1").textContent).toContain("needs a key");
   });
 
+  it("lists the addresses a connector may reach and which one gets its key", async () => {
+    const { t } = connectorHost({
+      connectors: [
+        connector({
+          endpoints: [
+            { origin: "https://mcp.linear.app", credentials: true },
+            { origin: "https://linear.app", credentials: false },
+          ],
+        }),
+      ],
+    });
+    await mount(t);
+    const items = within(screen.getByRole("list", { name: "Reaches" })).getAllByRole("listitem");
+    expect(items.map((i) => i.textContent)).toEqual(["https://mcp.linear.appgets the key", "https://linear.app"]);
+  });
+
+  it("counts one tool as a tool", async () => {
+    const { t } = connectorHost({ connectors: [connector({ tool_count: 1 })] });
+    await mount(t);
+    expect(screen.getByText(/· 1 tool ·/)).toBeTruthy();
+    expect(screen.getByPlaceholderText("Search 1 tool")).toBeTruthy();
+  });
+
   it("search narrows the tools; a name opens its description", async () => {
     const { t } = connectorHost();
     await mount(t);

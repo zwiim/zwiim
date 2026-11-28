@@ -585,7 +585,7 @@ function ConnectorDetail({
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-base font-medium">{display(connector)}</h3>
           <div className="text-muted-foreground truncate font-mono text-2xs">
-            {host} · {connector.tool_count} tools · <span className={TONE_TEXT[status.tone]}>{status.text}</span>
+            {host} · {connector.tool_count} tool{connector.tool_count === 1 ? "" : "s"} · <span className={TONE_TEXT[status.tone]}>{status.text}</span>
           </div>
         </div>
         <Button size="xs" variant="ghost" disabled={disabled} onClick={checkAgain}>
@@ -673,6 +673,20 @@ function ConnectorDetail({
                 </Button>
               </Row>
             )}
+            {connector.endpoints.length > 0 && (
+              <Row title="Reaches" detail="The Host sends its requests here and nowhere else">
+                <ul className="min-w-0 space-y-0.5 text-right" aria-label="Reaches">
+                  {connector.endpoints.map((e) => (
+                    <li key={e.origin} className="truncate font-mono text-2xs">
+                      {e.origin}
+                      {e.credentials && connector.credentials !== null && (
+                        <span className="text-faint ml-1.5 font-sans">gets the key</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </Row>
+            )}
           </div>
         </div>
         <div>
@@ -714,7 +728,7 @@ function ConnectorDetail({
                 <Search className="size-3.5 shrink-0" />
                 <input
                   className="text-foreground placeholder:text-faint min-w-0 flex-1 bg-transparent text-xs outline-none"
-                  placeholder={`Search ${connector.tool_count} tools`}
+                  placeholder={`Search ${connector.tool_count} tool${connector.tool_count === 1 ? "" : "s"}`}
                   aria-label="Search tools"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
