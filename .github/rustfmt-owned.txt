@@ -172,6 +172,7 @@ runtime/host/src/connectors/approvals.rs
 runtime/host/src/connectors/approvals/tests.rs
 runtime/host/src/db/migration/m20261125_000006_connector_approvals.rs
 runtime/host/src/db/migration/m20261126_000001_connector_tool_switches.rs
+runtime/host/src/db/migration/m20261128_000001_connector_enabled.rs
 runtime/host/src/db/entities/connector_approval.rs
 runtime/host/src/connectors/runtime/ask.rs
 runtime/host/src/acp/connector_cards.rs

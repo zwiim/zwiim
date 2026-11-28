@@ -82,7 +82,7 @@ impl Connectors {
 
     /// `connector`'s tools that are on and that a session in root workspace
     /// `workspace_id` run by `agent` isn't denied, by name. None while the
-    /// connector isn't usable.
+    /// connector is off or isn't usable.
     async fn shown(
         &self,
         connector: &store::Connector,
@@ -90,7 +90,10 @@ impl Connectors {
         agent: &str,
         session_id: Option<&str>,
     ) -> Result<Vec<ListedTool>, String> {
-        if connector.status != ConnectorStatus::Active || self.runtime(&connector.id).is_blocked() {
+        if !connector.enabled
+            || connector.status != ConnectorStatus::Active
+            || self.runtime(&connector.id).is_blocked()
+        {
             return Ok(Vec::new());
         }
         let Some(grant) = grants::grant_for(&self.db, &connector.id, workspace_id, agent)

@@ -201,6 +201,9 @@ pub struct Connector {
     pub revocation: Vec<RevocationStep>,
     /// The most its enabled tools may take, about, in token-equivalents.
     pub tool_budget: u32,
+    /// The user's switch: off, agents are shown none of its tools and its
+    /// calls are refused. Its key, tools and grants are kept.
+    pub enabled: bool,
 }
 
 /// One step of revoking a connector (design r3 §4.4). Each is recorded once
@@ -279,6 +282,7 @@ pub async fn create_connector(
         created_at: Set(now),
         updated_at: Set(now),
         tool_budget: Set(budget::DEFAULT as i32),
+        enabled: Set(true),
     }
     .insert(&txn)
     .await?;
@@ -630,6 +634,24 @@ pub async fn set_tool_budget(
     connector_in(conn, id).await
 }
 
+/// Turns connector `id` on or off.
+pub async fn set_enabled(
+    conn: &DatabaseConnection,
+    id: &str,
+    enabled: bool,
+) -> Result<Connector, StoreError> {
+    let done = connector::Entity::update_many()
+        .col_expr(connector::Column::Enabled, Expr::value(enabled))
+        .col_expr(connector::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(connector::Column::Id.eq(id))
+        .exec(conn)
+        .await?;
+    if done.rows_affected == 0 {
+        return Err(StoreError::ConnectorNotFound(id.into()));
+    }
+    connector_in(conn, id).await
+}
+
 /// When connector `id` first listed `tool`, if it lists it now.
 pub async fn first_seen(
     conn: &DatabaseConnection,
@@ -694,6 +716,7 @@ fn to_connector(row: connector::Model) -> Result<Connector, StoreError> {
         created_at: row.created_at,
         tool_budget: u32::try_from(row.tool_budget)
             .map_err(|_| StoreError::Corrupt(format!("tool budget {}", row.tool_budget)))?,
+        enabled: row.enabled,
     })
 }
 
