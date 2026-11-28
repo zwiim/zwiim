@@ -137,6 +137,9 @@ describe("connector helpers", () => {
   it("guesses a name from the address, and knows a local server", () => {
     expect(guessName("https://mcp.linear.app/mcp")).toBe("Linear");
     expect(guessName("nonsense")).toBe("");
+    expect(guessName("http://127.0.0.1:3000/mcp")).toBe("");
+    expect(guessName("http://[::1]:3000/mcp")).toBe("");
+    expect(guessName("http://localhost:3000/mcp")).toBe("");
     expect(isLocalUrl("http://localhost:3000/mcp")).toBe(true);
     expect(isLocalUrl("http://192.168.1.4/mcp")).toBe(true);
     expect(isLocalUrl("https://mcp.linear.app/mcp")).toBe(false);
