@@ -90,6 +90,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # sherpa-onnx-sys (voice) downloads its static libraries into
+      # target/sherpa-onnx-prebuilt only when that folder is missing. The
+      # restored cache can hold the folder without the libraries, and any
+      # rebuild of the crate then fails with "could not find native static
+      # library". Built crates carry their own copy, so start without it.
+      - name: Drop cached sherpa-onnx libraries
+        run: |
+          find target/sherpa-onnx-prebuilt -maxdepth 3 2>/dev/null | head -20
+          rm -rf target/sherpa-onnx-prebuilt
       - uses: actions/setup-node@v7
         with:
           node-version: 22
