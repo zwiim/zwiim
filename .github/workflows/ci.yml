@@ -108,31 +108,22 @@ jobs:
       # Only runtime/host/tests: `--tests` would run the unit tests again.
       - name: Host integration (lifecycle, restart, migrations)
         run: cargo test -p zwiim-host --test '*'
+      # Connector calls through the real agent proxy (design r3 §8.1), on the
+      # debug build the tests above compiled: fails on a miss of the ADR-17
+      # budget, or on a p95 or memory figure more than 20 % over
+      # runtime/host/src/connectors/bench/proxy_baseline.json (this runner's
+      # own debug numbers). The 30 MiB limit is for release builds and is
+      # checked by the release run in runtime/host/src/connectors/bench/proxy.rs.
+      - name: Connector benchmark (regression check)
+        run: |
+          cargo build -p zwiim-host --bin zwiim-mcp
+          cargo test -p zwiim-host --lib connectors::bench::proxy -- --ignored --nocapture
+        env:
+          ZWIIM_BENCH_CHECK: "1"
       - name: Cloud
         run: cargo test -p zwiim-cloud
       - name: Desktop shell
         run: cargo test -p zwiim-desktop
-
-  # Connector calls through the real agent proxy (design r3 §8.1): fails on a
-  # miss of the ADR-17 budget or the 30 MiB limit, or on a p95 or memory
-  # figure more than 20 % over runtime/host/src/connectors/bench/
-  # proxy_baseline.json, which holds this runner's own numbers. Release
-  # build, as the limits are for one.
-  connector-bench:
-    name: Connector benchmark
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: cargo build --release --bin zwiim-mcp
-      - run: cargo test --release -p zwiim-host --lib connectors::bench::proxy -- --ignored --nocapture
-        env:
-          ZWIIM_BENCH_CHECK: "1"
 
   sdk-desktop:
     name: SDK and Desktop UI
