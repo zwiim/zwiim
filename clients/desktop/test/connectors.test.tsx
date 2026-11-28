@@ -68,6 +68,7 @@ const connector = (extra: Partial<Connector> = {}): Connector => ({
   tool_count: 3,
   tool_budget: 1000,
   tools_used: 600,
+  enabled: true,
   ...extra,
 });
 
@@ -124,12 +125,14 @@ describe("connector helpers", () => {
       connector({ connector_id: "b", tools_used: 4000 }),
       connector({ connector_id: "c", tools_used: 3000, status: "error" }),
       connector({ connector_id: "d", tools_used: 2000 }),
+      connector({ connector_id: "e", tools_used: 1000, enabled: false }),
     ];
     const grants = {
       a: [grant({ workspace_id: "w1" })],
       b: [grant({ workspace_id: null })],
       c: [grant({ workspace_id: "w1" })],
       d: [grant({ workspace_id: "other" })],
+      e: [grant({ workspace_id: null })],
     };
     expect(sessionCost(connectors, grants, "w1")).toBe(9000);
   });
@@ -212,6 +215,10 @@ function connectorHost(
     sync();
     return { connector: c(), tools: state.tools };
   };
+  t.handlers["connector.set_enabled"] = (p: { enabled: boolean }) => {
+    state.connectors[0] = { ...c(), enabled: p.enabled };
+    return { connector: c() };
+  };
   t.handlers["connector.tool_budget.set"] = (p: { tool_budget: number }) => {
     state.connectors[0] = { ...c(), tool_budget: p.tool_budget };
     return { connector: c() };
@@ -283,6 +290,29 @@ describe("ConnectorsDialog", () => {
     await pick("list_issues", "Allow");
     expect(ops(t, "connector.tool_policy.set")).toEqual([{ grant_id: 1, tool: "list_issues", policy: "allow" }]);
     expect(checked("list_issues")).toBe("Allow");
+  });
+
+  it("turns a whole connector off and on, keeping its settings", async () => {
+    const { t } = connectorHost();
+    await mount(t);
+    const enabled = () => screen.getByRole("switch", { name: "Enabled" });
+    expect(enabled().getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(enabled());
+    await tick();
+    expect(ops(t, "connector.set_enabled")).toEqual([{ connector_id: "c1", enabled: false }]);
+    expect(enabled().getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText("Agents get none of its tools. Its key and settings are kept")).toBeTruthy();
+    expect(screen.getAllByText("turned off").length).toBeGreaterThan(0);
+    expect(checked("list_issues")).not.toBe("Off");
+
+    fireEvent.click(enabled());
+    await tick();
+    expect(ops(t, "connector.set_enabled")).toEqual([
+      { connector_id: "c1", enabled: false },
+      { connector_id: "c1", enabled: true },
+    ]);
+    expect(enabled().getAttribute("aria-checked")).toBe("true");
   });
 
   it("a tool that doesn't fit offers a higher limit, then turns on", async () => {

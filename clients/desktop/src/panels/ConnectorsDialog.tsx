@@ -33,6 +33,7 @@ import {
   statusLine,
   toolChoice,
   toolGroup,
+  usable,
   type Scope,
   type Tone,
   type ToolChoice,
@@ -100,7 +101,7 @@ export function ConnectorsButton({ workspaceId }: { workspaceId: string }) {
 
   if (outdated) return null;
   const here =
-    data?.connectors.filter((c) => c.status === "active" && allowedHere(data.grants[c.connector_id] ?? [], root))
+    data?.connectors.filter((c) => usable(c) && allowedHere(data.grants[c.connector_id] ?? [], root))
       .length ?? 0;
   return (
     <>
@@ -233,7 +234,7 @@ export function ConnectorsDialog({ workspaceId, onClose }: { workspaceId: string
                   key={c.connector_id}
                   connector={c}
                   line={data?.grants[c.connector_id]?.length ? "other workspaces" : "not allowed yet"}
-                  dot={c.status !== "active"}
+                  dot={!usable(c)}
                   selected={selected}
                   onSelect={setSelected}
                 />
@@ -283,7 +284,7 @@ export function ConnectorsDialog({ workspaceId, onClose }: { workspaceId: string
 }
 
 function usage(c: Connector): string | null {
-  if (c.status !== "active") return null;
+  if (!usable(c)) return null;
   return `${count(c.tools_used)} / ${count(c.tool_budget)}`;
 }
 
@@ -311,7 +312,7 @@ function ListItem({
   onSelect(id: string): void;
 }) {
   const status = statusLine(connector);
-  const problem = connector.status !== "active";
+  const problem = !usable(connector);
   return (
     <button
       type="button"
@@ -485,6 +486,11 @@ function ConnectorDetail({
       await apply(tool, choice);
     });
 
+  const turn = (enabled: boolean) =>
+    run("enabled", async () => {
+      onConnector((await controller.setConnectorEnabled(id, enabled)).connector);
+    });
+
   const setLimit = (limit: number) =>
     run("limit", async () => {
       onConnector((await controller.setConnectorToolBudget(id, limit)).connector);
@@ -603,6 +609,29 @@ function ConnectorDetail({
         <div>
           <Caption>Access</Caption>
           <div className="ring-border divide-border divide-y rounded-[10px] bg-muted ring-1 ring-inset">
+            <Row
+              title="Enabled"
+              detail={
+                connector.enabled
+                  ? `Agents allowed below can use ${connector.name}`
+                  : "Agents get none of its tools. Its key and settings are kept"
+              }
+            >
+              <button
+                type="button"
+                role="switch"
+                aria-checked={connector.enabled}
+                aria-label="Enabled"
+                disabled={disabled}
+                onClick={() => turn(!connector.enabled)}
+                className={cn(
+                  "flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors duration-120 disabled:opacity-50",
+                  connector.enabled ? "bg-brand justify-end" : "bg-secondary justify-start",
+                )}
+              >
+                <span className="bg-background size-3 rounded-full" />
+              </button>
+            </Row>
             <Row title="Allowed in" detail={`Agents in these workspaces can use ${connector.name}`}>
               <div className="bg-background flex gap-0.5 rounded-lg p-0.5" role="radiogroup" aria-label="Allowed in">
                 {(
