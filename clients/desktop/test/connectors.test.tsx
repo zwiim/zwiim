@@ -453,6 +453,12 @@ describe("ConnectorsDialog", () => {
     expect(screen.getByPlaceholderText("Search 1 tool")).toBeTruthy();
   });
 
+  it("says a connector new to a chat reaches only new chats", async () => {
+    const { t } = connectorHost();
+    await mount(t);
+    expect(screen.getByText(/added, turned on or allowed after a chat started reaches only new chats/)).toBeTruthy();
+  });
+
   it("search narrows the tools; a name opens its description", async () => {
     const { t } = connectorHost();
     await mount(t);

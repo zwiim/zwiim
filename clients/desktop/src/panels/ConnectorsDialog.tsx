@@ -688,6 +688,10 @@ function ConnectorDetail({
               </Row>
             )}
           </div>
+          <p className="text-faint mt-1.5 px-1 text-xs">
+            Open chats get changes here at once. A connector added, turned on or allowed after a chat started reaches
+            only new chats.
+          </p>
         </div>
         <div>
           <Caption>
