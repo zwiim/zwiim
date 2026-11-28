@@ -38,6 +38,8 @@ use super::fake_mcp::{Era, FakeMcp};
 use super::mcp::McpUpstream;
 use super::upstream::{DispatchMark, ShutdownReason, Upstream, UpstreamCall};
 
+mod proxy;
+
 const CALLS: usize = 1_000;
 const CONNECTIONS: [usize; 3] = [1, 3, 8];
 const MAX: usize = 8;
@@ -45,7 +47,9 @@ const CHILD_ENV: &str = "ZWIIM_CONNECTOR_BENCH_CHILD";
 
 const P95_TARGET: Duration = Duration::from_millis(100);
 const P99_TARGET: Duration = Duration::from_millis(300);
-/// Initial target, reported but not enforced until Phase 0 confirms it.
+/// 8 warm connectors, Host and proxies together: confirmed as the limit
+/// after Phase 0 (2026-11-28). The Host-only run reports it; the proxy run
+/// enforces it.
 const MEMORY_TARGET: u64 = 30 * 1024 * 1024;
 
 const ERAS: [(&str, Era); 2] = [
@@ -302,14 +306,19 @@ impl Row {
     }
 }
 
+/// This process's memory.
+fn footprint() -> Option<u64> {
+    footprint_of(std::process::id())
+}
+
 /// Physical footprint, which doesn't count shared pages twice.
 #[cfg(target_os = "macos")]
-fn footprint() -> Option<u64> {
+fn footprint_of(pid: u32) -> Option<u64> {
     // SAFETY: `info` is a valid, writable rusage_info_v2 for the call.
     let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
     let status = unsafe {
         libc::proc_pid_rusage(
-            std::process::id() as libc::c_int,
+            pid as libc::c_int,
             libc::RUSAGE_INFO_V2,
             (&mut info as *mut libc::rusage_info_v2).cast(),
         )
@@ -319,8 +328,8 @@ fn footprint() -> Option<u64> {
 
 /// Proportional set size.
 #[cfg(target_os = "linux")]
-fn footprint() -> Option<u64> {
-    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup").ok()?;
+fn footprint_of(pid: u32) -> Option<u64> {
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
     let kib = rollup
         .lines()
         .find_map(|line| line.strip_prefix("Pss:"))?
@@ -333,6 +342,6 @@ fn footprint() -> Option<u64> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn footprint() -> Option<u64> {
+fn footprint_of(_pid: u32) -> Option<u64> {
     None
 }

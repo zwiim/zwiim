@@ -1862,7 +1862,7 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
     use crate::acp::delegation::spawner::{
@@ -2018,7 +2018,7 @@ mod tests {
     /// A browser with one shared tab and one that nobody shared, recording
     /// every call so a test can prove the token gate never reached it.
     #[derive(Default)]
-    struct StubBrowser {
+    pub(crate) struct StubBrowser {
         calls: tokio::sync::Mutex<Vec<String>>,
     }
     #[async_trait]
@@ -2386,7 +2386,7 @@ mod tests {
     /// Build a listener whose browser access is the given stub, so
     /// `browser_list_tabs` / `browser_snapshot` tests can assert what the token
     /// gate let through.
-    fn make_browser_listener(
+    pub(crate) fn make_browser_listener(
         tokens: Arc<TokenRegistry>,
         browser: Arc<dyn BrowserToolAccess>,
     ) -> Arc<DelegationListener> {
