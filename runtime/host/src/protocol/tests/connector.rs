@@ -801,3 +801,38 @@ async fn tools_are_turned_on_and_off_within_the_connectors_limit() {
     let (status, _) = h.call_as(&device, "connector.tools", one).await;
     assert_eq!(status, StatusCode::OK, "a paired device may look");
 }
+
+#[tokio::test]
+async fn a_connector_turned_off_keeps_its_settings_and_only_the_host_switches_it() {
+    let fake = FakeMcp::new(Era::Modern);
+    let server = fake.serve_http().await;
+    let (h, _) = connected_host().await;
+    let id = created(&h, &server).await;
+    let listed = ok(&h, "connector.list", json!({})).await;
+    assert_eq!(listed["connectors"][0]["enabled"], true, "on to start");
+
+    let off = json!({ "connector_id": id, "enabled": false });
+    let body = changed(&h, &id, "connector.set_enabled", off.clone()).await;
+    assert_eq!(body["connector"]["enabled"], false);
+    assert_eq!(body["connector"]["status"], "active", "it stays connected");
+    let body = changed(
+        &h,
+        &id,
+        "connector.set_enabled",
+        json!({ "connector_id": id, "enabled": true }),
+    )
+    .await;
+    assert_eq!(body["connector"]["enabled"], true);
+
+    let (status, body) = h
+        .call(
+            "connector.set_enabled",
+            json!({ "connector_id": "nope", "enabled": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, body) = h.call_as(&device, "connector.set_enabled", off).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "permission_denied");
+}

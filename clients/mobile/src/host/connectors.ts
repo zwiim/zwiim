@@ -44,6 +44,7 @@ export function connectorRow(c: Connector): { name: string; detail: string; stat
   }
   switch (c.status) {
     case "active":
+      if (!c.enabled) return { name, detail, state: "Off", dot: "off" };
       return { name, detail, state: "Connected", dot: "done" };
     case "needs_reauth":
       return { name, detail, state: "Needs a key", dot: "need" };

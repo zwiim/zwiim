@@ -194,6 +194,46 @@ async fn a_tool_the_snapshot_lacks_is_never_sent() {
 }
 
 #[tokio::test]
+async fn a_connector_turned_off_shows_nothing_and_sends_nothing_until_on() {
+    let fake = FakeMcp::new(Era::Modern);
+    let setup = active(&fake).await;
+    let id = &setup.connector;
+    let off = store::set_enabled(&setup.db.conn, id, false).await.unwrap();
+    assert!(!off.enabled);
+    assert_eq!(
+        off.status,
+        store::ConnectorStatus::Active,
+        "it stays connected"
+    );
+    let (_, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
+    assert!(tools.is_empty());
+    let output = setup
+        .connectors
+        .call(&anyone(), id, "echo", args("hi"))
+        .await;
+    assert!(output.is_error);
+    assert!(text(&output).contains("turned off"), "{}", text(&output));
+    assert_eq!(calls(&fake), 0);
+    let [record] = &records(&setup).await[..] else {
+        panic!("one record per call");
+    };
+    assert_eq!(record.reason.as_deref(), Some("unavailable"));
+
+    store::set_enabled(&setup.db.conn, id, true).await.unwrap();
+    let (_, tools) = setup.connectors.exposed_tools(&anyone(), id).await.unwrap();
+    assert_eq!(tools[0].name, "echo", "its tool switches are kept");
+    let output = setup
+        .connectors
+        .call(&anyone(), id, "echo", args("hi"))
+        .await;
+    assert_eq!(text(&output), "hi");
+    assert!(matches!(
+        store::set_enabled(&setup.db.conn, "nope", false).await,
+        Err(store::StoreError::ConnectorNotFound(_))
+    ));
+}
+
+#[tokio::test]
 async fn a_revoked_connector_shows_nothing_and_sends_nothing() {
     let fake = FakeMcp::new(Era::Modern);
     let setup = active(&fake).await;
@@ -875,6 +915,15 @@ async fn a_session_is_offered_a_connector_it_may_use_some_tool_of() {
     store::set_tool_enabled(&setup.db.conn, &id, "echo", true)
         .await
         .unwrap();
+    store::set_enabled(&setup.db.conn, &id, false)
+        .await
+        .unwrap();
+    assert!(
+        offered(&setup, "codex", false).await.is_empty(),
+        "the connector is off"
+    );
+    store::set_enabled(&setup.db.conn, &id, true).await.unwrap();
+    assert_eq!(offered(&setup, "codex", false).await, [id.clone()]);
 
     setup.connectors.revoke(&id).await.unwrap();
     assert!(offered(&setup, "codex", false).await.is_empty(), "revoked");

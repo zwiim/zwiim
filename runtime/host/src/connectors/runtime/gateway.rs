@@ -92,6 +92,15 @@ impl Connectors {
         record: &Record,
     ) -> (Outcome, Option<Duration>, CallOutput) {
         let rejected = |reason, line: String| (Outcome::Rejected(reason), None, refusal(&line));
+        if !connector.enabled {
+            return rejected(
+                RejectReason::Unavailable,
+                format!(
+                    "The {} connector is turned off; nothing was sent.",
+                    connector.slug
+                ),
+            );
+        }
         if connector.status != ConnectorStatus::Active || self.runtime(&connector.id).is_blocked() {
             return rejected(
                 RejectReason::Unavailable,

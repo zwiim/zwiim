@@ -23,6 +23,8 @@ pub struct Model {
     pub updated_at: DateTimeUtc,
     /// The most its enabled tools may take of an agent's context, about.
     pub tool_budget: i32,
+    /// The user's switch: off, agents are shown none of its tools.
+    pub enabled: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

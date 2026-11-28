@@ -680,7 +680,14 @@ use serde::{Deserialize, Serialize};
 /// is on (`details {used}`). A call to a tool that is off is refused with
 /// nothing sent. Older clients see the new fields as unknown and can't turn
 /// tools on or off.
-pub const PROTOCOL_REVISION: u32 = 50;
+///
+/// 51 (connector switch): each connector gains `enabled`, on to start.
+/// `connector.set_enabled {connector_id, enabled}` returns `{connector}`;
+/// only the Host itself may call it (`permission_denied`). One that is off
+/// keeps its key, tools and grants, but agents are shown none of its tools
+/// and its calls are refused with nothing sent. Older clients see the field
+/// as unknown and can't turn a connector off.
+pub const PROTOCOL_REVISION: u32 = 51;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -997,7 +1004,12 @@ mod tests {
 
     #[test]
     fn connector_tool_switches_are_revision_50() {
-        assert_eq!(PROTOCOL_REVISION, 50);
+        assert!(PROTOCOL_REVISION >= 50);
+    }
+
+    #[test]
+    fn connector_switches_are_revision_51() {
+        assert_eq!(PROTOCOL_REVISION, 51);
     }
 
     #[test]

@@ -863,6 +863,11 @@ export class HostController {
     return this.client.request("connector.tool.set_enabled", { connector_id, tool, enabled });
   }
 
+  /** Turn a whole connector on or off for agents; only on the Host itself. */
+  setConnectorEnabled(connector_id: string, enabled: boolean): Promise<OpResult<"connector.set_enabled">> {
+    return this.client.request("connector.set_enabled", { connector_id, enabled });
+  }
+
   /** Set how much a connector's tools that are on may take; only on the Host itself. */
   setConnectorToolBudget(
     connector_id: string,

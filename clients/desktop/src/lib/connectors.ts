@@ -34,9 +34,14 @@ export function scopeOf(grant: ConnectorGrant | null): Scope {
   return grant.workspace_id === null ? "all" : "workspace";
 }
 
+/** Connected and turned on: agents allowed it get its tools. */
+export function usable(c: Connector): boolean {
+  return c.status === "active" && c.enabled;
+}
+
 /**
  * About what the tools that are on take of a session's context in `root`,
- * across every active connector allowed there. An upper bound: a grant for
+ * across every connector that is on and allowed there. An upper bound: a grant for
  * one agent, or a tool a grant denies, can leave some out.
  */
 export function sessionCost(
@@ -45,7 +50,7 @@ export function sessionCost(
   root: string,
 ): number {
   return connectors
-    .filter((c) => c.status === "active" && allowedHere(grants[c.connector_id] ?? [], root))
+    .filter((c) => usable(c) && allowedHere(grants[c.connector_id] ?? [], root))
     .reduce((sum, c) => sum + c.tools_used, 0);
 }
 
@@ -94,7 +99,7 @@ export type Tone = "ok" | "brand" | "bad" | "faint";
 export function statusLine(c: Connector): { text: string; tone: Tone } {
   switch (c.status) {
     case "active":
-      return { text: "connected", tone: "ok" };
+      return c.enabled ? { text: "connected", tone: "ok" } : { text: "turned off", tone: "faint" };
     case "needs_reauth":
       return { text: "needs a key", tone: "brand" };
     case "error":
